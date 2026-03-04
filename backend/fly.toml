@@ -1,0 +1,5 @@
+app = "kith-sandbox-base"
+primary_region = "ord"
+
+[build]
+  dockerfile = "Dockerfile.sandbox"

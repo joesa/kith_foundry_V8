@@ -1,0 +1,396 @@
+import os
+import aiohttp
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from typing import Optional
+from sqlalchemy.orm import Session
+from models import ProviderKey, engine, Base, User
+from auth import get_optional_user
+from cryptography.fernet import Fernet
+
+router = APIRouter()
+
+# Encryption key — generate once and store in .env
+ENCRYPTION_KEY = os.getenv("PROVIDER_ENCRYPTION_KEY", "")
+if not ENCRYPTION_KEY:
+    # Auto-generate and warn — in production this should be in .env
+    ENCRYPTION_KEY = Fernet.generate_key().decode()
+    print(f"⚠️  No PROVIDER_ENCRYPTION_KEY in .env. Generated temporary key: {ENCRYPTION_KEY}")
+    print(f"   Add PROVIDER_ENCRYPTION_KEY={ENCRYPTION_KEY} to your .env to persist keys across restarts.")
+
+fernet = Fernet(ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY)
+
+
+def encrypt_key(api_key: str) -> str:
+    return fernet.encrypt(api_key.encode()).decode()
+
+
+def decrypt_key(encrypted: str) -> str:
+    return fernet.decrypt(encrypted.encode()).decode()
+
+
+def mask_key(api_key: str) -> str:
+    if len(api_key) <= 8:
+        return "••••••••"
+    return api_key[:4] + "••••••••" + api_key[-4:]
+
+
+# --- Pydantic models ---
+class ProviderCreate(BaseModel):
+    name: str
+    provider: str
+    api_key: str
+    base_url: Optional[str] = None
+    is_default: bool = False
+
+
+class ProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+# --- Ensure table exists ---
+Base.metadata.create_all(bind=engine)
+
+
+def get_db():
+    from sqlalchemy.orm import Session as SQLSession
+    return SQLSession(bind=engine)
+
+
+# --- Routes ---
+@router.get("/api/v1/providers")
+def list_providers():
+    db = get_db()
+    try:
+        keys = db.query(ProviderKey).order_by(ProviderKey.created_at.desc()).all()
+        result = []
+        for k in keys:
+            try:
+                masked = mask_key(decrypt_key(k.api_key_encrypted))
+            except Exception:
+                masked = "••••••••(key error)"
+            result.append({
+                "id": k.id,
+                "name": k.name,
+                "provider": k.provider,
+                "api_key_masked": masked,
+                "base_url": k.base_url,
+                "is_default": k.is_default,
+                "is_active": k.is_active,
+                "created_at": k.created_at.isoformat() if k.created_at else None,
+                "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            })
+        return {"providers": result}
+    finally:
+        db.close()
+
+
+@router.post("/api/v1/providers")
+def create_provider(data: ProviderCreate, user: Optional[User] = Depends(get_optional_user)):
+    db = get_db()
+    try:
+        # If setting as default, clear existing defaults for this provider
+        if data.is_default:
+            db.query(ProviderKey).filter(
+                ProviderKey.provider == data.provider,
+                ProviderKey.is_default == True
+            ).update({"is_default": False})
+
+        key = ProviderKey(
+            user_id=user.id if user else None,
+            name=data.name,
+            provider=data.provider,
+            api_key_encrypted=encrypt_key(data.api_key),
+            base_url=data.base_url,
+            is_default=data.is_default,
+            is_active=True,
+            created_at=datetime.utcnow(),
+        )
+        db.add(key)
+        db.commit()
+        db.refresh(key)
+        return {
+            "id": key.id,
+            "name": key.name,
+            "provider": key.provider,
+            "message": "Provider connected successfully"
+        }
+    finally:
+        db.close()
+
+
+@router.put("/api/v1/providers/{provider_id}")
+def update_provider(provider_id: int, data: ProviderUpdate):
+    db = get_db()
+    try:
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        if not key:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        if data.name is not None:
+            key.name = data.name
+        if data.api_key is not None:
+            key.api_key_encrypted = encrypt_key(data.api_key)
+        if data.base_url is not None:
+            key.base_url = data.base_url
+
+        db.commit()
+        return {"message": "Provider updated successfully"}
+    finally:
+        db.close()
+
+
+@router.delete("/api/v1/providers/{provider_id}")
+def delete_provider(provider_id: int):
+    db = get_db()
+    try:
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        if not key:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        db.delete(key)
+        db.commit()
+        return {"message": "Provider deleted successfully"}
+    finally:
+        db.close()
+
+
+@router.patch("/api/v1/providers/{provider_id}/default")
+def set_default_provider(provider_id: int):
+    db = get_db()
+    try:
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        if not key:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        # Clear all existing defaults
+        db.query(ProviderKey).filter(ProviderKey.is_default == True).update({"is_default": False})
+        key.is_default = True
+        db.commit()
+        return {"message": f"{key.name} set as default for all generations"}
+    finally:
+        db.close()
+
+
+@router.patch("/api/v1/providers/{provider_id}/toggle")
+def toggle_provider(provider_id: int):
+    db = get_db()
+    try:
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        if not key:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        key.is_active = not key.is_active
+        db.commit()
+        return {
+            "is_active": key.is_active,
+            "message": f"{key.name} {'activated' if key.is_active else 'deactivated'}"
+        }
+    finally:
+        db.close()
+
+
+@router.post("/api/v1/providers/{provider_id}/test")
+async def test_provider(provider_id: int):
+    db = get_db()
+    try:
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        if not key:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        api_key = decrypt_key(key.api_key_encrypted)
+        provider = key.provider.lower()
+        base_url = key.base_url
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                if provider == "openai":
+                    url = (base_url or "https://api.openai.com") + "/v1/models"
+                    async with session.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            return {"success": True, "message": "Connection successful — OpenAI API is reachable."}
+                        else:
+                            body = await resp.text()
+                            return {"success": False, "message": f"HTTP {resp.status}: {body[:200]}"}
+
+                elif provider == "anthropic":
+                    url = (base_url or "https://api.anthropic.com") + "/v1/messages"
+                    async with session.post(url,
+                        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                        json={"model": "claude-3-haiku-20240307", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        if resp.status in (200, 201):
+                            return {"success": True, "message": "Connection successful — Anthropic API is reachable."}
+                        else:
+                            body = await resp.text()
+                            return {"success": False, "message": f"HTTP {resp.status}: {body[:200]}"}
+
+                elif provider == "google_ai":
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            return {"success": True, "message": "Connection successful — Google AI API is reachable."}
+                        else:
+                            body = await resp.text()
+                            return {"success": False, "message": f"HTTP {resp.status}: {body[:200]}"}
+
+                elif provider in ("openrouter", "openai_compatible", "azure_openai"):
+                    url = (base_url or "https://openrouter.ai/api") + "/v1/models"
+                    async with session.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            return {"success": True, "message": f"Connection successful — {key.provider} is reachable."}
+                        else:
+                            body = await resp.text()
+                            return {"success": False, "message": f"HTTP {resp.status}: {body[:200]}"}
+
+                elif provider == "ollama":
+                    url = (base_url or "http://localhost:11434") + "/api/tags"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status == 200:
+                            return {"success": True, "message": "Connection successful — Ollama is reachable."}
+                        else:
+                            return {"success": False, "message": f"HTTP {resp.status}"}
+
+                elif provider == "lm_studio":
+                    url = (base_url or "http://localhost:1234") + "/v1/models"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status == 200:
+                            return {"success": True, "message": "Connection successful — LM Studio is reachable."}
+                        else:
+                            return {"success": False, "message": f"HTTP {resp.status}"}
+
+                else:
+                    # Generic OpenAI-compatible test
+                    url = (base_url or "https://api.example.com") + "/v1/models"
+                    async with session.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            return {"success": True, "message": "Connection successful."}
+                        else:
+                            body = await resp.text()
+                            return {"success": False, "message": f"HTTP {resp.status}: {body[:200]}"}
+
+        except aiohttp.ClientError as e:
+            return {"success": False, "message": f"Connection failed: {str(e)}"}
+        except Exception as e:
+            return {"success": False, "message": f"Test failed: {str(e)}"}
+
+    finally:
+        # Update last_used_at
+        key.last_used_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
+@router.get("/api/v1/providers/{provider_id}/models")
+async def fetch_provider_models(provider_id: int):
+    """Fetch available models from a configured provider."""
+    db = get_db()
+    try:
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        if not key:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        api_key = decrypt_key(key.api_key_encrypted)
+        provider = key.provider.lower()
+        base_url = key.base_url
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                if provider == "openai":
+                    url = (base_url or "https://api.openai.com") + "/v1/models"
+                    async with session.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            models = sorted([m["id"] for m in data.get("data", [])
+                                            if any(k in m["id"] for k in ("gpt", "o1", "o3", "o4"))])
+                            return {"models": models, "provider": key.name}
+                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+                elif provider == "anthropic":
+                    # Anthropic doesn't have a /models endpoint, return known models
+                    return {
+                        "models": [
+                            "claude-sonnet-4-20250514",
+                            "claude-3-5-haiku-20241022",
+                            "claude-3-opus-20240229",
+                            "claude-3-haiku-20240307",
+                        ],
+                        "provider": key.name
+                    }
+
+                elif provider == "google_ai":
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            models = sorted([m["name"].replace("models/", "") for m in data.get("models", [])
+                                            if "gemini" in m.get("name", "")])
+                            return {"models": models, "provider": key.name}
+                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+                elif provider in ("openrouter", "openai_compatible", "azure_openai"):
+                    url = (base_url or "https://openrouter.ai/api") + "/v1/models"
+                    async with session.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            models = sorted([m["id"] for m in data.get("data", [])])
+                            return {"models": models, "provider": key.name}
+                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+                elif provider == "ollama":
+                    url = (base_url or "http://localhost:11434") + "/api/tags"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            models = sorted([m["name"] for m in data.get("models", [])])
+                            return {"models": models, "provider": key.name}
+                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+                elif provider == "lm_studio":
+                    url = (base_url or "http://localhost:1234") + "/v1/models"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            models = sorted([m["id"] for m in data.get("data", [])])
+                            return {"models": models, "provider": key.name}
+                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+                elif provider == "cohere":
+                    url = (base_url or "https://api.cohere.ai") + "/v1/models"
+                    async with session.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            models = sorted([m.get("name", m.get("id", "")) for m in data.get("models", data.get("data", []))])
+                            return {"models": models, "provider": key.name}
+                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+                elif provider == "huggingface":
+                    # HuggingFace Inference API — return commonly used models
+                    return {
+                        "models": [
+                            "meta-llama/Meta-Llama-3-70B-Instruct",
+                            "mistralai/Mixtral-8x7B-Instruct-v0.1",
+                            "microsoft/Phi-3-mini-4k-instruct",
+                        ],
+                        "provider": key.name
+                    }
+
+                else:
+                    # Generic: try /v1/models
+                    url = (base_url or "https://api.example.com") + "/v1/models"
+                    async with session.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            models = sorted([m["id"] for m in data.get("data", [])])
+                            return {"models": models, "provider": key.name}
+                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+        except Exception as e:
+            return {"models": [], "error": str(e)}
+
+    finally:
+        db.close()
+

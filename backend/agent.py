@@ -1,0 +1,422 @@
+import json
+import re
+from models import Message
+from prompts import ARCHITECT_PROMPT, SURGEON_PROMPT
+import asyncio
+from fly_service import read_file_from_machine, get_file_tree
+from design_context import get_design_context_compact
+import litellm
+import os
+
+# Ensure litellm doesn't drop requests if local models are passed
+litellm.drop_params = True
+
+
+def _extract_json_block(text: str) -> str | None:
+    """Find the outermost JSON object or array in text using bracket depth tracking."""
+    start = None
+    open_char = None
+    close_char = None
+    depth = 0
+    in_string = False
+    escape = False
+
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+
+        if start is None and ch in ('{', '['):
+            start = i
+            open_char = ch
+            close_char = '}' if ch == '{' else ']'
+            depth = 1
+        elif start is not None:
+            if ch == open_char:
+                depth += 1
+            elif ch == close_char:
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None
+
+
+def collect_file_paths(tree_nodes: list, paths: list = None) -> list:
+    """Recursively collect all file paths from the tree structure."""
+    if paths is None:
+        paths = []
+    for node in tree_nodes:
+        if node.get("type") == "file":
+            paths.append(node["path"])
+        elif node.get("children"):
+            collect_file_paths(node["children"], paths)
+    return paths
+
+
+async def read_all_project_files(app_name: str, tree_data: dict) -> dict:
+    """Read the content of all source files from the sandbox."""
+    file_paths = collect_file_paths(tree_data.get("tree", []))
+    
+    source_extensions = {'.tsx', '.ts', '.jsx', '.js', '.css', '.json'}
+    skip_files = {'package.json', 'tsconfig.json', 'vite.config.ts', 'package-lock.json'}
+    
+    relevant_paths = [
+        p for p in file_paths
+        if any(p.endswith(ext) for ext in source_extensions) and
+        os.path.basename(p) not in skip_files and
+        'node_modules' not in p
+    ]
+    
+    file_contents = {}
+    for path in relevant_paths:
+        try:
+            content = await asyncio.to_thread(read_file_from_machine, app_name, path)
+            if content and content.strip():
+                file_contents[path] = content
+        except Exception as e:
+            print(f"Warning: Could not read {path}: {e}")
+    
+    return file_contents
+
+
+async def process_user_request(prompt: str, project_id: int, model_id: str, app_name: str = None, images: list = None, user_id: str = None):
+    """
+    Executes a streaming LLM call to generate multi-file modifications.
+    Parses the JSON in-flight to stream individual file contents to the editor.
+    """
+    # Resolve model via user's routing config if no specific model requested
+    api_key = None
+    api_base = None
+    if user_id and (not model_id or model_id == "default"):
+        from model_resolver import resolve_model_for_task
+        mc = resolve_model_for_task(user_id, "code_gen")
+        model_id = mc["model"]
+        api_key = mc.get("api_key")
+        api_base = mc.get("api_base")
+        print(f"\U0001f4bb Code Gen using: {model_id} via {mc['provider_name']}")
+
+    yield {"status": "analyzing", "message": f"Analyzing request using {model_id}..."}
+    
+    # 1. Read the FULL project state
+    file_tree_str = ""
+    all_files = {}
+    
+    if app_name:
+        tree_data = await asyncio.to_thread(get_file_tree, app_name)
+        file_tree_str = json.dumps(tree_data.get("tree", []), indent=2)
+        
+        yield {"status": "reading", "message": "Reading current project files..."}
+        all_files = await read_all_project_files(app_name, tree_data)
+    else:
+        file_tree_str = '[{"name": "App.tsx", "path": "src/App.tsx", "type": "file"}]'
+    
+    # 2. Build the full project context string
+    project_context = ""
+    if all_files:
+        for path, content in sorted(all_files.items()):
+            ext = path.rsplit('.', 1)[-1] if '.' in path else 'txt'
+            lang = {'tsx': 'tsx', 'ts': 'typescript', 'css': 'css', 'jsx': 'jsx', 'js': 'javascript'}.get(ext, ext)
+            project_context += f"\n--- {path} ---\n```{lang}\n{content}\n```\n"
+    else:
+        project_context = "\n(No existing files — this is a fresh project)\n"
+    
+    # 2b. Fetch design context (CDO design system + screen inventory)
+    design_ref = ""
+    try:
+        design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
+    except Exception as e:
+        print(f"Design context fetch skipped: {e}")
+
+    # 3. Construct LLM payload
+    system_prompt = SURGEON_PROMPT
+    user_prompt = f"""User Request: {prompt}
+{design_ref}
+Current project file tree:
+```json
+{file_tree_str}
+```
+
+Current project files:{project_context}
+
+Output a JSON object with a "files" array. Each entry has "file_path" and "content". Output ONLY valid JSON."""
+
+    yield {"status": "generating", "message": "Generating code..."}
+
+    # Pre-initialize streaming state so the except block can always reference them
+    # even if an exception fires before we reach the state machine setup below.
+    current_file: str | None = None
+    content_accumulator: str = ""
+    streamed_files: dict = {}
+    edits: list = []
+
+    try:
+        # 4. Look up configured provider credentials
+        llm_kwargs = {}
+        effective_model = model_id
+        try:
+            from provider_api import get_db, decrypt_key
+            from models import ProviderKey
+            db = get_db()
+            # Find the default active provider, or first active one
+            provider_key = db.query(ProviderKey).filter(
+                ProviderKey.is_active == True,
+                ProviderKey.is_default == True
+            ).first()
+            if not provider_key:
+                provider_key = db.query(ProviderKey).filter(
+                    ProviderKey.is_active == True
+                ).first()
+            if provider_key:
+                api_key = decrypt_key(provider_key.api_key_encrypted)
+                llm_kwargs["api_key"] = api_key
+                if provider_key.base_url:
+                    llm_kwargs["api_base"] = provider_key.base_url
+                
+                # Auto-prefix model ID for litellm routing based on provider type
+                ptype = provider_key.provider.lower()
+                if ptype == "lm_studio":
+                    # LM Studio expects /v1/chat/completions; litellm appends /chat/completions
+                    # so we need api_base to end with /v1
+                    base = llm_kwargs.get("api_base", "http://localhost:1234")
+                    if not base.rstrip("/").endswith("/v1"):
+                        llm_kwargs["api_base"] = base.rstrip("/") + "/v1"
+                    if not effective_model.startswith("openai/"):
+                        effective_model = f"openai/{effective_model}"
+                elif ptype in ("openai_compatible", "azure_openai"):
+                    if not effective_model.startswith("openai/"):
+                        effective_model = f"openai/{effective_model}"
+                elif ptype == "ollama":
+                    if not effective_model.startswith("ollama/"):
+                        effective_model = f"ollama/{effective_model}"
+                elif ptype == "anthropic":
+                    if not effective_model.startswith("anthropic/"):
+                        effective_model = f"anthropic/{effective_model}"
+                elif ptype == "google_ai":
+                    if not effective_model.startswith("gemini/"):
+                        effective_model = f"gemini/{effective_model}"
+                elif ptype == "cohere":
+                    if not effective_model.startswith("cohere/"):
+                        effective_model = f"cohere/{effective_model}"
+
+                # Update last_used_at
+                from datetime import datetime
+                provider_key.last_used_at = datetime.utcnow()
+                db.commit()
+                print(f"🔑 Using provider: {provider_key.name} ({ptype}), model: {effective_model}, base: {provider_key.base_url}")
+            db.close()
+        except Exception as e:
+            print(f"Provider lookup failed, falling back to env vars: {e}")
+
+        print(f"🚀 LiteLLM call: model={effective_model}, api_base={llm_kwargs.get('api_base', 'default')}")
+
+        # 5. Call LiteLLM with streaming
+        # Build user message — include images as vision blocks if provided
+        if images:
+            user_content: list = []
+            for data_url in images:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url}
+                })
+            if user_prompt:
+                user_content.append({"type": "text", "text": user_prompt})
+        else:
+            user_content = user_prompt
+
+        response = await litellm.acompletion(
+            model=effective_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=0.2,
+            stream=True,
+            **llm_kwargs
+        )
+        
+        # 5. Stream and parse in-flight using a state machine
+        full_response = ""
+        
+        # State machine for in-flight JSON parsing
+        current_file = None        # The file_path we're currently inside
+        inside_content = False     # Are we inside a "content" string value?
+        content_accumulator = ""   # Buffer for the current file's content
+        escape_next = False        # Next char is escaped
+        streamed_files = {}        # Fallback: files captured during streaming
+        last_processed_index = 0   # Track how far in full_response we've searched for markers
+        
+        async for chunk in response:
+            delta = chunk.choices[0].delta
+            if not delta.content:
+                continue
+                
+            token = delta.content
+            full_response += token
+            
+            # Process token chars if we are actively reading a file's content
+            if inside_content:
+                for char in token:
+                    if escape_next:
+                        # Handle escape sequences
+                        escape_map = {'n': '\n', 't': '\t', '"': '"', '\\': '\\', '/': '/'}
+                        actual_char = escape_map.get(char, char)
+                        content_accumulator += actual_char
+                        yield {"status": "code_token", "file": current_file, "token": actual_char}
+                        escape_next = False
+                    elif char == '\\':
+                        escape_next = True
+                    elif char == '"':
+                        # End of content string — file is complete
+                        inside_content = False
+                        streamed_files[current_file] = content_accumulator
+                        yield {"status": "file_stream_end", "file": current_file, "content": content_accumulator}
+                        # Advance last_processed_index past this file's content so we don't re-trigger
+                        last_processed_index = len(full_response)
+                        current_file = None
+                        content_accumulator = ""
+                        break # Stop processing this token's chars, wait for next file marker
+                    else:
+                        content_accumulator += char
+                        yield {"status": "code_token", "file": current_file, "token": char}
+            
+            # If we are NOT inside content, search the unprocessed portion of full_response for the next file
+            if not inside_content:
+                unprocessed = full_response[last_processed_index:]
+                
+                content_marker_re = r'"content"\s*:\s*"'
+                file_path_re = r'"file_path"\s*:\s*"([^"]*)"'
+                
+                # Search for the *first* content marker in the unprocessed text
+                marker_match = re.search(content_marker_re, unprocessed)
+                
+                if marker_match:
+                    # We found a new file!
+                    marker_end_local = marker_match.end()
+                    marker_start_global = last_processed_index + marker_match.start()
+                    
+                    # Look for the file_path preceding this marker
+                    preceding = full_response[last_processed_index:marker_start_global]
+                    file_paths = list(re.finditer(file_path_re, preceding))
+                    
+                    if file_paths:
+                        current_file = file_paths[-1].group(1)
+                    else:
+                        current_file = "unknown"
+                    
+                    inside_content = True
+                    escape_next = False
+                    content_accumulator = ""
+                    
+                    yield {"status": "file_stream_start", "file": current_file}
+                    
+                    # Advance last_processed_index to just after the `"content": "` marker
+                    last_processed_index += marker_end_local
+                    
+                    # The rest of the `unprocessed` text (after the marker) is actual file content!
+                    remaining_content = unprocessed[marker_end_local:]
+                    
+                    # Feed the remaining chars directly into the state machine logic
+                    for char in remaining_content:
+                        if escape_next:
+                            escape_map = {'n': '\n', 't': '\t', '"': '"', '\\': '\\', '/': '/'}
+                            actual_char = escape_map.get(char, char)
+                            content_accumulator += actual_char
+                            yield {"status": "code_token", "file": current_file, "token": actual_char}
+                            escape_next = False
+                        elif char == '\\':
+                            escape_next = True
+                        elif char == '"':
+                            inside_content = False
+                            streamed_files[current_file] = content_accumulator
+                            yield {"status": "file_stream_end", "file": current_file, "content": content_accumulator}
+                            # Update last_processed_index to where we found the closing quote
+                            # (This requires calculating the exact index, but simply setting it to len(full_response) works since token ends here or shortly after)
+                            last_processed_index = len(full_response) - len(remaining_content) + remaining_content.find('"') + 1
+                            current_file = None
+                            content_accumulator = ""
+                            break
+                        else:
+                            content_accumulator += char
+                            yield {"status": "code_token", "file": current_file, "token": char}
+
+        # 6. Parse the complete JSON to get final verified content
+        yield {"status": "stream_end"}
+        
+        edits = []
+        try:
+            clean = full_response.strip()
+            # Strip markdown fences
+            if "```json" in clean:
+                clean = clean.split("```json")[1].split("```")[0].strip()
+            elif "```" in clean:
+                clean = clean.split("```")[1].split("```")[0].strip()
+            
+            # Find outermost JSON block ({...} or [...]) via bracket matching
+            json_str = _extract_json_block(clean)
+            if json_str:
+                clean = json_str
+            
+            parsed_data = json.loads(clean)
+            
+            if isinstance(parsed_data, dict) and "files" in parsed_data:
+                files_list = parsed_data["files"]
+            elif isinstance(parsed_data, dict) and "content" in parsed_data:
+                files_list = [parsed_data]
+            elif isinstance(parsed_data, list):
+                files_list = parsed_data
+            else:
+                files_list = []
+
+            for file_entry in files_list:
+                file_path = file_entry.get("file_path", "src/App.tsx")
+                content = file_entry.get("content", "")
+                if content:
+                    edits.append({
+                        "file_path": file_path,
+                        "action": "write",
+                        "content": content
+                    })
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"JSON parse error (falling back to streamed files): {e}")
+            print(f"Raw response (first 500 chars): {full_response[:500]}")
+        
+        # Fallback: if JSON parsing failed or produced no edits, use streamed files
+        if not edits and streamed_files:
+            print(f"Using {len(streamed_files)} files captured during streaming as fallback")
+            for file_path, content in streamed_files.items():
+                if content:
+                    edits.append({
+                        "file_path": file_path,
+                        "action": "write",
+                        "content": content
+                    })
+        
+        if edits:
+            yield {"status": "execution_complete", "edits": edits}
+        else:
+            yield {"status": "error", "message": "No valid file outputs found in LLM response"}
+                
+    except Exception as e:
+        # Last resort: if streaming itself crashed, still try to use any files we captured
+        print(f"Agent Execution Error: {e}")
+        # Save any partially-streamed file that was in progress when the crash happened
+        if current_file and content_accumulator:
+            streamed_files[current_file] = content_accumulator
+            print(f"Saved partial file: {current_file} ({len(content_accumulator)} chars)")
+        if streamed_files:
+            print(f"Agent crashed but recovered {len(streamed_files)} streamed files")
+            edits = [{"file_path": fp, "action": "write", "content": c} for fp, c in streamed_files.items() if c]
+            if edits:
+                yield {"status": "stream_end"}
+                yield {"status": "execution_complete", "edits": edits}
+                return
+        yield {"status": "error", "message": f"LLM Generation failed: {str(e)}"}

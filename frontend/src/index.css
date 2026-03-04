@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/* Global: pointer cursor on all interactive elements */
+a,
+button,
+[role="button"],
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+select,
+summary,
+[tabindex]:not([tabindex="-1"]),
+label[for],
+[onclick] {
+    cursor: pointer !important;
+}
