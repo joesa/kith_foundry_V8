@@ -308,24 +308,44 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
                 unprocessed = full_response[last_processed_index:]
                 
                 content_marker_re = r'"content"\s*:\s*"'
-                file_path_re = r'"file_path"\s*:\s*"([^"]*)"'
+                # Support common path keys: file_path, filePath, path, filename, name
+                file_path_re = r'"(?:file_path|filePath|path|filename|name)"\s*:\s*"([^"]*)"'
                 
                 # Search for the *first* content marker in the unprocessed text
                 marker_match = re.search(content_marker_re, unprocessed)
                 
                 if marker_match:
-                    # We found a new file!
                     marker_end_local = marker_match.end()
                     marker_start_global = last_processed_index + marker_match.start()
                     
-                    # Look for the file_path preceding this marker
+                    # Look for the file_path preceding this content marker.
+                    # First try the window since last_processed_index; if that
+                    # fails, widen to the entire response up to this point
+                    # (handles cases where tokenisation splits the JSON object
+                    # across chunk boundaries).
                     preceding = full_response[last_processed_index:marker_start_global]
                     file_paths = list(re.finditer(file_path_re, preceding))
                     
+                    if not file_paths:
+                        broader = full_response[:marker_start_global]
+                        file_paths = list(re.finditer(file_path_re, broader))
+
                     if file_paths:
-                        current_file = file_paths[-1].group(1)
+                        candidate = file_paths[-1].group(1)
+                        # Guard against re-using a file_path that was already
+                        # fully streamed (its content marker already consumed).
+                        if candidate in streamed_files:
+                            all_fps = [m.group(1) for m in file_paths if m.group(1) not in streamed_files]
+                            current_file = all_fps[-1] if all_fps else None
+                        else:
+                            current_file = candidate
                     else:
-                        current_file = "unknown"
+                        current_file = None
+
+                    if current_file is None:
+                        # No valid file_path found — skip this content block
+                        last_processed_index += marker_end_local
+                        continue
                     
                     inside_content = True
                     escape_next = False
@@ -388,11 +408,25 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
                 files_list = [parsed_data]
             elif isinstance(parsed_data, list):
                 files_list = parsed_data
+            elif isinstance(parsed_data, dict):
+                # Some models nest under "data", "output", "result", etc.
+                files_list = []
+                for key in ("data", "output", "result", "edits"):
+                    if key in parsed_data and isinstance(parsed_data[key], list):
+                        files_list = parsed_data[key]
+                        break
             else:
                 files_list = []
 
             for file_entry in files_list:
-                file_path = file_entry.get("file_path", "src/App.tsx")
+                file_path = (
+                    file_entry.get("file_path")
+                    or file_entry.get("filePath")
+                    or file_entry.get("path")
+                    or file_entry.get("filename")
+                    or file_entry.get("name")
+                    or "src/App.tsx"
+                )
                 content = file_entry.get("content", "")
                 if content:
                     edits.append({
@@ -418,6 +452,9 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
         if edits:
             yield {"status": "execution_complete", "edits": edits}
         else:
+            # Debug: log snippet when parsing fails (helps diagnose model output format)
+            snippet = full_response[:800].replace("\n", " ") if full_response else "(empty)"
+            print(f"No valid file outputs. Response snippet: {snippet}...")
             yield {"status": "error", "message": "No valid file outputs found in LLM response"}
                 
     except Exception as e:

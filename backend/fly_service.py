@@ -397,6 +397,11 @@ class FlySandboxWorker:
 
     def start_vite(self) -> str:
         self._bridge_call("/start_vite")
+        # Ensure preview_url is always set — derive from app_name if somehow None
+        if not self.preview_url and self.app_name:
+            self.preview_url = f"https://{self.app_name}.fly.dev"
+        if not self.preview_url:
+            raise RuntimeError("start_vite: preview_url is not set and app_name is unknown")
         return self.preview_url
 
     def wait_vite_ready(self, timeout: float = 45.0) -> str:

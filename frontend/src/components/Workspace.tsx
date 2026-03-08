@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom";
 import Editor from "@monaco-editor/react";
-import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X } from "lucide-react";
+import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X, ListChecks, ChevronDown, ChevronRight, MessageSquare, PanelLeftClose } from "lucide-react";
 import { useFoundry } from "../hooks/useFoundry";
 import { useAutoSave } from "../hooks/useAutoSave";
 import { ModelSelector } from "./ModelSelector";
 import { FileExplorer } from "./FileExplorer";
 import { WelcomeScreen } from "./WelcomeScreen";
+import { EditorToolbar, DEFAULT_SETTINGS, type EditorSettings } from "./EditorToolbar";
+import { registerThemes } from "./EditorThemes";
 import { useAuth } from "../contexts/AuthContext";
 import { getApiBaseUrl } from "../lib/runtimeConfig";
 
@@ -42,13 +44,40 @@ function LiveCodeBox({ filename, content }: { filename: string; content: string 
 }
 
 function getLanguage(filename: string): string {
-    const ext = filename.split(".").pop() || "";
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
     const map: Record<string, string> = {
-        tsx: "typescript", ts: "typescript",
-        jsx: "javascript", js: "javascript",
-        css: "css", json: "json", html: "html",
-        md: "markdown", svg: "xml"
+        tsx: "typescript", ts: "typescript", mts: "typescript", cts: "typescript",
+        jsx: "javascript", js: "javascript", mjs: "javascript", cjs: "javascript",
+        css: "css", scss: "scss", less: "less",
+        json: "json", jsonc: "json",
+        html: "html", htm: "html",
+        md: "markdown", mdx: "markdown",
+        svg: "xml", xml: "xml",
+        yaml: "yaml", yml: "yaml",
+        py: "python", pyw: "python",
+        rs: "rust",
+        go: "go",
+        rb: "ruby",
+        java: "java",
+        kt: "kotlin",
+        swift: "swift",
+        c: "c", h: "c",
+        cpp: "cpp", hpp: "cpp", cc: "cpp",
+        cs: "csharp",
+        php: "php",
+        sh: "shell", bash: "shell", zsh: "shell",
+        sql: "sql",
+        graphql: "graphql", gql: "graphql",
+        dockerfile: "dockerfile",
+        toml: "ini",
+        env: "ini",
+        ini: "ini",
+        lua: "lua",
+        r: "r",
     };
+    const basename = filename.split("/").pop()?.toLowerCase() || "";
+    if (basename === "dockerfile" || basename.startsWith("dockerfile.")) return "dockerfile";
+    if (basename === "makefile") return "makefile";
     return map[ext] || "plaintext";
 }
 
@@ -66,19 +95,32 @@ export default function Workspace() {
     const [selectedModel, setSelectedModel] = useState("");
     const [showExplorer, setShowExplorer] = useState(false);
     const [showEditor, setShowEditor] = useState(false);
+    const [showActivity, setShowActivity] = useState(true);
+    const [showChat, setShowChat] = useState(true);
+    const [showMessages, setShowMessages] = useState(true);
     const [hasGenerated, setHasGenerated] = useState(false);
     const [chatWidth, setChatWidth] = useState(340);
     const [explorerWidth, setExplorerWidth] = useState(220);
     const [previewWidth, setPreviewWidth] = useState(420);
+    const [editorSettings, setEditorSettings] = useState<EditorSettings>(() => {
+        try {
+            const saved = localStorage.getItem("kith-editor-settings");
+            return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+        } catch { return DEFAULT_SETTINGS; }
+    });
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const editorRef = useRef<any>(null);
+    const monacoRef = useRef<any>(null);
     const bootstrapSentRef = useRef(false);
     const isDragging = useRef<string | null>(null);
     const startX = useRef(0);
     const startWidth = useRef(0);
 
-    // Auto-save manual editor changes to the database
-    useAutoSave(projectId, files);
+    // Auto-save manual editor changes to the database; reload preview when save succeeds
+    const reloadPreview = useCallback(() => {
+        if (previewUrl) setIframeSrc(`${previewUrl}?ts=${Date.now()}`);
+    }, [previewUrl]);
+    useAutoSave(projectId, files, 800, { onSaved: reloadPreview });
 
     // Drag resize handler
     const onMouseDown = useCallback((e: React.MouseEvent, pane: string) => {
@@ -121,6 +163,25 @@ export default function Workspace() {
             window.removeEventListener("mousemove", onMouseMove);
             window.removeEventListener("mouseup", onMouseUp);
         };
+    }, []);
+
+    const updateEditorSettings = useCallback((patch: Partial<EditorSettings>) => {
+        setEditorSettings(prev => {
+            const next = { ...prev, ...patch };
+            localStorage.setItem("kith-editor-settings", JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    const handleEditorBeforeMount = useCallback((monaco: any) => {
+        monacoRef.current = monaco;
+        registerThemes(monaco);
+    }, []);
+
+    const handleFindReplace = useCallback(() => {
+        if (editorRef.current) {
+            editorRef.current.getAction("editor.action.startFindReplaceAction")?.run();
+        }
     }, []);
 
     // Auto-scroll chat — on new messages, during streaming, and on status changes
@@ -285,13 +346,15 @@ export default function Workspace() {
         <>
             <div className="flex h-screen bg-[#0E0E11] text-zinc-100 overflow-hidden font-sans">
 
-                {/* PANE 1: Chat UI */}
-                <div style={{ width: chatWidth }} className="flex flex-col border-r border-zinc-800 bg-[#12121A] shrink-0">
-                    <div className="p-4 border-b border-zinc-800 flex flex-col gap-3">
-                        <div className="flex items-center justify-between">
-                            <h1 className="font-bold text-lg bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">Kith Foundry</h1>
-                            <div className="flex items-center gap-1">
-                                <button
+                {/* PANE 1: Chat UI — collapsible */}
+                <div style={{ width: showChat ? chatWidth : 48 }} className="flex flex-col border-r border-zinc-800 bg-[#12121A] shrink-0 overflow-hidden transition-[width] duration-200">
+                    {showChat ? (
+                        <>
+                            <div className="p-4 border-b border-zinc-800 flex flex-col gap-3">
+                                <div className="flex items-center justify-between">
+                                    <h1 className="font-bold text-lg bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">Kith Foundry</h1>
+                                    <div className="flex items-center gap-1">
+                                        <button
                                     onClick={() => projectId && navigate(`/project/${projectId}`)}
                                     disabled={!projectId}
                                     className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
@@ -314,6 +377,13 @@ export default function Workspace() {
                                 >
                                     <UserCircle className="w-3.5 h-3.5" />
                                 </Link>
+                                <button
+                                    onClick={() => setShowChat(false)}
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                                    title="Hide chat"
+                                >
+                                    <PanelLeftClose className="w-3.5 h-3.5" />
+                                </button>
                                 {hasGenerated && (
                                     <>
                                         <button
@@ -330,6 +400,13 @@ export default function Workspace() {
                                         >
                                             <Code2 className="w-3.5 h-3.5" />
                                         </button>
+                                        <button
+                                            onClick={() => setShowChat(v => !v)}
+                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showChat ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                            title={showChat ? "Hide chat" : "Show chat"}
+                                        >
+                                            <MessageSquare className="w-3.5 h-3.5" />
+                                        </button>
                                         <div className="w-px h-4 bg-zinc-700 mx-1" />
                                     </>
                                 )}
@@ -343,26 +420,39 @@ export default function Workspace() {
                         />
                     </div>
 
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {/* Messages toggle bar */}
+                    <button
+                        onClick={() => setShowMessages(v => !v)}
+                        className="flex items-center gap-2 w-full px-4 py-1.5 border-b border-zinc-800 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors cursor-pointer shrink-0"
+                    >
+                        {showMessages ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                        <span>Messages {messages.length > 0 ? `(${messages.length})` : ""}</span>
+                    </button>
+
+                    <div className={`overflow-y-auto p-4 space-y-3 transition-all duration-200 ${showMessages ? 'flex-1' : 'hidden'}`}>
                         {messages.length === 0 ? (
                             <div className="text-center text-zinc-500 mt-10">
                                 <p>What are we building today?</p>
                             </div>
                         ) : (
-                            messages.map((msg, i) => (
-                                <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                                    <div className={`px-3 py-2 rounded-lg max-w-[90%] text-sm ${msg.role === 'user'
-                                        ? 'bg-indigo-600 text-white rounded-br-none'
-                                        : msg.content.startsWith('✓')
-                                            ? 'bg-green-900/30 text-green-300 border border-green-800/40 rounded-bl-none'
-                                            : msg.content.startsWith('Error')
-                                                ? 'bg-red-900/30 text-red-300 border border-red-800/40 rounded-bl-none'
-                                                : 'bg-zinc-800/80 text-zinc-300 rounded-bl-none'
-                                        }`}>
-                                        {msg.content}
+                            messages.map((msg, i) => {
+                                const isActivity = msg.role !== 'user' && (msg.content.startsWith('✓') || msg.content.startsWith('Saving'));
+                                if (isActivity && (!showActivity || showExplorer)) return null;
+                                return (
+                                    <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                                        <div className={`px-3 py-2 rounded-lg max-w-[90%] text-sm ${msg.role === 'user'
+                                            ? 'bg-indigo-600 text-white rounded-br-none'
+                                            : msg.content.startsWith('✓')
+                                                ? 'bg-green-900/30 text-green-300 border border-green-800/40 rounded-bl-none'
+                                                : msg.content.startsWith('Error')
+                                                    ? 'bg-red-900/30 text-red-300 border border-red-800/40 rounded-bl-none'
+                                                    : 'bg-zinc-800/80 text-zinc-300 rounded-bl-none'
+                                            }`}>
+                                            {msg.content}
+                                        </div>
                                     </div>
-                                </div>
-                            ))
+                                );
+                            })
                         )}
                         {isStreaming && streamingFile ? (
                             <LiveCodeBox
@@ -455,26 +545,60 @@ export default function Workspace() {
                             onChange={handleImageAttach}
                         />
                     </div>
+                        </>
+                    ) : (
+                        <button
+                            onClick={() => setShowChat(true)}
+                            className="w-full h-full min-h-[200px] flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors cursor-pointer border-0"
+                            title="Show chat"
+                        >
+                            <MessageSquare className="w-6 h-6" />
+                            <span className="text-[10px] font-medium">Chat</span>
+                        </button>
+                    )}
                 </div>
 
-                {/* Resize Handle: Chat ↔ Explorer/Editor */}
-                <div
-                    onMouseDown={(e) => onMouseDown(e, "chat")}
-                    className="w-1 cursor-col-resize hover:bg-indigo-500/40 active:bg-indigo-500/60 bg-transparent transition-colors shrink-0 relative group"
-                >
-                    <div className="absolute inset-y-0 -left-1 -right-1" />
-                </div>
+                {/* Resize Handle: Chat ↔ Explorer/Editor (hidden when chat collapsed) */}
+                {showChat && (
+                    <div
+                        onMouseDown={(e) => onMouseDown(e, "chat")}
+                        className="w-1 cursor-col-resize hover:bg-indigo-500/40 active:bg-indigo-500/60 bg-transparent transition-colors shrink-0 relative group"
+                    >
+                        <div className="absolute inset-y-0 -left-1 -right-1" />
+                    </div>
+                )}
 
-                {/* PANE 2: File Explorer */}
+                {/* PANE 2: File Explorer + Activity Log */}
                 {showExplorer && (
                     <>
-                        <div style={{ width: explorerWidth }} className="border-r border-zinc-800 shrink-0">
-                            <FileExplorer
-                                tree={fileTree}
-                                activeFile={activeFile}
-                                onFileSelect={handleFileSelect}
-                                streamingFile={streamingFile}
-                            />
+                        <div style={{ width: explorerWidth }} className="flex flex-col border-r border-zinc-800 shrink-0">
+                            <div className="flex-1 min-h-0 overflow-hidden">
+                                <FileExplorer
+                                    tree={fileTree}
+                                    activeFile={activeFile}
+                                    onFileSelect={handleFileSelect}
+                                    streamingFile={streamingFile}
+                                />
+                            </div>
+                            {showActivity && (() => {
+                                const activityMsgs = messages.filter(m => m.role !== 'user' && (m.content.startsWith('✓') || m.content.startsWith('Saving')));
+                                if (activityMsgs.length === 0) return null;
+                                return (
+                                    <div className="border-t border-zinc-800 max-h-[45%] flex flex-col shrink-0">
+                                        <div className="px-3 py-2 flex items-center justify-between border-b border-zinc-800/50">
+                                            <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Activity</span>
+                                            <span className="text-[10px] text-zinc-600">{activityMsgs.length}</span>
+                                        </div>
+                                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                                            {activityMsgs.map((msg, i) => (
+                                                <div key={i} className="px-2 py-1 rounded text-[11px] bg-green-900/20 text-green-300/80 border border-green-900/20 truncate">
+                                                    {msg.content}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                );
+                            })()}
                         </div>
                         {/* Resize Handle: Explorer ↔ Editor */}
                         <div
@@ -514,30 +638,86 @@ export default function Workspace() {
                             ))}
                         </div>
 
+                        {/* Breadcrumb */}
+                        <div className="flex items-center gap-1 px-3 py-1 bg-[#0F0F17] border-b border-zinc-800/40 text-[11px] text-zinc-500 overflow-x-auto scrollbar-none">
+                            {activeFile.split("/").map((seg, i, arr) => (
+                                <span key={i} className="flex items-center gap-1 shrink-0">
+                                    {i > 0 && <ChevronRight className="w-2.5 h-2.5 opacity-40" />}
+                                    <span className={i === arr.length - 1 ? "text-zinc-300" : "hover:text-zinc-300 cursor-default"}>{seg}</span>
+                                </span>
+                            ))}
+                        </div>
+
+                        {/* Editor Toolbar */}
+                        <EditorToolbar
+                            settings={editorSettings}
+                            onChange={updateEditorSettings}
+                            onFindReplace={handleFindReplace}
+                        />
+
                         {/* Monaco Editor */}
                         <div className="flex-1 relative">
                             <Editor
                                 height="100%"
                                 language={getLanguage(activeFile)}
-                                theme="vs-dark"
+                                theme={editorSettings.theme}
                                 path={activeFile}
                                 value={files[activeFile] || "// File not loaded yet"}
+                                beforeMount={handleEditorBeforeMount}
                                 onMount={(editor) => { editorRef.current = editor; }}
                                 options={{
-                                    minimap: { enabled: false },
-                                    fontSize: 13,
+                                    minimap: { enabled: editorSettings.minimap },
+                                    fontSize: editorSettings.fontSize,
+                                    tabSize: editorSettings.tabSize,
                                     fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace",
-                                    fontLigatures: true,
+                                    fontLigatures: editorSettings.fontLigatures,
                                     padding: { top: 12 },
                                     scrollBeyondLastLine: false,
-                                    wordWrap: 'on',
-                                    lineNumbers: 'on',
+                                    wordWrap: editorSettings.wordWrap,
+                                    lineNumbers: editorSettings.lineNumbers,
                                     renderLineHighlight: 'gutter',
-                                    bracketPairColorization: { enabled: true },
+                                    bracketPairColorization: { enabled: editorSettings.bracketPairColorization },
                                     guides: { bracketPairs: true, indentation: true },
                                     smoothScrolling: true,
                                     cursorSmoothCaretAnimation: "on",
+                                    cursorBlinking: editorSettings.cursorBlinking,
+                                    renderWhitespace: editorSettings.renderWhitespace,
+                                    stickyScroll: { enabled: editorSettings.stickyScroll },
                                     readOnly: isStreaming && streamingFile === activeFile,
+                                    suggest: {
+                                        showKeywords: true,
+                                        showSnippets: true,
+                                        showClasses: true,
+                                        showFunctions: true,
+                                        showVariables: true,
+                                        showModules: true,
+                                        showProperties: true,
+                                        showInterfaces: true,
+                                        showConstants: true,
+                                    },
+                                    quickSuggestions: { other: true, comments: false, strings: true },
+                                    parameterHints: { enabled: true },
+                                    autoClosingBrackets: "always",
+                                    autoClosingQuotes: "always",
+                                    autoIndent: "full",
+                                    formatOnPaste: true,
+                                    linkedEditing: true,
+                                    colorDecorators: true,
+                                    folding: true,
+                                    foldingHighlight: true,
+                                    showFoldingControls: "mouseover",
+                                    matchBrackets: "always",
+                                    occurrencesHighlight: "singleFile",
+                                    selectionHighlight: true,
+                                    dragAndDrop: true,
+                                    links: true,
+                                    find: {
+                                        addExtraSpaceOnTop: true,
+                                        autoFindInSelection: "multiline",
+                                        seedSearchStringFromSelection: "selection",
+                                    },
+                                    hover: { enabled: true, delay: 300 },
+                                    inlayHints: { enabled: "on" },
                                 }}
                                 onChange={(value) => {
                                     if (value !== undefined && !(isStreaming && streamingFile === activeFile)) {
@@ -575,10 +755,11 @@ export default function Workspace() {
                             <>
                                 <button
                                     onClick={() => setIframeSrc(`${previewUrl}?ts=${Date.now()}`)}
-                                    className="p-1 hover:bg-zinc-700 rounded text-zinc-400"
+                                    className="flex items-center gap-1.5 px-2 py-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-[11px] font-medium"
                                     title="Refresh preview"
                                 >
                                     <RefreshCw className="w-3.5 h-3.5" />
+                                    <span>Refresh</span>
                                 </button>
                                 <button
                                     onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
@@ -596,6 +777,7 @@ export default function Workspace() {
                             <WelcomeScreen />
                         ) : (
                             <iframe
+                                key={iframeSrc}
                                 ref={(el) => {
                                     if (!el) return;
                                     el.onload = () => {

@@ -74,12 +74,22 @@ export const nhostAuth: AuthClient = nhost
           async getAccessToken() {
               const session = nhost.auth.getSession();
               if (!session) return null;
-              // Refresh session to ensure we have a valid (non-expired) access token.
-              // On refresh failure, fall back to current token; backend will reject if expired.
+
+              // Only proactively refresh if the access token expires within 60 seconds.
+              // Avoids hammering /v1/token on every API call.
               try {
+                  const token = nhost.auth.getAccessToken();
+                  if (token) {
+                      // Decode exp claim from JWT payload (no verification needed here)
+                      const payload = JSON.parse(atob(token.split(".")[1]));
+                      const expiresAt = (payload.exp ?? 0) * 1000;
+                      const needsRefresh = expiresAt - Date.now() < 60_000;
+                      if (!needsRefresh) return token;
+                  }
+                  // Token missing or near expiry — attempt refresh
                   await nhost.auth.refreshSession();
               } catch {
-                  /* ignore — use current token, 401 will trigger signOut */
+                  /* ignore — use current token, 401 will trigger signOut via useApiFetch */
               }
               return nhost.auth.getAccessToken() ?? null;
           },

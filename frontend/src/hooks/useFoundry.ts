@@ -146,14 +146,15 @@ export function useFoundry(projectId?: string) {
                     setMessages(prev => [...prev, { role: "system", content: data.message }]);
                 }
             } else if (data.type === "sandbox_ready") {
-                setPreviewUrl(data.previewUrl);
-                previewUrlRef.current = data.previewUrl;
+                const pUrl: string | null = data.previewUrl && data.previewUrl !== "null" ? data.previewUrl : null;
+                setPreviewUrl(pUrl);
+                previewUrlRef.current = pUrl;
                 if (typeof data.fileCount === "number") {
                     setHasExistingFiles(data.fileCount > 0);
                 }
                 setMessages(prev => [...prev, { role: "system", content: "Sandbox is ready and connected." }]);
                 // Backend already polled health — load preview
-                setIframeSrc(`${data.previewUrl}?ts=${Date.now()}`);
+                if (pUrl) setIframeSrc(`${pUrl}?ts=${Date.now()}`);
             } else if (data.type === "file_tree") {
                 // Received the sandbox file tree
                 console.log("File tree received:", data.tree);
@@ -167,7 +168,7 @@ export function useFoundry(projectId?: string) {
                     setMessages(data.messages);
                 }
             } else if (data.type === "file_stream_start") {
-                // A new file is being streamed by the LLM
+                if (!data.file || data.file === "unknown") return;
                 console.log(`Streaming file: ${data.file}`);
                 setIsStreaming(true);
                 setStreamingFile(data.file);
@@ -199,7 +200,7 @@ export function useFoundry(projectId?: string) {
                     }, 50);
                 }
             } else if (data.type === "file_stream_end") {
-                // File streaming complete — set final verified content
+                if (!data.file || data.file === "unknown") return;
                 console.log(`File stream complete: ${data.file}`);
                 // Clear any pending flush
                 if (flushTimer.current) {
@@ -219,7 +220,7 @@ export function useFoundry(projectId?: string) {
                 setStreamingFile(null);
                 streamBuffer.current = "";
             } else if (data.type === "file_written") {
-                // A file was written to the sandbox — update local state
+                if (!data.file || data.file === "unknown") return;
                 console.log(`File written: ${data.file}`);
                 setFiles(prev => ({
                     ...prev,

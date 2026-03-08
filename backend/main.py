@@ -200,10 +200,15 @@ storage_service.ensure_bucket_exists()
 
 app = FastAPI()
 
+# Allow all origins in development — restricts to explicit list in production.
+# Covers localhost, WSL IPs (172.x.x.x / 192.168.x.x) and any other dev hostname.
+_PROD_ORIGINS = [
+    "https://kith-foundry.fly.dev",  # update with your prod domain
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=["*"] if os.getenv("ENVIRONMENT", "development") != "production" else _PROD_ORIGINS,
+    allow_credentials=False,  # must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -453,6 +458,30 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
         try:
             health = await asyncio.to_thread(worker.execute, "health_check", None, 10.0)
             if health == "ok":
+                # Reusing worker — but we must restore files so the preview shows current
+                # state (not scaffold) after refresh/re-login. Fly machines can be recycled.
+                stored_files = _load_project_files(db, project_id)
+                if stored_files:
+                    db_fallback = {f.file_path: f.content for f in stored_files if f.content}
+                    file_paths = [f.file_path for f in stored_files]
+                    contents = await storage_service.download_project_files(
+                        project_id, file_paths, db_fallback=db_fallback
+                    )
+                    batch = [
+                        {"file_path": fp, "content": contents.get(fp, "")}
+                        for fp in file_paths
+                        if contents.get(fp, "").strip()
+                    ]
+                    if batch:
+                        await asyncio.to_thread(worker.execute, "write_files", batch)
+                        await _send_json(websocket, {
+                            "type": "status", "status": "booting_sandbox",
+                            "message": "Syncing project files..."
+                        })
+                        try:
+                            await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
+                        except Exception as e:
+                            print(f"[sandbox] wait_vite_ready after reuse restore timed out: {e}")
                 print(f"[sandbox] Reusing existing sandbox {worker.sandbox_id}, Vite healthy at {worker.preview_url}")
                 return worker, worker.preview_url
             else:
@@ -505,6 +534,17 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
     })
     preview_url = await asyncio.to_thread(worker.execute, "start_vite")
 
+    # Wait for Vite to finish initial compilation (especially when user files
+    # were restored — Vite needs to compile them before the iframe can show them)
+    await _send_json(websocket, {
+        "type": "status", "status": "booting_sandbox",
+        "message": "Compiling preview..."
+    })
+    try:
+        await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
+    except Exception as e:
+        print(f"[sandbox] wait_vite_ready timed out (non-fatal): {e}")
+
     # Persist preview URL
     project.preview_url = preview_url
     project.updated_at = datetime.utcnow()
@@ -540,6 +580,22 @@ async def save_project_files(
         print(f"[save] Storage upload error (non-fatal, DB metadata saved): {e}")
     project.updated_at = datetime.utcnow()
     db.commit()
+
+    # Write saved files to sandbox so preview reflects changes immediately
+    if edits:
+        try:
+            worker = await asyncio.to_thread(get_or_create_worker, project_id)
+            batch = [{"file_path": e["file_path"], "content": e.get("content", "")} for e in edits if (e.get("content") or "").strip()]
+            if batch and worker.is_alive:
+                await asyncio.to_thread(worker.execute, "write_files", batch)
+                # Wait for Vite to rebuild so frontend reload shows updated UI
+                try:
+                    await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 30.0)
+                except Exception as ve:
+                    print(f"[save] wait_vite_ready (non-fatal): {ve}")
+        except Exception as e:
+            print(f"[save] Sandbox write error (non-fatal): {e}")
+
     return {"saved": len(edits)}
 
 
@@ -597,6 +653,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
         # Restore files + chat history to frontend
         await _restore_project_state(websocket, db, project_id)
+
+        # If the project already has files, wait for Vite to finish compiling
+        # then reload the preview so the user sees their app — not the placeholder.
+        if file_count > 0 and worker and preview_url:
+            try:
+                await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
+            except Exception:
+                pass  # non-fatal — preview may still load
+            await _send_json(websocket, {
+                "type": "reload_preview",
+                "url": preview_url,
+            })
+
         await _send_json(websocket, {"type": "status", "status": "idle"})
 
     except Exception as init_err:
@@ -823,3 +892,8 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         # Keep sandbox alive across reconnects — only release on explicit project deletion
         db.close()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=_PORT, reload=True)

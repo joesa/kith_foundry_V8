@@ -6,16 +6,20 @@ import { useAuth } from "../contexts/AuthContext";
  * Debounced auto-save hook for manual Monaco Editor changes.
  * Sends changed files to POST /api/v1/projects/{project_id}/save
  * after the user stops typing for `delayMs` (default 1500ms).
+ * @param onSaved Callback when save succeeds; use to trigger preview reload.
  */
 export function useAutoSave(
     projectId: string | undefined,
     files: Record<string, string>,
     delayMs: number = 1500,
+    options?: { onSaved?: () => void },
 ) {
     const { getAccessToken } = useAuth();
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastSavedRef = useRef<Record<string, string>>({});
     const isSavingRef = useRef(false);
+    const onSavedRef = useRef(options?.onSaved);
+    onSavedRef.current = options?.onSaved;
 
     // Compute diff: only send files whose content actually changed
     const getDirtyFiles = useCallback((): Record<string, string> => {
@@ -53,6 +57,7 @@ export function useAutoSave(
                 for (const [path, content] of Object.entries(dirty)) {
                     lastSavedRef.current[path] = content;
                 }
+                onSavedRef.current?.();
             }
         } catch (err) {
             console.warn("[useAutoSave] save failed:", err);
