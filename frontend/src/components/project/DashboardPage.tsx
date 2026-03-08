@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
+import { useApiFetch } from "../../hooks/useApiFetch";
 import { motion } from "framer-motion";
-import { Plus, FolderOpen, Clock, ChevronRight, Sparkles } from "lucide-react";
-import { getApiBaseUrl } from "../../lib/runtimeConfig";
+import { Plus, FolderOpen, Clock, ChevronRight, Sparkles, Trash2, Bookmark } from "lucide-react";
 
 interface ProjectSummary {
     id: string;
@@ -15,29 +15,54 @@ interface ProjectSummary {
 }
 
 export default function DashboardPage() {
-    const { getAccessToken } = useAuth();
+    const { loading: authLoading } = useAuth();
+    const apiFetch = useApiFetch();
     const navigate = useNavigate();
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
     const [loading, setLoading] = useState(true);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [hoveredId, setHoveredId] = useState<string | null>(null);
+    const [savedCount, setSavedCount] = useState<number | null>(null);
 
     useEffect(() => {
-        fetchProjects();
-    }, []);
-
-    const fetchProjects = async () => {
-        try {
-            const token = await getAccessToken();
-            const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (resp.ok) {
-                const data = await resp.json();
-                setProjects(data.projects || []);
+        if (authLoading) return;
+        const fetchProjects = async () => {
+            try {
+                const resp = await apiFetch("/api/v1/projects");
+                if (resp.ok) {
+                    const data = await resp.json();
+                    setProjects(data.projects || []);
+                }
+            } catch (e) {
+                console.error("Failed to fetch projects:", e);
+            } finally {
+                setLoading(false);
             }
+        };
+        const fetchSavedCount = async () => {
+            try {
+                const resp = await apiFetch("/api/v1/ideation/saved");
+                if (resp.ok) {
+                    const data = await resp.json();
+                    setSavedCount((data.saved_ideas || []).length);
+                }
+            } catch {}
+        };
+        fetchProjects();
+        fetchSavedCount();
+    }, [authLoading, apiFetch]);
+
+    const handleDelete = async (e: React.MouseEvent, project: ProjectSummary) => {
+        e.stopPropagation();
+        if (!window.confirm(`Delete "${project.name}"? This cannot be undone.`)) return;
+        setDeletingId(project.id);
+        try {
+            await apiFetch(`/api/v1/projects/${project.id}`, { method: "DELETE" });
+            setProjects(prev => prev.filter(p => p.id !== project.id));
         } catch (e) {
-            console.error("Failed to fetch projects:", e);
+            console.error("Failed to delete project:", e);
         } finally {
-            setLoading(false);
+            setDeletingId(null);
         }
     };
 
@@ -75,19 +100,53 @@ export default function DashboardPage() {
     return (
         <div className="max-w-6xl mx-auto px-6 py-10">
             {/* Header */}
-            <div className="flex items-center justify-between mb-10">
+            <div className="flex items-center justify-between mb-6">
                 <div>
                     <h1 className="text-3xl font-bold text-white">Your Projects</h1>
                     <p className="text-zinc-500 mt-1">Build, iterate, and deploy</p>
                 </div>
-                <button
-                    onClick={() => navigate("/ideation")}
-                    className="flex items-center gap-2 h-11 px-6 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white font-medium hover:from-purple-500 hover:to-purple-400 transition-all shadow-lg shadow-purple-500/20"
-                >
-                    <Plus className="w-4 h-4" />
-                    New Project
-                </button>
+                <div className="flex items-center gap-3">
+                    <button
+                        onClick={() => navigate("/ideation/saved")}
+                        className="flex items-center gap-2 h-11 px-5 rounded-xl border border-zinc-700 bg-zinc-800/50 text-zinc-300 font-medium hover:bg-zinc-700 hover:text-white transition-all"
+                    >
+                        <Bookmark className="w-4 h-4 text-amber-400" />
+                        Saved Ideas
+                        {savedCount !== null && savedCount > 0 && (
+                            <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">
+                                {savedCount}
+                            </span>
+                        )}
+                    </button>
+                    <button
+                        onClick={() => navigate("/ideation")}
+                        className="flex items-center gap-2 h-11 px-6 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white font-medium hover:from-purple-500 hover:to-purple-400 transition-all shadow-lg shadow-purple-500/20"
+                    >
+                        <Plus className="w-4 h-4" />
+                        New Project
+                    </button>
+                </div>
             </div>
+
+            {/* Saved ideas ready-to-build banner */}
+            {savedCount !== null && savedCount > 0 && (
+                <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    onClick={() => navigate("/ideation/saved")}
+                    className="mb-6 flex items-center justify-between gap-4 px-5 py-3.5 rounded-xl border border-amber-500/20 bg-amber-500/5 cursor-pointer hover:bg-amber-500/10 transition-colors"
+                >
+                    <div className="flex items-center gap-3">
+                        <Bookmark className="w-4 h-4 text-amber-400 shrink-0" />
+                        <p className="text-sm text-amber-300/90">
+                            You have <span className="font-bold">{savedCount}</span> saved idea{savedCount !== 1 ? "s" : ""} ready to build.
+                        </p>
+                    </div>
+                    <span className="text-xs text-amber-400 font-medium whitespace-nowrap flex items-center gap-1">
+                        View &amp; Build <ChevronRight className="w-3.5 h-3.5" />
+                    </span>
+                </motion.div>
+            )}
 
             {/* Projects grid */}
             {loading ? (
@@ -115,6 +174,15 @@ export default function DashboardPage() {
                         <Plus className="w-4 h-4" />
                         New Project
                     </button>
+                    {savedCount !== null && savedCount > 0 && (
+                        <button
+                            onClick={() => navigate("/ideation/saved")}
+                            className="flex items-center gap-2 h-11 px-6 rounded-xl border border-amber-500/20 bg-amber-500/5 text-amber-300 font-medium hover:bg-amber-500/10 transition-all"
+                        >
+                            <Bookmark className="w-4 h-4" />
+                            Build a Saved Idea ({savedCount})
+                        </button>
+                    )}
                 </motion.div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -124,20 +192,35 @@ export default function DashboardPage() {
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: i * 0.05 }}
+                            onMouseEnter={() => setHoveredId(project.id)}
+                            onMouseLeave={() => setHoveredId(null)}
                             onClick={() => {
+                                if (deletingId === project.id) return;
                                 if (project.status === "ideation" || project.status === "csuite_pending") {
                                     navigate(`/csuite/${project.id}`);
                                 } else {
                                     navigate(`/project/${project.id}`);
                                 }
                             }}
-                            className="group bg-[#12121A] border border-zinc-800/50 rounded-xl p-5 hover:border-purple-500/30 hover:bg-[#14141E] transition-all cursor-pointer"
+                            className="relative bg-[#12121A] border border-zinc-800/50 rounded-xl p-5 hover:border-purple-500/30 hover:bg-[#14141E] transition-all cursor-pointer"
                         >
+                            {/* Delete button */}
+                            {hoveredId === project.id && (
+                                <button
+                                    onClick={(e) => handleDelete(e, project)}
+                                    disabled={deletingId === project.id}
+                                    className="absolute top-3 right-3 w-7 h-7 rounded-lg flex items-center justify-center bg-red-500/10 hover:bg-red-500/25 border border-red-500/20 text-red-400 disabled:opacity-50 z-10"
+                                    title="Delete project"
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                            )}
+
                             <div className="flex items-start justify-between mb-3">
                                 <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500/20 to-indigo-500/20 flex items-center justify-center">
                                     <FolderOpen className="w-5 h-5 text-purple-400" />
                                 </div>
-                                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${statusColors[project.status] || statusColors.ideation}`}>
+                                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${hoveredId === project.id ? "mr-8" : ""} ${statusColors[project.status] || statusColors.ideation}`}>
                                     {statusLabels[project.status] || project.status}
                                 </span>
                             </div>

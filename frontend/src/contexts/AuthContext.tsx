@@ -1,10 +1,12 @@
-import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
-import { supabase } from "../lib/supabase";
-import type { User, Session } from "@supabase/supabase-js";
+import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from "react";
+import { getAuth } from "../lib/auth";
+import type { AuthUser, AuthSession, AuthClient } from "../lib/auth";
+
+export type { AuthUser, AuthSession };
 
 interface AuthContextType {
-    user: User | null;
-    session: Session | null;
+    user: AuthUser | null;
+    session: AuthSession | null;
     loading: boolean;
     signUp: (email: string, password: string) => Promise<{ error: string | null }>;
     signIn: (email: string, password: string) => Promise<{ error: string | null }>;
@@ -15,53 +17,76 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const [user, setUser] = useState<User | null>(null);
-    const [session, setSession] = useState<Session | null>(null);
+    const [user, setUser] = useState<AuthUser | null>(null);
+    const [session, setSession] = useState<AuthSession | null>(null);
     const [loading, setLoading] = useState(true);
+    const authRef = useRef<AuthClient | null>(null);
 
     useEffect(() => {
-        // Get initial session
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            setSession(session);
-            setUser(session?.user ?? null);
-            setLoading(false);
-        });
+        let unsub: () => void = () => {};
+        let settled = false;               // true after initial auth state is determined
+        getAuth()
+            .then((auth) => {
+                if (!auth) {
+                    setLoading(false);
+                    return;
+                }
+                authRef.current = auth;
 
-        // Listen for auth changes
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-            setSession(session);
-            setUser(session?.user ?? null);
-            setLoading(false);
-        });
+                // Subscribe to auth state changes FIRST — Nhost fires this once
+                // on startup after it restores session from local storage.
+                unsub = auth.onAuthStateChange((s) => {
+                    setSession(s);
+                    setUser(s?.user ?? null);
+                    if (!settled) {
+                        settled = true;
+                        setLoading(false);
+                    }
+                });
 
-        return () => subscription.unsubscribe();
+                // Fallback: if onAuthStateChange doesn't fire within 3s
+                // (e.g. no stored session), stop loading anyway.
+                setTimeout(() => {
+                    if (!settled) {
+                        settled = true;
+                        // One last sync check
+                        auth.getSession()
+                            .then((s) => {
+                                setSession(s);
+                                setUser(s?.user ?? null);
+                            })
+                            .catch(() => {})
+                            .finally(() => setLoading(false));
+                    }
+                }, 3000);
+            })
+            .catch(() => setLoading(false));
+        return () => unsub();
     }, []);
 
     const signUp = useCallback(async (email: string, password: string) => {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) return { error: error.message };
-        return { error: null };
+        const auth = authRef.current;
+        if (!auth) return { error: "Auth not ready" };
+        const { error } = await auth.signUp(email, password);
+        return { error };
     }, []);
 
     const signIn = useCallback(async (email: string, password: string) => {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) return { error: error.message };
-        return { error: null };
+        const auth = authRef.current;
+        if (!auth) return { error: "Auth not ready" };
+        const { error } = await auth.signIn(email, password);
+        return { error };
     }, []);
 
     const signOut = useCallback(async () => {
-        await supabase.auth.signOut();
+        const auth = authRef.current;
+        if (auth) await auth.signOut();
     }, []);
 
     const getAccessToken = useCallback(async () => {
-        // Try refreshing the session to get a guaranteed-fresh token
-        const { data, error } = await supabase.auth.refreshSession();
-        if (!error && data.session?.access_token) {
-            return data.session.access_token;
-        }
-        // Fallback to current session
-        const { data: { session: current } } = await supabase.auth.getSession();
-        return current?.access_token ?? null;
+        const auth = authRef.current;
+        if (!auth) return null;
+        return await auth.getAccessToken();
     }, []);
 
     return (

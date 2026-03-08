@@ -1,16 +1,33 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import os
+import sys
+
+# Fix Anaconda SSL_CERT_FILE pointing to a non-existent path.
+# Conda activation scripts set this env var, but the cert file may not exist
+# in the venv or the path may be stale — causing FileNotFoundError in ssl.py.
+for _ssl_var in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+    _val = os.environ.get(_ssl_var, "")
+    if _val and not os.path.exists(_val):
+        del os.environ[_ssl_var]
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import asyncio
 from dotenv import load_dotenv
 load_dotenv()
 import uuid
+import signal
+import atexit
+import socket
+import subprocess
 from datetime import datetime
-import requests as http_requests
-from fly_service import create_and_boot_sandbox, get_file_tree, write_batch_to_machine, wake_sandbox_if_needed
 from agent import process_user_request
-from models import Base, engine, SessionLocal, Project, File, Message
-from auth import get_current_user_ws
+from error_resolver import attempt_fix, reset_fix_cycle
+
+from fly_service import get_or_create_worker, release_worker
+from models import Base, engine, SessionLocal, Project, File, Message, get_db
+from auth import get_current_user_ws, get_current_user
+import storage_service
 import models_api
 import provider_api
 import projects_api
@@ -19,8 +36,167 @@ import csuite_api
 import artifacts_api
 import design_api
 
-# Create tables
+
+# ── Port Guard ───────────────────────────────────────────────────────────────
+# Ensure only ONE server instance runs. Refuse to start if port is in use or
+# another instance holds the PID lock. Never kill other processes.
+
+_PORT = int(os.environ.get("PORT", 8000))
+_PID_DIR = os.environ.get("KITH_PID_DIR", os.path.expanduser("~/.kith-foundry"))
+_PID_FILE = os.path.join(_PID_DIR, f"server-{_PORT}.pid")
+
+
+def _port_in_use(port: int) -> bool:
+    """Return True if any process (other than us) is listening on port."""
+    my_pid = os.getpid()
+    my_ppid = os.getppid()
+    if sys.platform == "win32":
+        try:
+            out = subprocess.check_output(
+                ["netstat", "-ano"], text=True, creationflags=0x08000000,
+            )
+            for line in out.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.split()
+                    pid = int(parts[-1])
+                    if pid in (0, my_pid, my_ppid):
+                        continue
+                    return True
+        except Exception:
+            pass
+        return False
+    try:
+        out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
+        for pid_str in out.splitlines():
+            pid = int(pid_str)
+            if pid in (my_pid, my_ppid):
+                continue
+            return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return False
+
+
+def _pid_listening_on_port(pid: int, port: int) -> bool:
+    """Return True if the given PID is listening on the given port."""
+    if sys.platform == "win32":
+        try:
+            out = subprocess.check_output(
+                ["netstat", "-ano"], text=True, creationflags=0x08000000,
+            )
+            for line in out.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.split()
+                    if len(parts) >= 1 and parts[-1] == str(pid):
+                        return True
+        except Exception:
+            pass
+        return False
+    try:
+        out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
+        return str(pid) in out.splitlines()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def _pid_lock_held() -> tuple[bool, str]:
+    """Return (held, message). held=True if another instance holds the lock."""
+    try:
+        os.makedirs(_PID_DIR, exist_ok=True)
+    except OSError:
+        pass
+    # Escape hatch: force-clear stale lock (e.g. after crash when PID file wasn't removed)
+    if os.getenv("KITH_FORCE_CLEAR_LOCK", "").lower() in ("1", "true", "yes"):
+        try:
+            if os.path.exists(_PID_FILE):
+                os.remove(_PID_FILE)
+                print("[port-guard] Cleared stale lock (KITH_FORCE_CLEAR_LOCK=1)")
+        except OSError:
+            pass
+        return False, ""
+    if not os.path.exists(_PID_FILE):
+        return False, ""
+    # If port is free, any lock is stale — safe to remove and proceed
+    if not _port_in_use(_PORT):
+        try:
+            os.remove(_PID_FILE)
+        except OSError:
+            pass
+        return False, ""
+    try:
+        with open(_PID_FILE, "r") as f:
+            pid_str = f.read().strip()
+        pid = int(pid_str)
+        if pid == os.getpid():
+            return False, ""
+        if pid == os.getppid():
+            # Lock held by our parent (uvicorn reloader) — we're the worker, same instance
+            return False, ""
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            # Process is dead — stale lock
+            os.remove(_PID_FILE)
+            return False, ""
+        # Process exists; only treat as held if it's actually listening on our port
+        if not _pid_listening_on_port(pid, _PORT):
+            # PID exists but not using our port — stale lock (crashed without cleanup)
+            os.remove(_PID_FILE)
+            return False, ""
+        # Extra safety: if port isn't in use at all, lock is stale (e.g. Windows os.kill quirk)
+        if not _port_in_use(_PORT):
+            os.remove(_PID_FILE)
+            return False, ""
+        return True, f"Another server (PID {pid}) holds the lock. Stop it first."
+    except (ValueError, OSError):
+        try:
+            os.remove(_PID_FILE)
+        except OSError:
+            pass
+        return False, ""
+
+
+def _acquire_pid_lock() -> None:
+    """Write our PID to the lock file."""
+    try:
+        os.makedirs(_PID_DIR, exist_ok=True)
+        with open(_PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        print(f"[port-guard] Warning: could not write PID file: {e}")
+
+
+def _release_pid_lock() -> None:
+    """Remove PID file if it contains our PID."""
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE, "r") as f:
+                if f.read().strip() == str(os.getpid()):
+                    os.remove(_PID_FILE)
+    except OSError:
+        pass
+
+
+def _enforce_single_instance() -> None:
+    """Refuse to start if port in use or another instance holds the lock."""
+    held, msg = _pid_lock_held()
+    if held:
+        print(f"[port-guard] FATAL: {msg}")
+        sys.exit(1)
+    if _port_in_use(_PORT):
+        print(f"[port-guard] FATAL: Port {_PORT} is already in use. Stop the other server first.")
+        sys.exit(1)
+    _acquire_pid_lock()
+
+
+# Always enforce single instance (block duplicate servers from second terminal)
+_enforce_single_instance()
+atexit.register(_release_pid_lock)
+
+
+# Create tables and ensure Storage bucket exists
 Base.metadata.create_all(bind=engine)
+storage_service.ensure_bucket_exists()
 
 app = FastAPI()
 
@@ -36,74 +212,52 @@ app.add_middleware(
 app.include_router(models_api.router)
 app.include_router(provider_api.router)
 
-# New API routers
+# New API routers — design first (more specific /design/* paths) so they match before /{project_id}
+app.include_router(design_api.router)
 app.include_router(projects_api.router)
 app.include_router(ideation_api.router)
 app.include_router(csuite_api.router)
 app.include_router(artifacts_api.router)
-app.include_router(design_api.router)
 import routing_api
 app.include_router(routing_api.router)
 
-# Mock in-memory state for project -> machine mapping
-projects = {}
+# ── Inngest — durable background jobs ────────────────────────────────────────
+from inngest.fast_api import serve as _inngest_serve
+import inngest_functions as _inngest_fns
+import inngest_client as _inngest_client
+_inngest_serve(app, _inngest_client.client, _inngest_fns.all_functions)
 
 
-def _app_name_from_preview_url(preview_url: str | None) -> str | None:
-    if not preview_url:
-        return None
+@app.on_event("startup")
+async def _inngest_dev_sync():
+    """Verify Inngest Dev Server can reach this app on startup."""
+    import os, httpx
+    if os.getenv("USE_INNGEST", "0").strip() != "1":
+        return  # Inngest disabled
+    is_prod = os.getenv("INNGEST_PRODUCTION", "0").strip() == "1"
+    if is_prod:
+        print("📡 Inngest: production mode — sync handled by Inngest Cloud")
+        return
+    # In dev mode: ping the Dev Server to confirm it's reachable,
+    # then trigger a sync by calling our own /api/inngest (PUT = SDK sync endpoint).
+    dev_server = os.getenv("INNGEST_DEV_SERVER_URL", "http://localhost:8288")
+    app_url = "http://localhost:8000/api/inngest"
     try:
-        return preview_url.split("//")[1].split(".")[0]
-    except Exception:
-        return None
+        async with httpx.AsyncClient(timeout=3) as client:
+            # Check Dev Server is up
+            ping = await client.get(dev_server, timeout=2)
+            if ping.status_code >= 400:
+                raise RuntimeError(f"Dev Server returned {ping.status_code}")
+            print(f"✅ Inngest Dev Server reachable at {dev_server}")
+            # Trigger SDK sync: Dev Server polls our /api/inngest automatically
+            # when started with -u flag. No action needed here.
+            print(f"📡 Inngest functions registered at {app_url}")
+    except Exception as e:
+        print(f"⚠️  Inngest Dev Server not reachable ({e})")
+        print(f"   Start it with: npx inngest-cli@latest dev -u {app_url}")
 
 
-def _poll_sandbox_health(url: str, retries: int = 30, interval: float = 2.0) -> bool:
-    """Synchronous poll – run via asyncio.to_thread.
-    Waits until the sandbox returns a real page (not the nginx 'Building preview' fallback).
-    Allows up to retries * interval seconds (default 60s) for Vite cold-boot.
-    """
-    import time
-    import socket
-    from urllib.parse import urlparse
-
-    # Quick DNS check — if the hostname doesn't resolve, the sandbox was destroyed
-    hostname = urlparse(url).hostname
-    if hostname:
-        try:
-            socket.getaddrinfo(hostname, 443)
-        except socket.gaierror:
-            print(f"[sandbox] DNS resolution failed for {hostname} — sandbox was likely destroyed")
-            return False
-
-    # Give the machine a moment to finish starting services
-    time.sleep(3)
-
-    for i in range(retries):
-        try:
-            r = http_requests.get(url, timeout=5, allow_redirects=True)
-            # nginx @vite_loading returns 200/503 with 'Building preview' while Vite boots.
-            # Only treat as ready when response is non-5xx AND not the loading placeholder.
-            if r.status_code < 500 and "Building preview" not in r.text[:500]:
-                print(f"[sandbox] Health check passed on attempt {i+1} (status={r.status_code})")
-                return True
-            else:
-                if i % 5 == 0:  # log every 5th attempt to reduce noise
-                    print(f"[sandbox] Not ready yet (attempt {i+1}/{retries}, status={r.status_code})")
-        except http_requests.exceptions.ConnectionError as e:
-            if "NameResolutionError" in str(e) or "getaddrinfo" in str(e):
-                print(f"[sandbox] DNS resolution failed — sandbox was likely destroyed")
-                return False
-            if i % 5 == 0:
-                print(f"[sandbox] Health check error (attempt {i+1}/{retries}): {e}")
-        except Exception as e:
-            if i % 5 == 0:
-                print(f"[sandbox] Health check error (attempt {i+1}/{retries}): {e}")
-        if i < retries - 1:
-            time.sleep(interval)
-    print(f"[sandbox] Health check exhausted {retries} retries ({retries * interval:.0f}s)")
-    return False
-
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _persist_message(db, project_id: str, role: str, content: str):
     if not content:
@@ -118,10 +272,21 @@ def _persist_message(db, project_id: str, role: str, content: str):
     db.commit()
 
 
-def _persist_files(db, project_id: str, write_edits: list[dict]):
+async def _persist_files(db, project_id: str, write_edits: list[dict]):
+    """Upload file contents to Supabase Storage and update DB metadata (no content in DB)."""
+    # 1. Upload content to Supabase Storage (may partially fail)
+    storage_error = None
+    try:
+        await storage_service.upload_files(project_id, write_edits)
+    except Exception as e:
+        storage_error = e
+        import traceback
+        print(f"[persist] Storage upload error (saving DB metadata anyway): {e}")
+        print(f"[persist] FULL TRACEBACK:\n{traceback.format_exc()}")
+
+    # 2. Keep DB metadata (file_path + timestamp only) — content stays in Storage
     for edit in write_edits:
         file_path = edit.get("file_path")
-        content = edit.get("content")
         if not file_path:
             continue
 
@@ -131,21 +296,32 @@ def _persist_files(db, project_id: str, write_edits: list[dict]):
         ).first()
 
         if existing:
-            existing.content = content
+            existing.content = None  # clear legacy DB content
             existing.updated_at = datetime.utcnow()
         else:
             db.add(File(
                 id=str(uuid.uuid4()),
                 project_id=project_id,
                 file_path=file_path,
-                content=content,
+                content=None,  # content lives in Storage
                 updated_at=datetime.utcnow(),
             ))
     db.commit()
 
+    if storage_error:
+        raise storage_error
+
 
 async def _send_json(websocket: WebSocket, payload: dict):
-    await websocket.send_text(json.dumps(payload))
+    try:
+        await websocket.send_text(json.dumps(payload))
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        lowered = str(e).lower()
+        if "disconnect" in lowered or "closed" in lowered or "close message" in lowered or "accept" in lowered:
+            return
+        raise
 
 
 _TRANSIENT_MESSAGES = {
@@ -157,20 +333,89 @@ _TRANSIENT_MESSAGES = {
     "Agent is working",
 }
 
+# Error patterns that should NOT be persisted/replayed across sessions.
+# These are transient infrastructure errors, not meaningful user context.
+_TRANSIENT_ERROR_PATTERNS = {
+    "storage upload failed",
+    "connectionterminated",
+    "error_code:9",
+    "cloud save hit a temporary",
+}
+
 def _is_transient(content: str) -> bool:
-    return any(content.startswith(t) for t in _TRANSIENT_MESSAGES)
+    if any(content.startswith(t) for t in _TRANSIENT_MESSAGES):
+        return True
+    # Treat storage/connection errors as transient regardless of prefix
+    lower = content.lower()
+    if any(p in lower for p in _TRANSIENT_ERROR_PATTERNS):
+        return True
+    return False
+
+
+def _user_visible_error_message(err: Exception) -> str:
+    raw = str(err)
+    lower = raw.lower()
+    if (
+        "storage upload failed" in lower
+        or "connectionterminated" in lower
+        or "error_code:9" in lower
+    ):
+        return "Files were generated, but cloud save hit a temporary network issue. Please retry."
+    return f"Request processing failed: {raw}"
+
+
+def _load_project_files(db, project_id: str):
+    return db.query(File).filter(File.project_id == project_id).order_by(File.file_path.asc()).all()
+
+
+def _build_file_tree_from_db(db, project_id: str) -> list:
+    """Build a file tree structure from stored DB files."""
+    stored_files = _load_project_files(db, project_id)
+    root: list = []
+
+    for f in stored_files:
+        parts = f.file_path.split("/")
+        current_level = root
+        path_so_far = ""
+
+        for i, part in enumerate(parts):
+            path_so_far = f"{path_so_far}/{part}" if path_so_far else part
+            is_file = (i == len(parts) - 1)
+
+            existing = next((n for n in current_level if n["name"] == part), None)
+            if existing:
+                if not is_file:
+                    current_level = existing.setdefault("children", [])
+            else:
+                node = {"name": part, "path": path_so_far, "type": "file" if is_file else "dir"}
+                if not is_file:
+                    node["children"] = []
+                current_level.append(node)
+                if not is_file:
+                    current_level = node["children"]
+
+    return root
 
 
 async def _restore_project_state(websocket: WebSocket, db, project_id: str):
+    """Send stored files and chat history to the frontend on reconnect."""
     stored_files = db.query(File).filter(File.project_id == project_id).order_by(File.file_path.asc()).all()
-    for file_row in stored_files:
-        await _send_json(websocket, {
-            "type": "file_written",
-            "file": file_row.file_path,
-            "content": file_row.content or "",
-        })
+    if stored_files:
+        # Build fallback map for legacy rows that still have content in DB
+        db_fallback = {f.file_path: f.content for f in stored_files if f.content}
+        file_paths = [f.file_path for f in stored_files]
+        # Download content from Supabase Storage (falls back to DB content for legacy rows)
+        contents = await storage_service.download_project_files(
+            project_id, file_paths, db_fallback=db_fallback
+        )
+        for file_row in stored_files:
+            await _send_json(websocket, {
+                "type": "file_written",
+                "file": file_row.file_path,
+                "content": contents.get(file_row.file_path, ""),
+            })
 
-    # Purge stale transient messages from DB so they never come back
+    # Purge stale transient messages
     all_messages = db.query(Message).filter(Message.project_id == project_id).order_by(Message.created_at.asc()).all()
     clean_history = []
     for m in all_messages:
@@ -186,74 +431,119 @@ async def _restore_project_state(websocket: WebSocket, db, project_id: str):
     })
 
 
-def _load_project_files(db, project_id: str):
-    return db.query(File).filter(File.project_id == project_id).order_by(File.file_path.asc()).all()
+async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tuple:
+    """Boot or reuse a sandbox worker, restore files, start Vite, return (worker, preview_url)."""
+    await _send_json(websocket, {
+        "type": "status", "status": "booting_sandbox",
+        "message": "Booting secure sandbox..."
+    })
 
+    # Get or create sandbox worker (runs on dedicated thread)
+    worker = await asyncio.to_thread(get_or_create_worker, project_id)
 
-async def _replay_project_files_to_sandbox(db, project_id: str, preview_url: str | None):
-    app_name = _app_name_from_preview_url(preview_url)
-    if not app_name:
-        return
-
-    stored_files = _load_project_files(db, project_id)
-    if not stored_files:
-        return
-
-    batch_files = [
-        {"file_path": f.file_path, "content": f.content or ""}
-        for f in stored_files
-    ]
-    await asyncio.to_thread(write_batch_to_machine, app_name, batch_files)
-
-
-async def _ensure_project_sandbox(websocket: WebSocket, db, project: Project, project_id: str):
-    project_state = projects.get(project_id, {})
-
-    if not project_state.get("preview_url") and project.preview_url:
-        project_state["preview_url"] = project.preview_url
-    if not project_state.get("ipv6") and project.fly_machine_ipv6:
-        project_state["ipv6"] = project.fly_machine_ipv6
-
-    app_name = _app_name_from_preview_url(project_state.get("preview_url"))
-    can_reuse = False
-    if app_name:
-        try:
-            await asyncio.to_thread(get_file_tree, app_name)
-            can_reuse = True
-        except Exception:
-            can_reuse = False
-
-    # If app exists but is sleeping/suspended, try waking before provisioning new
-    if app_name and not can_reuse:
-        woke = await asyncio.to_thread(wake_sandbox_if_needed, app_name)
-        if woke:
-            try:
-                await asyncio.to_thread(get_file_tree, app_name)
-                can_reuse = True
-            except Exception:
-                can_reuse = False
-
-    if not can_reuse:
-        await _send_json(websocket, {
-            "type": "status",
-            "status": "booting_sandbox",
-            "message": "Booting secure Fly.io Sandbox..."
-        })
-        preview_url, ipv6 = await asyncio.to_thread(create_and_boot_sandbox)
-        project_state["preview_url"] = preview_url
-        project_state["ipv6"] = ipv6
-
-        project.preview_url = preview_url
-        project.fly_machine_ipv6 = ipv6
-        project.fly_app_name = _app_name_from_preview_url(preview_url)
+    # Store sandbox_id on project
+    sandbox_id = worker.sandbox_id
+    if sandbox_id and project.fly_sandbox_id != sandbox_id:
+        project.fly_sandbox_id = sandbox_id
         project.updated_at = datetime.utcnow()
         db.commit()
 
-        # New sandbox was provisioned: restore persisted files into it.
-        await _replay_project_files_to_sandbox(db, project_id, preview_url)
+    # If this worker already has Vite running, verify it's still alive before reusing
+    if worker.preview_url:
+        try:
+            health = await asyncio.to_thread(worker.execute, "health_check", None, 10.0)
+            if health == "ok":
+                print(f"[sandbox] Reusing existing sandbox {worker.sandbox_id}, Vite healthy at {worker.preview_url}")
+                return worker, worker.preview_url
+            else:
+                print(f"[sandbox] Sandbox {worker.sandbox_id} unhealthy ({health}), recreating...")
+        except Exception as e:
+            print(f"[sandbox] Sandbox {worker.sandbox_id} health check failed ({e}), recreating...")
 
-    projects[project_id] = project_state
-    return project_state
+        # Sandbox is dead — release and create a fresh one
+        release_worker(project_id)
+        worker = await asyncio.to_thread(get_or_create_worker, project_id)
+        sandbox_id = worker.sandbox_id
+        if sandbox_id and project.fly_sandbox_id != sandbox_id:
+            project.fly_sandbox_id = sandbox_id
+            project.updated_at = datetime.utcnow()
+            db.commit()
+
+    # Setup Vite project (npm install etc.)
+    await _send_json(websocket, {
+        "type": "status", "status": "booting_sandbox",
+        "message": "Setting up project environment..."
+    })
+    await asyncio.to_thread(worker.execute, "setup_vite")
+
+    # Replay persisted files into sandbox (content from Supabase Storage)
+    stored_files = _load_project_files(db, project_id)
+    if stored_files:
+        db_fallback = {f.file_path: f.content for f in stored_files if f.content}
+        file_paths = [f.file_path for f in stored_files]
+        contents = await storage_service.download_project_files(
+            project_id, file_paths, db_fallback=db_fallback
+        )
+        # Only write files with non-empty content — an empty file written to the sandbox
+        # causes Vite to return 500 when it tries to compile it (e.g. empty App.tsx).
+        # The placeholder files written by setup_vite() serve as safe fallbacks.
+        batch = [
+            {"file_path": fp, "content": contents.get(fp, "")}
+            for fp in file_paths
+            if contents.get(fp, "").strip()
+        ]
+        skipped = [fp for fp in file_paths if not contents.get(fp, "").strip()]
+        if skipped:
+            print(f"[sandbox] Skipping {len(skipped)} empty/missing file(s) from Storage restore: {skipped[:5]}")
+        if batch:
+            await asyncio.to_thread(worker.execute, "write_files", batch)
+
+    # Start Vite dev server and get preview URL
+    await _send_json(websocket, {
+        "type": "status", "status": "booting_sandbox",
+        "message": "Starting preview server..."
+    })
+    preview_url = await asyncio.to_thread(worker.execute, "start_vite")
+
+    # Persist preview URL
+    project.preview_url = preview_url
+    project.updated_at = datetime.utcnow()
+    db.commit()
+
+    return worker, preview_url
+
+
+# ── REST: Auto-save endpoint ────────────────────────────────────────────────
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from models import User
+
+class FileSavePayload(BaseModel):
+    files: dict[str, str]  # {file_path: content}
+
+@app.post("/api/v1/projects/{project_id}/save")
+async def save_project_files(
+    project_id: str,
+    body: FileSavePayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    edits = [{"file_path": fp, "content": c} for fp, c in body.files.items()]
+    try:
+        await _persist_files(db, project_id, edits)
+    except Exception as e:
+        print(f"[save] Storage upload error (non-fatal, DB metadata saved): {e}")
+    project.updated_at = datetime.utcnow()
+    db.commit()
+    return {"saved": len(edits)}
+
+
+# ── WebSocket: Chat + Code Gen ──────────────────────────────────────────────
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
@@ -261,6 +551,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     db = SessionLocal()
     project_id = websocket.query_params.get("project_id")
+    worker = None
 
     if not project_id:
         await _send_json(websocket, {"type": "error", "message": "Missing project_id in WebSocket query"})
@@ -283,230 +574,245 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     try:
-        project_state = await _ensure_project_sandbox(websocket, db, project, project_id)
-
-        # Poll until Vite is actually serving before telling the frontend
-        preview_url = project_state.get("preview_url", "")
-        if preview_url:
-            await _send_json(websocket, {
-                "type": "status",
-                "status": "waiting_for_vite",
-                "message": "Waiting for preview to become ready..."
-            })
-            health_ok = await asyncio.to_thread(_poll_sandbox_health, preview_url)
-            if not health_ok:
-                await _send_json(websocket, {
-                    "type": "status",
-                    "status": "warning",
-                    "message": "Preview may be slow to load — sandbox is still booting."
-                })
-
+        # Count existing files
         file_count = db.query(File).filter(File.project_id == project_id).count()
 
+        # Boot sandbox worker, restore files, start Vite
+        worker, preview_url = await _ensure_sandbox_ready(websocket, db, project, project_id)
+
+        # Send sandbox_ready with preview URL
         await _send_json(websocket, {
             "type": "sandbox_ready",
-            "previewUrl": project_state["preview_url"],
+            "previewUrl": preview_url,
             "fileCount": file_count,
         })
 
-        app_name = _app_name_from_preview_url(project_state.get("preview_url"))
-        if app_name:
-            try:
-                tree_data = await asyncio.to_thread(get_file_tree, app_name)
-                await _send_json(websocket, {
-                    "type": "file_tree",
-                    "tree": tree_data.get("tree", [])
-                })
-            except Exception as tree_err:
-                print(f"[sandbox] Failed to get file tree: {tree_err}")
+        # Build file tree from DB and send
+        db_tree = _build_file_tree_from_db(db, project_id)
+        if db_tree:
+            await _send_json(websocket, {
+                "type": "file_tree",
+                "tree": db_tree
+            })
 
+        # Restore files + chat history to frontend
         await _restore_project_state(websocket, db, project_id)
-        # Signal idle so the spinner clears after restore
         await _send_json(websocket, {"type": "status", "status": "idle"})
 
     except Exception as init_err:
-        print(f"[sandbox] Init error (non-fatal): {init_err}")
-        await _send_json(websocket, {"type": "status", "status": "idle", "message": f"Sandbox init issue: {str(init_err)}. You can still use the editor."})
-        # DON'T close the WS or return — let the user continue chatting
-    
+        print(f"[init] Error (non-fatal): {init_err}")
+        await _send_json(websocket, {
+            "type": "status", "status": "idle",
+            "message": f"Init issue: {str(init_err)}. You can still use the editor."
+        })
+
     try:
         while True:
             data = await websocket.receive_text()
             payload = json.loads(data)
+
+            # ── Auto-fix: handle preview errors ──────────────────────────
+            if payload.get("type") == "preview_error":
+                errors = payload.get("errors", [])
+                if errors and worker and worker.is_alive:
+                    await _send_json(websocket, {
+                        "type": "auto_fix_status", "status": "fixing",
+                        "message": "🔧 Auto-fixing..."
+                    })
+                    try:
+                        fix_result = await attempt_fix(project_id, errors, user_id=user.id)
+                        if fix_result and fix_result.get("files"):
+                            fix_edits = [
+                                {"file_path": f["file_path"], "content": f["content"], "action": "write"}
+                                for f in fix_result["files"]
+                            ]
+                            await _persist_files(db, project_id, fix_edits)
+                            for edit in fix_edits:
+                                await _send_json(websocket, {
+                                    "type": "file_written",
+                                    "file": edit["file_path"],
+                                    "content": edit["content"]
+                                })
+                            try:
+                                await asyncio.to_thread(worker.execute, "write_files", fix_edits)
+                            except Exception as sb_err:
+                                err_str = str(sb_err).lower()
+                                if "3006" in err_str or "timed out" in err_str or "not alive" in err_str:
+                                    print(f"[sandbox] Auto-fix write failed ({err_str}), attempting sandbox recovery...")
+                                    release_worker(project_id)
+                                    worker, preview_url = await _ensure_sandbox_ready(websocket, db, project, project_id)
+                                    await asyncio.to_thread(worker.execute, "write_files", fix_edits)
+                                    await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
+                                    await _send_json(websocket, {
+                                        "type": "sandbox_ready",
+                                        "previewUrl": preview_url,
+                                        "fileCount": len(fix_edits),
+                                    })
+                                else:
+                                    raise sb_err
+                            db_tree = _build_file_tree_from_db(db, project_id)
+                            if db_tree:
+                                await _send_json(websocket, {"type": "file_tree", "tree": db_tree})
+                            # Wait for Vite to be fully ready before reloading
+                            try:
+                                await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
+                            except Exception:
+                                pass
+                            await _send_json(websocket, {"type": "reload_preview"})
+                            await _send_json(websocket, {
+                                "type": "auto_fix_status", "status": "fixed",
+                                "message": f"🔧 Auto-fixed {len(fix_edits)} file(s)"
+                            })
+                            _persist_message(db, project_id, "system",
+                                f"[auto-fix] Fixed {len(fix_edits)} file(s): {', '.join(e['file_path'] for e in fix_edits)}")
+                        else:
+                            await _send_json(websocket, {
+                                "type": "auto_fix_status", "status": "skipped"
+                            })
+                    except Exception as fix_err:
+                        print(f"[auto-fix] Failed: {fix_err}")
+                        await _send_json(websocket, {
+                            "type": "auto_fix_status", "status": "failed"
+                        })
+                continue
+
+            # ── Normal user prompt ───────────────────────────────────────
             user_prompt = payload.get("prompt")
             model_id = payload.get("model", "claude-3-5-sonnet-latest")
-            images = payload.get("images", [])  # list of base64 data URLs
+            images = payload.get("images", [])
 
             if not user_prompt and not images:
                 continue
 
+            # Reset auto-fix cycle on user-initiated edits
+            reset_fix_cycle(project_id)
+
             try:
                 _persist_message(db, project_id, "user", user_prompt or f"[{len(images)} image(s)]")
 
-                # Always refresh project_state from DB to avoid stale sandbox URLs
+                # Refresh project
                 project = db.query(Project).filter(Project.id == project_id).first()
-                project_state = projects.get(project_id, {})
-                if project and project.preview_url:
-                    project_state["preview_url"] = project.preview_url
-                projects[project_id] = project_state
 
-                preview_url = project_state.get("preview_url")
-                app_name = _app_name_from_preview_url(preview_url)
-
-                # Verify sandbox is actually reachable before using it
-                if app_name:
-                    try:
-                        await asyncio.to_thread(get_file_tree, app_name)
-                    except Exception:
-                        print(f"[sandbox] {app_name} unreachable, provisioning new sandbox...")
-                        await _send_json(websocket, {
-                            "type": "status",
-                            "status": "booting_sandbox",
-                            "message": "Previous sandbox expired. Booting a new one..."
-                        })
-                        new_preview_url, new_ipv6 = await asyncio.to_thread(create_and_boot_sandbox)
-                        project_state["preview_url"] = new_preview_url
-                        project_state["ipv6"] = new_ipv6
-                        projects[project_id] = project_state
-                        if project:
-                            project.preview_url = new_preview_url
-                            project.fly_machine_ipv6 = new_ipv6
-                            project.fly_app_name = _app_name_from_preview_url(new_preview_url)
-                            project.updated_at = datetime.utcnow()
-                            db.commit()
-                        preview_url = new_preview_url
-                        app_name = _app_name_from_preview_url(new_preview_url)
-
-                        # Wait for new sandbox to boot
-                        if preview_url:
-                            await asyncio.to_thread(_poll_sandbox_health, preview_url)
-
-                        # Replay stored files into new sandbox
-                        await _replay_project_files_to_sandbox(db, project_id, preview_url)
-
+                preview_url = project.preview_url if project else ""
                 await _send_json(websocket, {
                     "type": "sandbox_ready",
                     "previewUrl": preview_url
                 })
 
-                if app_name:
-                    try:
-                        tree_data = await asyncio.to_thread(get_file_tree, app_name)
-                        await _send_json(websocket, {
-                            "type": "file_tree",
-                            "tree": tree_data.get("tree", [])
-                        })
-                    except Exception:
-                        pass
-                async for step in process_user_request(user_prompt, project_id, model_id, app_name, images=images, user_id=user.id):
+                # Send file tree from DB
+                db_tree = _build_file_tree_from_db(db, project_id)
+                if db_tree:
+                    await _send_json(websocket, {"type": "file_tree", "tree": db_tree})
+
+                # Process user request — reads files from DB
+                async for step in process_user_request(user_prompt, project_id, model_id, db=db, images=images, user_id=user.id):
                     if step["status"] == "file_stream_start":
                         await _send_json(websocket, {
-                            "type": "file_stream_start",
-                            "file": step["file"]
+                            "type": "file_stream_start", "file": step["file"]
                         })
                     elif step["status"] == "code_token":
                         await _send_json(websocket, {
-                            "type": "code_token",
-                            "file": step["file"],
-                            "token": step["token"]
+                            "type": "code_token", "file": step["file"], "token": step["token"]
                         })
                     elif step["status"] == "file_stream_end":
                         await _send_json(websocket, {
-                            "type": "file_stream_end",
-                            "file": step["file"],
-                            "content": step["content"]
+                            "type": "file_stream_end", "file": step["file"], "content": step["content"]
                         })
                     elif step["status"] == "stream_end":
-                        await _send_json(websocket, {
-                            "type": "stream_end"
-                        })
+                        await _send_json(websocket, {"type": "stream_end"})
                     elif step["status"] == "execution_complete":
                         edits = step.get("edits", [])
                         write_edits = [e for e in edits if e.get("action") == "write"]
 
                         if write_edits:
                             await _send_json(websocket, {
-                                "type": "status",
-                                "status": "applying_edits",
-                                "message": f"Writing {len(write_edits)} files to sandbox..."
+                                "type": "status", "status": "applying_edits",
+                                "message": f"Saving {len(write_edits)} files..."
                             })
 
+                            # 1. Persist to Storage (best-effort — NEVER blocks sandbox write)
+                            storage_save_error = None
                             try:
-                                if not app_name:
-                                    raise RuntimeError("Missing sandbox app name")
+                                await _persist_files(db, project_id, write_edits)
+                            except Exception as _se:
+                                storage_save_error = _se
+                                print(f"[ws] Storage save failed (sandbox write will still proceed): {_se}")
 
-                                # Ensure sandbox is alive before writing
-                                woke = await asyncio.to_thread(wake_sandbox_if_needed, app_name)
-                                if not woke:
-                                    print(f"[sandbox] Wake returned False for {app_name}, attempting write anyway...")
+                            # 2. Notify frontend
+                            for edit in write_edits:
+                                await _send_json(websocket, {
+                                    "type": "file_written",
+                                    "file": edit["file_path"],
+                                    "content": edit["content"]
+                                })
 
-                                # Poll health before writing to avoid 502s
-                                preview_url = project_state.get("preview_url", "")
-                                if preview_url:
-                                    await asyncio.to_thread(_poll_sandbox_health, preview_url, 10, 2.0)
+                            # 3. Update file tree
+                            db_tree = _build_file_tree_from_db(db, project_id)
+                            if db_tree:
+                                await _send_json(websocket, {"type": "file_tree", "tree": db_tree})
 
-                                batch_files = [{"file_path": e["file_path"], "content": e["content"]} for e in write_edits]
-                                await asyncio.to_thread(
-                                    write_batch_to_machine,
-                                    app_name,
-                                    batch_files
-                                )
-
-                                _persist_files(db, project_id, write_edits)
-
-                                for edit in write_edits:
+                            # 4. Write to sandbox (Vite HMR auto-reloads)
+                            if worker and worker.is_alive:
+                                reset_fix_cycle(project_id)
+                                try:
+                                    try:
+                                        await asyncio.to_thread(worker.execute, "write_files", write_edits)
+                                        # Poll until @vite/client and @react-refresh both return 200
+                                        await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
+                                        await _send_json(websocket, {"type": "reload_preview"})
+                                    except Exception as sb_err:
+                                        err_str = str(sb_err).lower()
+                                        if "3006" in err_str or "timed out" in err_str or "thread crashed" in err_str:
+                                            print(f"[sandbox] Write error ({err_str}), attempting sandbox recovery...")
+                                            # Force release the dead worker before recovery
+                                            release_worker(project_id)
+                                            worker, preview_url = await _ensure_sandbox_ready(websocket, db, project, project_id)
+                                            await asyncio.to_thread(worker.execute, "write_files", write_edits)
+                                            await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
+                                            # Send updated preview URL to frontend
+                                            await _send_json(websocket, {
+                                                "type": "sandbox_ready",
+                                                "previewUrl": preview_url,
+                                                "fileCount": len(write_edits),
+                                            })
+                                            await _send_json(websocket, {"type": "reload_preview"})
+                                        else:
+                                            raise sb_err
+                                except Exception as sb_err:
+                                    import traceback
+                                    with open("debug_sb_err.txt", "w") as f:
+                                        f.write(traceback.format_exc())
+                                    print(f"[sandbox] Write error (files saved to DB): {sb_err}")
                                     await _send_json(websocket, {
-                                        "type": "file_written",
-                                        "file": edit["file_path"],
-                                        "content": edit["content"]
+                                        "type": "status", "status": "warning",
+                                        "message": "Files saved, but sandbox write failed. Preview may not update."
                                     })
 
-                                tree_data = await asyncio.to_thread(get_file_tree, app_name)
+                            # 5. Surface storage warning last (after sandbox is already updated)
+                            if storage_save_error:
                                 await _send_json(websocket, {
-                                    "type": "file_tree",
-                                    "tree": tree_data.get("tree", [])
+                                    "type": "status", "status": "warning",
+                                    "message": "⚠️ Files loaded in preview, but cloud save hit a network issue. Your work is in the editor — try saving again shortly."
                                 })
-
-                                # Poll sandbox until Vite is ready (server-side, no CORS issues)
-                                preview_url = project_state.get("preview_url", "")
-                                if preview_url:
-                                    await asyncio.to_thread(_poll_sandbox_health, preview_url)
-                                else:
-                                    await asyncio.sleep(5)
-
-                                await _send_json(websocket, {
-                                    "type": "reload_preview"
-                                })
-
-                            except Exception as e:
-                                await _send_json(websocket, {
-                                    "type": "error",
-                                    "message": f"Failed to batch write files: {str(e)}"
-                                })
-                                _persist_message(db, project_id, "system", f"Error: Failed to batch write files: {str(e)}")
                     else:
                         await _send_json(websocket, {
-                            "type": "agent_status",
-                            "data": step
+                            "type": "agent_status", "data": step
                         })
-                        # Only persist meaningful messages, not transient progress indicators
                         _TRANSIENT = {"analyzing", "reading", "generating"}
                         if step.get("message") and step.get("status") not in _TRANSIENT:
                             _persist_message(db, project_id, "system", step["message"])
 
-                await _send_json(websocket, {
-                    "type": "status",
-                    "status": "idle"
-                })
+                await _send_json(websocket, {"type": "status", "status": "idle"})
+
             except Exception as loop_err:
+                print(f"[ws] Request error: {loop_err}")
                 await _send_json(websocket, {
                     "type": "error",
-                    "message": f"Request processing failed: {str(loop_err)}"
+                    "message": _user_visible_error_message(loop_err)
                 })
-                _persist_message(db, project_id, "system", f"Error: Request processing failed: {str(loop_err)}")
+                _persist_message(db, project_id, "system", f"Error: {str(loop_err)}")
                 await _send_json(websocket, {
-                    "type": "status",
-                    "status": "idle",
+                    "type": "status", "status": "idle",
                     "message": "Waiting for input..."
                 })
 
@@ -515,4 +821,5 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket Error: {e}")
     finally:
+        # Keep sandbox alive across reconnects — only release on explicit project deletion
         db.close()

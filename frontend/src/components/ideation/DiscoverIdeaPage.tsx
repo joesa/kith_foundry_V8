@@ -1,9 +1,8 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../../contexts/AuthContext";
-import { getApiBaseUrl } from "../../lib/runtimeConfig";
+import { useApiFetch } from "../../hooks/useApiFetch";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, ArrowRight, ArrowLeft, Star, Check } from "lucide-react";
+import { Sparkles, ArrowRight, ArrowLeft, Star, Check, Bookmark, BookmarkCheck, Shield, Users } from "lucide-react";
 
 // ── Questionnaire Data ──────────────────────────────────────────────────────
 
@@ -38,7 +37,7 @@ type Answers = Record<number, string | string[] | number>;
 
 export default function DiscoverIdeaPage() {
     const navigate = useNavigate();
-    const { getAccessToken } = useAuth();
+    const apiFetch = useApiFetch();
     const [phase, setPhase] = useState<"unique" | "questionnaire" | "generating" | "results">("unique");
     const [step, setStep] = useState(0);
     const [answers, setAnswers] = useState<Answers>({});
@@ -47,43 +46,50 @@ export default function DiscoverIdeaPage() {
     const [loading, setLoading] = useState(false);
     const [uniqueLoading, setUniqueLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+    const [savingId, setSavingId] = useState<string | null>(null);
 
     // Fetch unique idea on mount
     const fetchUniqueIdea = useCallback(async () => {
         setUniqueLoading(true);
+        setError(null);
         try {
-            const token = await getAccessToken();
-            const resp = await fetch(`${getApiBaseUrl()}/api/v1/ideation/generate-unique`, {
+            const resp = await apiFetch("/api/v1/ideation/generate-unique", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
+                headers: { "Content-Type": "application/json" },
             });
             if (resp.ok) {
                 const data = await resp.json();
                 setUniqueIdea(data.idea);
+            } else {
+                let msg = `Request failed (${resp.status}). Try again.`;
+                try {
+                    const errBody = await resp.json();
+                    if (errBody?.detail) msg = String(errBody.detail);
+                } catch {
+                    /* ignore */
+                }
+                setError(msg);
             }
         } catch (e) {
             console.error("Failed to generate unique idea:", e);
+            setError(e instanceof Error ? e.message : "Failed to generate idea. Check your connection and try again.");
         } finally {
             setUniqueLoading(false);
         }
-    }, [getAccessToken]);
+    }, [apiFetch]);
 
     // Load unique idea when we enter that phase
-    useState(() => { fetchUniqueIdea(); });
+    useEffect(() => {
+        fetchUniqueIdea();
+    }, [fetchUniqueIdea]);
 
     const handleAcceptIdea = async (idea: any) => {
         setLoading(true);
         try {
-            const token = await getAccessToken();
-            const resp = await fetch(`${getApiBaseUrl()}/api/v1/ideation/accept`, {
+            const resp = await apiFetch("/api/v1/ideation/accept", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name: idea.name,
                     description: idea.description,
@@ -102,16 +108,36 @@ export default function DiscoverIdeaPage() {
         }
     };
 
+    const handleSaveIdea = async (idea: any) => {
+        const key = idea.name;
+        setSavingId(key);
+        try {
+            const resp = await apiFetch("/api/v1/ideation/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: idea.name,
+                    content: idea,
+                    score: idea.score,
+                    source: idea.source || "questionnaire",
+                }),
+            });
+            if (resp.ok) {
+                setSavedIds(prev => new Set([...prev, key]));
+            }
+        } catch (e) {
+            console.error("Failed to save idea", e);
+        } finally {
+            setSavingId(null);
+        }
+    };
+
     const handleSubmitQuestionnaire = async () => {
         setPhase("generating");
         try {
-            const token = await getAccessToken();
-            const resp = await fetch(`${getApiBaseUrl()}/api/v1/ideation/questionnaire`, {
+            const resp = await apiFetch("/api/v1/ideation/questionnaire", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ responses: answers }),
             });
             if (!resp.ok) throw new Error("Failed to generate ideas");
@@ -187,10 +213,18 @@ export default function DiscoverIdeaPage() {
 
                             <div className="flex items-center gap-3 justify-end">
                                 <button
+                                    onClick={() => handleSaveIdea({ ...uniqueIdea, source: "unique_gen" })}
+                                    disabled={savedIds.has(uniqueIdea.name) || savingId === uniqueIdea.name}
+                                    className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                                >
+                                    {savedIds.has(uniqueIdea.name) ? <BookmarkCheck className="w-4 h-4 text-green-400" /> : <Bookmark className="w-4 h-4" />}
+                                    {savedIds.has(uniqueIdea.name) ? "Saved" : "Save for Later"}
+                                </button>
+                                <button
                                     onClick={() => setPhase("questionnaire")}
                                     className="h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors"
                                 >
-                                    Pass — help me find something else
+                                    Help me find something else
                                 </button>
                                 <button
                                     onClick={() => handleAcceptIdea({ ...uniqueIdea, source: "unique_gen" })}
@@ -241,6 +275,26 @@ export default function DiscoverIdeaPage() {
                         <p className="text-zinc-400">3 unique ideas crafted from your profile. Select one to proceed to C-Suite validation.</p>
                     </div>
 
+                    {/* Exclusivity Info Banner */}
+                    <div className="mb-8 bg-gradient-to-r from-purple-950/40 to-indigo-950/40 border border-purple-500/20 rounded-xl p-5">
+                        <div className="flex items-start gap-4">
+                            <div className="shrink-0 w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                                <Shield className="w-5 h-5 text-purple-400" />
+                            </div>
+                            <div className="space-y-2 text-sm">
+                                <h4 className="font-semibold text-white">How Idea Exclusivity Works</h4>
+                                <div className="flex items-start gap-2 text-zinc-400">
+                                    <Bookmark className="w-4 h-4 shrink-0 mt-0.5 text-zinc-500" />
+                                    <span><strong className="text-zinc-300">Save for Later</strong> — idea remains visible to all users. Save it to your profile and build when you're ready.</span>
+                                </div>
+                                <div className="flex items-start gap-2 text-zinc-400">
+                                    <Sparkles className="w-4 h-4 shrink-0 mt-0.5 text-purple-400" />
+                                    <span><strong className="text-zinc-300">Build This</strong> — idea becomes <strong className="text-purple-300">exclusively yours</strong>. No other user will ever see or be able to build this idea.</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div className="space-y-6">
                         {generatedIdeas.map((idea, i) => (
                             <motion.div
@@ -277,6 +331,14 @@ export default function DiscoverIdeaPage() {
                                 })}
 
                                 <div className="flex justify-end gap-3 mt-6">
+                                    <button
+                                        onClick={() => handleSaveIdea({ ...idea, source: "questionnaire" })}
+                                        disabled={savedIds.has(idea.name) || savingId === idea.name}
+                                        className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                                    >
+                                        {savedIds.has(idea.name) ? <BookmarkCheck className="w-4 h-4 text-green-400" /> : <Bookmark className="w-4 h-4" />}
+                                        {savedIds.has(idea.name) ? "Saved" : "Save for Later"}
+                                    </button>
                                     <button
                                         onClick={() => handleAcceptIdea({ ...idea, source: "questionnaire" })}
                                         disabled={loading}

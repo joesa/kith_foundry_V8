@@ -184,12 +184,25 @@ def get_design_context_compact(project_id: str) -> str:
         )
 
         if mockups:
+            # Extract CSS custom properties from the first approved mockup
+            # to give the agent the exact brand color palette.
+            css_vars = ""
+            for m in mockups:
+                if m.component_code:
+                    import re as _re
+                    root_match = _re.search(r':root\s*\{([^}]+)\}', m.component_code)
+                    if root_match:
+                        css_vars = f"\n\nBrand CSS variables (use these in your React/Tailwind code):\n```css\n:root {{\n{root_match.group(1).strip()}\n}}\n```"
+                        break
+
             lines = [
                 "## Design Screen Inventory",
-                "User-approved screens from Design Studio (maintain visual consistency):",
+                "User-approved screens from Design Studio (implement these screens with visual consistency):",
             ]
             for m in mockups:
                 lines.append(f"  - **{m.screen_name}** ({m.priority.value}): {m.description or 'N/A'}")
+            if css_vars:
+                lines.append(css_vars)
             sections.append("\n".join(lines))
 
         if not sections:

@@ -74,13 +74,8 @@ def resolve_model_for_task(user_id: str, task_type: str, db=None) -> dict:
             )
 
         if not provider_key:
-            # No provider configured at all — return default
-            return {
-                "model": DEFAULT_MODEL,
-                "api_key": None,
-                "api_base": None,
-                "provider_name": "Default",
-            }
+            # No user provider configured — fall back to server env API keys
+            return _env_fallback()
 
         # Decrypt the API key
         from provider_api import decrypt_key
@@ -112,6 +107,22 @@ def resolve_model_for_task(user_id: str, task_type: str, db=None) -> dict:
     finally:
         if close_db:
             db.close()
+
+
+def _env_fallback() -> dict:
+    """Fall back to server env API keys when no user provider is configured."""
+    import os
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if anthropic_key:
+        return {"model": "anthropic/claude-sonnet-4-20250514", "api_key": anthropic_key, "api_base": None, "provider_name": "Server (Anthropic)"}
+    if openai_key:
+        return {"model": "gpt-4o", "api_key": openai_key, "api_base": None, "provider_name": "Server (OpenAI)"}
+    if gemini_key:
+        return {"model": "gemini/gemini-2.5-flash", "api_key": gemini_key, "api_base": None, "provider_name": "Server (Google AI)"}
+    return {"model": None, "api_key": None, "api_base": None, "provider_name": None,
+            "error": "No API provider configured. Add your API key in Profile → Settings."}
 
 
 def _default_model_for_provider(provider: str) -> str:

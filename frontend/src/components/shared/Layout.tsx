@@ -1,10 +1,12 @@
-import { Outlet, useNavigate, Link } from "react-router-dom";
+import { Outlet, useNavigate, Link, useLocation } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
-import { LogOut, Anvil, UserCircle } from "lucide-react";
+import { LogOut, Anvil, UserCircle, Bookmark } from "lucide-react";
 
 export default function Layout() {
     const { user, signOut } = useAuth();
     const navigate = useNavigate();
+    const location = useLocation();
+    const onSavedIdeas = location.pathname === "/ideation/saved";
 
     const handleSignOut = async () => {
         await signOut();
@@ -31,6 +33,18 @@ export default function Layout() {
 
                 {user && (
                     <div className="flex items-center gap-1">
+                        <Link
+                            to="/ideation/saved"
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                                onSavedIdeas
+                                    ? "bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                                    : "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                            }`}
+                            title="Saved Ideas"
+                        >
+                            <Bookmark className="w-4 h-4" />
+                            <span className="hidden sm:inline">Saved Ideas</span>
+                        </Link>
                         <Link
                             to="/profile"
                             className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors text-sm"

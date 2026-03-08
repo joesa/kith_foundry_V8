@@ -16,9 +16,14 @@ interface AgentResult {
     status: "pending" | "running" | "complete" | "error";
     score: number | null;
     recommendation: string | null;
+    deep_analysis: string | null;
     strengths: string[];
     risks: string[];
     suggestions: string[];
+    key_metrics: string[];
+    timeline: string | null;
+    priority_actions: string[];
+    competitive_note: string | null;
     verdict: "go" | "no_go" | "conditional" | null;
 }
 
@@ -43,9 +48,14 @@ export default function CSuiteAnalysisPage() {
             status: "pending",
             score: null,
             recommendation: null,
+            deep_analysis: null,
             strengths: [],
             risks: [],
             suggestions: [],
+            key_metrics: [],
+            timeline: null,
+            priority_actions: [],
+            competitive_note: null,
             verdict: null,
         }))
     );
@@ -57,7 +67,10 @@ export default function CSuiteAnalysisPage() {
     const [corrections, setCorrections] = useState("");
     const [refining, setRefining] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [stuck, setStuck] = useState(false); // true when polling timed out with no progress
     const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const pollCountRef = useRef(0);
+    const POLL_TIMEOUT = 150; // ~5 min at 2s interval — stop if no progress
 
     // ── Improvement state ────────────────────────────────────────────────
     interface ImprovementDetail {
@@ -75,6 +88,7 @@ export default function CSuiteAnalysisPage() {
     const [improveRoles, setImproveRoles] = useState<string[] | null>(null); // null=all
     const [applyingImprove, setApplyingImprove] = useState(false);
     const [expandedImproveCard, setExpandedImproveCard] = useState<string | null>(null);
+    const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
 
     // Load existing results or start fresh analysis
     const loadOrStart = async () => {
@@ -100,9 +114,18 @@ export default function CSuiteAnalysisPage() {
                         setAllDone(true);
                         return; // Already complete, no need to poll or re-run
                     }
-                    // Some agents still running — poll for updates
-                    pollResults();
-                    return;
+
+                    // If ALL agents are still pending (none running/complete), the
+                    // background job never started — re-trigger the run.
+                    const allPending = data.agents.every((a: AgentResult) => a.status === "pending");
+                    if (allPending) {
+                        console.warn("All agents stuck in pending — re-triggering run");
+                        // fall through to POST /run below
+                    } else {
+                        // At least one agent is running or has results — just poll
+                        pollResults();
+                        return;
+                    }
                 }
             }
 
@@ -125,9 +148,12 @@ export default function CSuiteAnalysisPage() {
     };
 
     const pollResults = async () => {
-        const token = await getAccessToken();
+        setStuck(false);
+        pollCountRef.current = 0;
         const poll = async () => {
             try {
+                pollCountRef.current += 1;
+                const token = await getAccessToken();
                 const resp = await fetch(`${getApiBaseUrl()}/api/v1/csuite/${projectId}/status`, {
                     headers: { Authorization: `Bearer ${token}` },
                 });
@@ -141,7 +167,17 @@ export default function CSuiteAnalysisPage() {
                         const incoming = new Map<string, AgentResult>(data.agents.map((a: AgentResult) => [a.role, a]));
                         return prev.map(existing => {
                             const updated = incoming.get(existing.role);
-                            return updated ?? existing;
+                            if (!updated) return existing;
+                            // Normalize: old DB rows may lack newer array fields
+                            return {
+                                ...existing,
+                                ...updated,
+                                strengths: updated.strengths ?? existing.strengths ?? [],
+                                risks: updated.risks ?? existing.risks ?? [],
+                                suggestions: updated.suggestions ?? existing.suggestions ?? [],
+                                key_metrics: updated.key_metrics ?? existing.key_metrics ?? [],
+                                priority_actions: updated.priority_actions ?? existing.priority_actions ?? [],
+                            };
                         });
                     });
                 }
@@ -163,6 +199,15 @@ export default function CSuiteAnalysisPage() {
                         return prev;
                     });
                     if (pollingRef.current) clearInterval(pollingRef.current);
+                    return;
+                }
+
+                // Timeout: if all still pending after POLL_TIMEOUT polls, stop and show "stuck"
+                const allPending = data.agents?.every((a: AgentResult) => a.status === "pending");
+                if (allPending && pollCountRef.current >= POLL_TIMEOUT) {
+                    if (pollingRef.current) clearInterval(pollingRef.current);
+                    pollingRef.current = null;
+                    setStuck(true);
                 }
             } catch (e) {
                 console.error("Poll error:", e);
@@ -170,6 +215,42 @@ export default function CSuiteAnalysisPage() {
         };
         pollingRef.current = setInterval(poll, 2000);
         poll(); // immediate first poll
+    };
+
+    const handleRunAgain = async () => {
+        setStuck(false);
+        setError(null);
+        setAllDone(false);
+        if (pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+        }
+        try {
+            const token = await getAccessToken();
+            const resp = await fetch(`${getApiBaseUrl()}/api/v1/csuite/${projectId}/run`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!resp.ok) {
+                const body = await resp.json().catch(() => ({}));
+                throw new Error(body.detail || "Failed to start analysis");
+            }
+            setAgents(Object.keys(ROLE_META).map(role => ({
+                role,
+                status: "pending",
+                score: null,
+                recommendation: null,
+                strengths: [],
+                risks: [],
+                suggestions: [],
+                verdict: null,
+            })));
+            setOverallScore(null);
+            setOverallVerdict(null);
+            pollResults();
+        } catch (e: any) {
+            setError(e.message);
+        }
     };
 
     const handleRefine = async () => {
@@ -381,13 +462,17 @@ export default function CSuiteAnalysisPage() {
                     const meta = ROLE_META[agent.role] || { label: agent.role, icon: Info, color: "text-zinc-400", gradient: "from-zinc-500/20 to-zinc-500/20" };
                     const Icon = meta.icon;
                     const expanded = agent.status === "complete";
+                    const isClickable = agent.status === "complete";
                     return (
                         <motion.div
                             key={agent.role}
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: i * 0.05 }}
-                            className={`bg-[#12121A] border rounded-xl p-5 transition-all ${agent.status === "running"
+                            onClick={() => isClickable && setSelectedAgent(agent.role)}
+                            className={`bg-[#12121A] border rounded-xl p-5 transition-all ${
+                                isClickable ? "cursor-pointer hover:border-purple-500/40 hover:shadow-lg hover:shadow-purple-500/5" : ""
+                            } ${agent.status === "running"
                                 ? "border-purple-500/40 shadow-lg shadow-purple-500/5"
                                 : agent.status === "complete"
                                     ? "border-zinc-700/50"
@@ -481,12 +566,195 @@ export default function CSuiteAnalysisPage() {
                                             {improveLoading && improveRoles?.includes(agent.role) ? "Analyzing..." : "Improve"}
                                         </button>
                                     )}
+                                    <div className="mt-3 pt-2 border-t border-zinc-800/50 flex items-center justify-end">
+                                        <span className="text-[10px] text-purple-400/70 flex items-center gap-1">
+                                            <ArrowRight className="w-2.5 h-2.5" /> Full analysis
+                                        </span>
+                                    </div>
                                 </motion.div>
                             )}
                         </motion.div>
                     );
                 })}
             </div>
+
+            {/* ── Agent Detail Drawer ──────────────────────────────────── */}
+            <AnimatePresence>
+                {selectedAgent && (() => {
+                    const agent = agents.find(a => a.role === selectedAgent)!;
+                    const meta = ROLE_META[agent.role] || { label: agent.role, icon: Info, color: "text-zinc-400", gradient: "from-zinc-500/20 to-zinc-500/20" };
+                    const Icon = meta.icon;
+                    return (
+                        <motion.div
+                            key="agent-drawer-overlay"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setSelectedAgent(null)}
+                            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+                        >
+                            <motion.div
+                                key="agent-drawer"
+                                initial={{ x: "100%" }}
+                                animate={{ x: 0 }}
+                                exit={{ x: "100%" }}
+                                transition={{ type: "spring", damping: 30, stiffness: 300 }}
+                                onClick={e => e.stopPropagation()}
+                                className="fixed right-0 top-0 bottom-0 w-full max-w-2xl bg-[#0E0E16] border-l border-zinc-800 shadow-2xl flex flex-col z-50"
+                            >
+                                {/* Drawer header */}
+                                <div className={`flex items-center justify-between px-6 py-5 bg-gradient-to-r ${meta.gradient} border-b border-zinc-800/60`}>
+                                    <div className="flex items-center gap-3">
+                                        <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${meta.gradient} border border-zinc-700/50 flex items-center justify-center`}>
+                                            <Icon className={`w-5 h-5 ${meta.color}`} />
+                                        </div>
+                                        <div>
+                                            <h2 className="text-lg font-bold text-white">{meta.label} Analysis</h2>
+                                            {agent.score != null && (
+                                                <div className="flex items-center gap-2">
+                                                    <span className={`text-sm font-bold ${meta.color}`}>{agent.score}/100</span>
+                                                    {agent.verdict && (
+                                                        <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                                                            agent.verdict === "go" ? "text-green-400 border-green-500/30 bg-green-500/10"
+                                                            : agent.verdict === "no_go" ? "text-red-400 border-red-500/30 bg-red-500/10"
+                                                            : "text-amber-400 border-amber-500/30 bg-amber-500/10"
+                                                        }`}>{agent.verdict === "no_go" ? "NO GO" : agent.verdict.toUpperCase()}</span>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <button onClick={() => setSelectedAgent(null)} className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors">
+                                        <X className="w-5 h-5" />
+                                    </button>
+                                </div>
+
+                                {/* Drawer body */}
+                                <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+                                    {/* Executive Summary */}
+                                    {agent.recommendation && (
+                                        <div>
+                                            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Executive Summary</h3>
+                                            <p className="text-sm text-zinc-200 leading-relaxed bg-zinc-900/60 rounded-xl p-4 border border-zinc-800/50">{agent.recommendation}</p>
+                                        </div>
+                                    )}
+
+                                    {/* Deep Analysis */}
+                                    {agent.deep_analysis && (
+                                        <div>
+                                            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Deep Analysis</h3>
+                                            <div className="text-sm text-zinc-300 leading-relaxed space-y-3">
+                                                {agent.deep_analysis.split(/\n\n+/).map((para, i) => (
+                                                    <p key={i} className="text-zinc-300">{para}</p>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Strengths + Risks side by side */}
+                                    <div className="grid grid-cols-2 gap-4">
+                                        {(agent.strengths ?? []).length > 0 && (
+                                            <div>
+                                                <h3 className="text-xs font-bold uppercase tracking-widest text-green-500/70 mb-2">Strengths</h3>
+                                                <ul className="space-y-2">
+                                                    {(agent.strengths ?? []).map((s, j) => (
+                                                        <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                            <span className="text-green-400 mt-0.5 shrink-0">+</span>{s}
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                        {(agent.risks ?? []).length > 0 && (
+                                            <div>
+                                                <h3 className="text-xs font-bold uppercase tracking-widest text-red-500/70 mb-2">Risks</h3>
+                                                <ul className="space-y-2">
+                                                    {(agent.risks ?? []).map((r, j) => (
+                                                        <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                            <span className="text-red-400 mt-0.5 shrink-0">!</span>{r}
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Priority Actions */}
+                                    {(agent.priority_actions ?? []).length > 0 && (
+                                        <div>
+                                            <h3 className="text-xs font-bold uppercase tracking-widest text-purple-400/70 mb-2">Priority Actions</h3>
+                                            <ol className="space-y-2">
+                                                {(agent.priority_actions ?? []).map((a, j) => (
+                                                    <li key={j} className="text-xs text-zinc-300 flex items-start gap-2.5 bg-purple-500/5 border border-purple-500/10 rounded-lg px-3 py-2">
+                                                        <span className="text-purple-400 font-bold shrink-0">{j + 1}.</span>{a}
+                                                    </li>
+                                                ))}
+                                            </ol>
+                                        </div>
+                                    )}
+
+                                    {/* Suggestions */}
+                                    {(agent.suggestions ?? []).length > 0 && (
+                                        <div>
+                                            <h3 className="text-xs font-bold uppercase tracking-widest text-amber-500/70 mb-2">Suggestions</h3>
+                                            <ul className="space-y-2">
+                                                {(agent.suggestions ?? []).map((s, j) => (
+                                                    <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                        <span className="text-amber-400 mt-0.5 shrink-0">→</span>{s}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+
+                                    {/* Key Metrics + Timeline */}
+                                    <div className="grid grid-cols-2 gap-4">
+                                        {(agent.key_metrics ?? []).length > 0 && (
+                                            <div>
+                                                <h3 className="text-xs font-bold uppercase tracking-widest text-cyan-500/70 mb-2">Key Metrics</h3>
+                                                <ul className="space-y-1.5">
+                                                    {(agent.key_metrics ?? []).map((m, j) => (
+                                                        <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                            <span className="text-cyan-400 mt-0.5 shrink-0">◆</span>{m}
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                        {agent.timeline && (
+                                            <div>
+                                                <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Timeline</h3>
+                                                <p className="text-xs text-zinc-400 leading-relaxed bg-zinc-900/40 rounded-lg p-3 border border-zinc-800/40">{agent.timeline}</p>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Competitive Note */}
+                                    {agent.competitive_note && (
+                                        <div>
+                                            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Competitive Perspective</h3>
+                                            <p className="text-xs text-zinc-400 leading-relaxed italic border-l-2 border-zinc-700 pl-3">{agent.competitive_note}</p>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Drawer footer */}
+                                {agent.score != null && agent.score < 85 && allDone && (
+                                    <div className="px-6 py-4 border-t border-zinc-800/60 bg-zinc-900/40">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); setSelectedAgent(null); handleImprove([agent.role]); }}
+                                            disabled={improveLoading}
+                                            className="w-full flex items-center justify-center gap-2 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                                        >
+                                            <Zap className="w-4 h-4" /> Improve this analysis
+                                        </button>
+                                    </div>
+                                )}
+                            </motion.div>
+                        </motion.div>
+                    );
+                })()}
+            </AnimatePresence>
 
             {/* ── AI Improvement Plan Panel ────────────────────────────── */}
             <AnimatePresence>

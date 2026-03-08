@@ -15,6 +15,7 @@ import IdeationLanding from "./components/ideation/IdeationLanding";
 import IdeaPromptPage from "./components/ideation/IdeaPromptPage";
 import DiscoverIdeaPage from "./components/ideation/DiscoverIdeaPage";
 import IdeaResults from "./components/ideation/IdeaResults";
+import SavedIdeasPage from "./components/ideation/SavedIdeasPage";
 import CSuiteAnalysisPage from "./components/csuite/CSuiteAnalysisPage";
 import ProjectDashboardPage from "./components/project/ProjectDashboardPage";
 import DesignStudioPage from "./components/design/DesignStudioPage";
@@ -45,6 +46,7 @@ export default function App() {
                 <Route path="/ideation/prompt" element={<IdeaPromptPage />} />
                 <Route path="/ideation/discover" element={<DiscoverIdeaPage />} />
                 <Route path="/ideation/results/:sessionId" element={<IdeaResults />} />
+                <Route path="/ideation/saved" element={<SavedIdeasPage />} />
                 <Route path="/csuite/:projectId" element={<CSuiteAnalysisPage />} />
                 <Route path="/project/:projectId" element={<ProjectDashboardPage />} />
                 <Route path="/project/:projectId/design-studio" element={<DesignStudioPage />} />

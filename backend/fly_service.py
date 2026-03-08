@@ -1,356 +1,560 @@
-import os
-import requests
-import uuid
-from dotenv import load_dotenv
+"""
+Fly.io Sandbox Service — creates and manages Fly Machines for user project previews.
 
-# Load environment variables from backend/.env if it exists
+Uses the Fly Machines API to create per-project apps with a Vite dev server.
+Each sandbox runs in a Docker container with a bridge API for file writes and commands.
+"""
+import os
+import time
+import threading
+import secrets
+import shutil
+import subprocess
+import json
+import socket
+import contextlib
+import httpx
+import requests
+from typing import Optional
+
+load_dotenv = __import__("dotenv").load_dotenv
 load_dotenv()
 
-FLY_API_TOKEN = os.getenv("FLY_API_TOKEN")
-FLY_ORG_SLUG = os.getenv("FLY_ORG_SLUG", "personal") # Default to personal org
+FLY_API_TOKEN = os.getenv("FLY_API_TOKEN", "")
+FLY_ORG_SLUG = os.getenv("FLY_ORG_SLUG", "personal")
+FLY_API_HOST = os.getenv("FLY_API_HOSTNAME", "https://api.machines.dev")
+FLY_REGION = os.getenv("FLY_SANDBOX_REGION", "ord")
+FLY_SANDBOX_BASE_APP = os.getenv("FLY_SANDBOX_BASE_APP", "kith-sandbox-base")
+BRIDGE_SECRET = os.getenv("FLY_BRIDGE_SECRET") or secrets.token_urlsafe(32)
 
-def get_latest_sandbox_image() -> str:
+# Shared IPv4s are allocated per app. We resolve and use the app's actual
+# shared ingress IPv4 directly to bypass local DNS propagation delays.
+
+_workers: dict[str, "FlySandboxWorker"] = {}
+_lock = threading.Lock()
+_project_locks: dict[str, threading.Lock] = {}
+_creating_apps: set[str] = set()
+_resolved_image: Optional[str] = None
+
+
+def _get_project_lock(project_id: str) -> threading.Lock:
+    with _lock:
+        lock = _project_locks.get(project_id)
+        if lock is None:
+            lock = threading.Lock()
+            _project_locks[project_id] = lock
+        return lock
+
+
+def _allocate_public_ip(app_name: str) -> None:
+    """Allocate a shared Anycast IPv4 so Fly Proxy can route to the app.
+
+    Apps created via the Machines API don't automatically get public IPs.
+    Without a public IP, the bridge can run inside the VM but will never be
+    reachable through Fly Proxy or at *.fly.dev.
     """
-    Resolves the current deployed image from the kith-sandbox-base app at runtime.
-    This avoids hardcoding stale image tags in .env — any new deployment is picked
-    up automatically.
-    Falls back to a known-good tag if the API call fails.
+    flyctl = shutil.which("flyctl") or shutil.which("flyctl.exe")
+    if not flyctl:
+        raise RuntimeError("flyctl not found; cannot allocate public IP for sandbox app")
+
+    last_err: Optional[str] = None
+    for attempt in range(20):
+        proc = subprocess.run(
+            [flyctl, "ips", "allocate-v4", "--shared", "-a", app_name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        lowered = output.lower()
+        if proc.returncode == 0:
+            print(f"[fly] Allocated shared IPv4 for {app_name}")
+            return
+        if "already has" in lowered or "shared ipv4 address" in lowered:
+            print(f"[fly] Shared IPv4 already allocated for {app_name}")
+            return
+        last_err = output.strip() or f"exit code {proc.returncode}"
+        if "could not find app" in lowered or "not found" in lowered:
+            time.sleep(3)
+            continue
+        break
+
+    raise RuntimeError(f"Failed to allocate shared IPv4 for {app_name}: {last_err}")
+
+
+def _get_public_ip(app_name: str) -> str:
+    """Return the app's shared public IPv4 allocated by Fly."""
+    flyctl = shutil.which("flyctl") or shutil.which("flyctl.exe")
+    if not flyctl:
+        raise RuntimeError("flyctl not found; cannot inspect public IP for sandbox app")
+
+    last_err: Optional[str] = None
+    for _ in range(20):
+        proc = subprocess.run(
+            [flyctl, "ips", "list", "-a", app_name, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode != 0:
+            last_err = output.strip() or f"exit code {proc.returncode}"
+            time.sleep(2)
+            continue
+        try:
+            rows = json.loads(proc.stdout or "[]")
+        except Exception:
+            last_err = output.strip() or "invalid JSON from flyctl ips list"
+            time.sleep(2)
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            address = row.get("address") or row.get("Address")
+            ip_type = str(row.get("type") or row.get("Type") or "").lower()
+            version = str(row.get("version") or row.get("Version") or "")
+            if address and ((version == "v4") or ("v4" in ip_type)) and ("public ingress" in ip_type or "shared_v4" in ip_type):
+                return address
+        last_err = f"no shared IPv4 found for {app_name}"
+        time.sleep(2)
+
+    raise RuntimeError(f"Failed to resolve shared IPv4 for {app_name}: {last_err}")
+
+
+def _resolve_sandbox_image() -> str:
+    """Look up the latest deployed image from the base app's machines.
+
+    Queries the Fly Machines API once at startup, caches the result.
+    Falls back to FLY_SANDBOX_IMAGE env var if the lookup fails.
     """
-    fallback = "registry.fly.io/kith-sandbox-base:deployment-01KJVFT0SHPXXB1CSHHK86RX38"
+    global _resolved_image
+    if _resolved_image:
+        return _resolved_image
+
+    env_override = os.getenv("FLY_SANDBOX_IMAGE", "")
+    if env_override:
+        _resolved_image = env_override
+        print(f"[fly] Using image from FLY_SANDBOX_IMAGE env: {_resolved_image}")
+        return _resolved_image
+
     if not FLY_API_TOKEN:
-        return fallback
+        raise RuntimeError("FLY_API_TOKEN is not set — cannot resolve sandbox image")
+
     try:
-        resp = requests.get(
-            "https://api.machines.dev/v1/apps/kith-sandbox-base/machines",
+        resp = httpx.get(
+            f"{FLY_API_HOST}/v1/apps/{FLY_SANDBOX_BASE_APP}/machines",
             headers={"Authorization": f"Bearer {FLY_API_TOKEN}"},
-            timeout=10,
+            timeout=15,
         )
         resp.raise_for_status()
         machines = resp.json()
-        if machines:
-            image = machines[0].get("config", {}).get("image")
-            if image:
-                print(f"[sandbox] Resolved sandbox image: {image}")
-                return image
+        for m in machines:
+            image = m.get("config", {}).get("image", "")
+            if image and FLY_SANDBOX_BASE_APP in image:
+                _resolved_image = image
+                print(f"[fly] Auto-detected sandbox image: {_resolved_image}")
+                return _resolved_image
+        raise RuntimeError(f"No machines with a valid image found in {FLY_SANDBOX_BASE_APP}")
     except Exception as e:
-        print(f"[sandbox] Could not resolve image from kith-sandbox-base, using fallback: {e}")
-    return fallback
+        print(f"[fly] WARNING: Could not auto-detect sandbox image: {e}")
+        raise
 
-def create_and_boot_sandbox():
-    """
-    Creates a new Fly.io app, allocates an IP, and boots a machine using the sandbox image.
-    Returns preview_url and ipv6.
-    """
-    if not FLY_API_TOKEN:
-        print("WARN: FLY_API_TOKEN not set. Returning mock sandbox.")
-        return "http://localhost:3000", "0:0:0:0:0:0:0:1"
-    
-    app_name = f"kith-sandbox-{uuid.uuid4().hex[:8]}"
-    headers = {
-        "Authorization": f"Bearer {FLY_API_TOKEN}",
-        "Content-Type": "application/json"
-    }
 
-    # 1. Create App
-    print(f"Creating Fly App: {app_name}")
-    create_url = f"https://api.machines.dev/v1/apps"
-    payload = {
-        "app_name": app_name,
-        "org_slug": FLY_ORG_SLUG
-    }
-    resp = requests.post(create_url, json=payload, headers=headers, timeout=15)
-    resp.raise_for_status()
-
-    # 2. Allocate IPv4
-    # The requirement asks for an IP, but standard fly apps only get IPv6 Anycast by default.
-    # We must allocate a shared IPv4 via flyctl so it resolves on non-IPv6 Windows networks!
-    import subprocess
-    import shutil
-    print(f"Allocating Shared IPv4 for {app_name}...")
-    flyctl_path = shutil.which("flyctl") or "C:/Users/treas/.fly/bin/flyctl.exe"
+if not FLY_API_TOKEN:
+    print("[fly] WARNING: FLY_API_TOKEN is not set — sandbox creation will fail")
+else:
+    print(f"[fly] Token loaded ({len(FLY_API_TOKEN)} chars), org={FLY_ORG_SLUG}, region={FLY_REGION}")
     try:
-        subprocess.run([flyctl_path, "ips", "allocate-v4", "-a", app_name, "--shared"], check=True, capture_output=True)
+        _resolve_sandbox_image()
     except Exception as e:
-        print(f"Warning: Failed to allocate IPv4 via flyctl: {e}")
+        print(f"[fly] WARNING: Image auto-detect failed at startup: {e}")
 
-    # 3. Create Machine
-    create_machine_url = f"https://api.machines.dev/v1/apps/{app_name}/machines"
-    
-    machine_config = {
-        "config": {
-            "image": get_latest_sandbox_image(),
-            "guest": {
-                "cpu_kind": "shared",
-                "cpus": 1,
-                "memory_mb": 1024
-            },
-            "services": [
-                {
-                    "ports": [
-                        {"port": 443, "handlers": ["tls", "http"]},
-                        {"port": 80, "handlers": ["http"]}
-                    ],
-                    "protocol": "tcp",
-                    "internal_port": 80,
-                    "autostart": True,
-                    "autostop": "suspend"
-                }
-            ]
+
+class FlySandboxWorker:
+    """Manages a single Fly app/machine for a project."""
+
+    def __init__(self, project_id: str):
+        self.project_id = project_id
+        self.app_name: Optional[str] = None
+        self.machine_id: Optional[str] = None
+        self.preview_url: Optional[str] = None
+        self._public_ip: Optional[str] = None
+        self._bridge_secret = BRIDGE_SECRET
+
+    @property
+    def sandbox_id(self) -> Optional[str]:
+        return self.app_name
+
+    @property
+    def is_alive(self) -> bool:
+        return bool(self.preview_url) and self.health_check() == "ok"
+
+    @property
+    def _bridge_host(self) -> str:
+        return f"{self.app_name}.fly.dev"
+
+    def _bridge_url(self, path: str) -> str:
+        """Bridge endpoint using the real hostname.
+
+        We override DNS locally so requests connect to the app's allocated shared
+        IPv4 without waiting for local DNS propagation.
+        """
+        return f"http://{self._bridge_host}/__bridge{path}"
+
+    @contextlib.contextmanager
+    def _with_dns_override(self):
+        if not self._public_ip:
+            raise RuntimeError(f"sandbox app {self.app_name} has no allocated public IPv4")
+        original = socket.getaddrinfo
+        host = self._bridge_host
+        ip = self._public_ip
+
+        def _patched(name, port, *args, **kwargs):
+            if name == host:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
+            return original(name, port, *args, **kwargs)
+
+        socket.getaddrinfo = _patched
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = original
+
+    def _bridge_headers(self, extra: dict | None = None) -> dict:
+        """Standard headers for bridge calls (Host for Fly routing + auth).
+
+        Accept-Encoding: identity disables Fly's edge compression (zstd/gzip),
+        ensuring responses are returned as plain JSON that requests can parse.
+        """
+        h = {
+            "Host": self._bridge_host,
+            "X-Bridge-Secret": self._bridge_secret,
+            "Accept-Encoding": "identity",
         }
-    }
-    
-    print(f"Booting Machine for {app_name}")
-    try:
-        machine_resp = requests.post(create_machine_url, json=machine_config, headers=headers, timeout=30)
-        machine_resp.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        print(f"Machine creation failed: {e.response.text}")
-        raise e
-        
-    machine_data = machine_resp.json()
-    machine_id = machine_data["id"]
-    
-    # 4. Wait for it to start
-    import time
-    for _ in range(30):
-        print(f"Polling state for {machine_id}...")
-        state_resp = requests.get(f"https://api.machines.dev/v1/apps/{app_name}/machines/{machine_id}", headers=headers, timeout=10)
-        if state_resp.ok and state_resp.json().get("state") == "started":
-            print(f"Machine {machine_id} started successfully!")
-            break
-        time.sleep(1)
-    
-    ipv6 = machine_data.get("private_ip")
-    preview_url = f"https://{app_name}.fly.dev"
-    
-    print(f"Machine booted. IP: {ipv6}, URL: {preview_url}")
-    return preview_url, ipv6
+        if extra:
+            h.update(extra)
+        return h
 
-def send_edit_to_machine(app_name: str, file_path: str, search: str, replace: str):
-    """
-    Sends an edit request directly to the bridge.py running inside the Fly machine.
-    We route it through the public fly proxy on port 9999 because port 80/443 points to the Vite app.
-    """
-    url = f"https://{app_name}.fly.dev/api/v1/edit"
-    payload = {
-        "file_path": file_path,
-        "search_block": search,
-        "replace_block": replace
-    }
-    
-    if not FLY_API_TOKEN:
-        print(f"WARN: FLY_API_TOKEN not set. Mocking edit request to {url}")
-        # In a real local dev without Fly, we might hit localhost:9999 if standard docker was used.
-        # For now, just return success if we are mocking.
-        return {"status": "success", "mocked": True}
-        
-    import time
-    for attempt in range(15):
-        try:
-            resp = requests.post(url, json=payload, timeout=5)
+    def _api_request(
+        self,
+        method: str,
+        path: str,
+        json_body: Optional[dict] = None,
+        timeout: float = 60.0,
+    ) -> dict:
+        url = f"{FLY_API_HOST}/v1{path}"
+        headers = {
+            "Authorization": f"Bearer {FLY_API_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        if not FLY_API_TOKEN:
+            raise RuntimeError("FLY_API_TOKEN is not set — cannot create Fly sandbox")
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.request(method, url, headers=headers, json=json_body)
+            if resp.status_code >= 400:
+                body = resp.text[:500] if resp.text else "(empty)"
+                print(f"[fly] API error: {method} {url} → {resp.status_code}: {body}")
             resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            if attempt == 14:
-                raise e
-            time.sleep(1)
+            return resp.json() if resp.content else {}
 
-def read_file_from_machine(app_name: str, file_path: str):
-    """
-    Reads a file from the bridge.py API running inside the Fly machine.
-    """
-    url = f"https://{app_name}.fly.dev/api/v1/read"
-    payload = {"file_path": file_path}
-    
-    if not FLY_API_TOKEN:
-        print(f"WARN: FLY_API_TOKEN not set. Mocking read request to {url}")
-        # Return mock Vite template content if no Fly token
-        if file_path == "src/App.tsx":
-            return "import { useState } from 'react'\nimport reactLogo from './assets/react.svg'\nimport viteLogo from '/vite.svg'\nimport './App.css'\n\nfunction App() {\n  const [count, setCount] = useState(0)\n\n  return (\n    <>\n      <div>\n        <a href=\"https://vite.dev\" target=\"_blank\">\n          <img src={viteLogo} className=\"logo\" alt=\"Vite logo\" />\n        </a>\n        <a href=\"https://react.dev\" target=\"_blank\">\n          <img src={reactLogo} className=\"logo react\" alt=\"React logo\" />\n        </a>\n      </div>\n      <h1>Vite + React</h1>\n      <div className=\"card\">\n        <button onClick={() => setCount((count) => count + 1)}>\n          count is {count}\n        </button>\n        <p>\n          Edit <code>src/App.tsx</code> and save to test HMR\n        </p>\n      </div>\n      <p className=\"read-the-docs\">\n        Click on the Vite and React logos to learn more\n      </p>\n    </>\n  )\n}\n\nexport default App\n"
-        return ""
-        
-    import time
-    for attempt in range(15):
-        try:
-            resp = requests.post(url, json=payload, timeout=5)
-            if resp.status_code == 404:
-                return "" # File doesn't exist yet
-            resp.raise_for_status()
-            return resp.json().get("content", "")
-        except Exception as e:
-            if attempt == 14:
-                raise e
-            time.sleep(1)
+    def create(self) -> str:
+        """Create Fly app and machine, return preview URL."""
+        hex_suffix = secrets.token_hex(4)
+        self.app_name = f"kith-sandbox-{hex_suffix}"
+        with _lock:
+            _creating_apps.add(self.app_name)
 
-def write_file_to_machine(app_name: str, file_path: str, content: str):
-    """
-    Writes complete file content to the bridge.py API running inside the Fly machine.
-    This replaces the entire file, used for full-file LLM generation.
-    """
-    url = f"https://{app_name}.fly.dev/api/v1/write"
-    payload = {"file_path": file_path, "content": content}
-    
-    if not FLY_API_TOKEN:
-        print(f"WARN: FLY_API_TOKEN not set. Mocking write request to {url}")
-        return {"status": "success", "mocked": True}
-        
-    import time
-    for attempt in range(15):
         try:
-            resp = requests.post(url, json=payload, timeout=10)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            if attempt == 14:
-                raise e
-            time.sleep(1)
 
-def get_file_tree(app_name: str):
-    """
-    Fetches the file tree from the sandbox's /api/v1/tree endpoint.
-    Raises on DNS/connection errors so callers know the sandbox is unreachable.
-    """
-    url = f"https://{app_name}.fly.dev/api/v1/tree"
-    
-    if not FLY_API_TOKEN:
-        return {"tree": [
-            {"name": "src", "path": "src", "type": "dir", "children": [
-                {"name": "App.tsx", "path": "src/App.tsx", "type": "file"},
-                {"name": "App.css", "path": "src/App.css", "type": "file"},
-                {"name": "main.tsx", "path": "src/main.tsx", "type": "file"}
-            ]}
-        ]}
-    
-    import time
-    last_error = None
-    for attempt in range(15):
-        try:
-            resp = requests.get(url, timeout=5)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.ConnectionError as e:
-            # DNS failure = sandbox destroyed, don't retry
-            if "NameResolutionError" in str(e) or "getaddrinfo" in str(e):
-                raise RuntimeError(f"Sandbox {app_name} DNS resolution failed — likely destroyed") from e
-            last_error = e
-            if attempt == 14:
-                raise RuntimeError(f"Sandbox {app_name} unreachable after 15 attempts") from e
-            time.sleep(1)
-        except Exception as e:
-            last_error = e
-            if attempt == 14:
-                raise RuntimeError(f"Sandbox {app_name} unreachable after 15 attempts") from e
-            time.sleep(1)
-    raise RuntimeError(f"Sandbox {app_name} unreachable") from last_error
+            # Create app (path is /apps, base URL already has /v1)
+            self._api_request(
+                "POST",
+                "/apps",
+                json_body={
+                    "app_name": self.app_name,
+                    "org_slug": FLY_ORG_SLUG,
+                },
+            )
 
-def write_batch_to_machine(app_name: str, files: list):
-    """
-    Writes multiple files to the sandbox atomically via /api/v1/write_batch.
-    files is a list of dicts with 'file_path' and 'content' keys.
-    """
-    url = f"https://{app_name}.fly.dev/api/v1/write_batch"
-    payload = {"files": files}
-    
-    if not FLY_API_TOKEN:
-        print(f"WARN: FLY_API_TOKEN not set. Mocking batch write to {url}")
-        return {"status": "success", "mocked": True, "count": len(files)}
-        
-    import time
-    for attempt in range(15):
-        try:
-            resp = requests.post(url, json=payload, timeout=30)
-            if resp.status_code in (502, 503):
-                # Sandbox may be suspended/booting — longer backoff
-                wait = min(3 + attempt, 10)
-                print(f"[write_batch] Got {resp.status_code} (attempt {attempt + 1}), waiting {wait}s...")
-                if attempt == 3:
-                    # Try waking the sandbox after a few failures
-                    try:
-                        wake_sandbox_if_needed(app_name)
-                    except Exception:
-                        pass
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError:
-            raise
-        except Exception as e:
-            if attempt == 14:
-                raise e
+            # Create machine with our sandbox image (auto-detected from base app)
+            config = {
+                "image": _resolve_sandbox_image(),
+                "env": {
+                    "FLY_APP_NAME": self.app_name,
+                    "BRIDGE_SECRET": self._bridge_secret,
+                },
+                "guest": {"cpu_kind": "shared", "cpus": 2, "memory_mb": 2048},
+                "services": [
+                    {
+                        "protocol": "tcp",
+                        "internal_port": 80,
+                        "ports": [{"port": 80, "handlers": ["http"]}, {"port": 443, "handlers": ["tls", "http"]}],
+                    }
+                ],
+                "restart": {"policy": "always"},
+            }
+            machine = self._api_request(
+                "POST",
+                f"/apps/{self.app_name}/machines",
+                json_body={"config": config, "region": FLY_REGION, "lease_ttl": 120},
+            )
+            self.machine_id = machine.get("id")
+            self.preview_url = f"https://{self.app_name}.fly.dev"
+            _allocate_public_ip(self.app_name)
+            self._public_ip = _get_public_ip(self.app_name)
+            print(f"[fly] Using shared IPv4 {self._public_ip} for {self.app_name}")
+
+            # Wait for machine to be started
+            print(f"[fly] Waiting for machine {self.machine_id} to start...")
+            for i in range(60):
+                m = self._api_request("GET", f"/apps/{self.app_name}/machines/{self.machine_id}")
+                state = m.get("state")
+                if state == "started":
+                    print(f"[fly] Machine started after {i * 2}s")
+                    break
+                if i % 5 == 4:
+                    print(f"[fly] Machine state: {state} (waiting...)")
+                time.sleep(2)
+
+            # Wait for bridge to be reachable.
+            # We use plain HTTP directly to Fly's anycast IP with a Host header.
+            # This bypasses DNS propagation delays for new *.fly.dev apps.
+            health_url = self._bridge_url("/health")
+            health_headers = self._bridge_headers()
+            print(f"[fly] Waiting for bridge (HTTP via {self._bridge_host} -> {self._public_ip})...")
+
+            bridge_reachable = False
+            for attempt in range(60):  # up to ~120 seconds
+                try:
+                    with self._with_dns_override():
+                        r = requests.get(health_url, headers=health_headers, timeout=5)
+                    if r.status_code == 200:
+                        try:
+                            data = r.json()
+                        except Exception:
+                            # Got HTTP 200 but non-JSON body — likely Vite HTML or Fly edge passthrough
+                            if attempt % 5 == 4:
+                                body_preview = r.text[:120].replace("\n", " ") if r.text else "(empty)"
+                                print(f"[fly] bridge health returned 200 but non-JSON (attempt {attempt}): {body_preview!r}")
+                            time.sleep(2)
+                            continue
+                        bridge_reachable = True
+                        if data.get("vite_ready"):
+                            print(f"[fly] Bridge + Vite ready after {attempt * 2}s")
+                            break
+                        if attempt % 5 == 4:
+                            print(f"[fly] Bridge up, Vite not ready yet (attempt {attempt}): {data}")
+                    elif r.status_code in (404, 502, 503):
+                        if attempt % 5 == 4:
+                            print(f"[fly] Fly edge reached but not routing yet (HTTP {r.status_code}, attempt {attempt})")
+                except (requests.RequestException, OSError) as e:
+                    if attempt % 10 == 9:
+                        print(f"[fly] Bridge not reachable yet (attempt {attempt}): {e}")
+                except Exception as e:
+                    if attempt % 10 == 9:
+                        print(f"[fly] Health check error (attempt {attempt}): {e}")
+                time.sleep(2)
+
+            if not bridge_reachable:
+                raise RuntimeError(
+                    f"Bridge at {self.preview_url} never became reachable after ~120s "
+                    f"(container boot failure)"
+                )
+
+            return self.preview_url
+        finally:
+            with _lock:
+                if self.app_name:
+                    _creating_apps.discard(self.app_name)
+
+    def _bridge_call(
+        self, path: str, method: str = "POST",
+        json_body: Optional[dict] = None, max_retries: int = 5,
+    ) -> dict:
+        """Call the bridge API via hostname with DNS overridden to the app IP."""
+        url = self._bridge_url(path)
+        headers = self._bridge_headers({"Content-Type": "application/json"})
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                with self._with_dns_override():
+                    resp = requests.request(method, url, headers=headers, json=json_body, timeout=120)
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+            except (requests.RequestException, OSError) as e:
+                last_err = e
+                print(f"[fly] Bridge call {method} {path} failed (attempt {attempt + 1}/{max_retries}): {e}")
+                time.sleep(3)
+            except requests.HTTPError:
+                raise
+        raise RuntimeError(f"Bridge call {method} {path} failed after {max_retries} retries: {last_err}")
+
+    def write_files(self, files: list[dict]) -> None:
+        self._bridge_call("/write_files", json_body={"files": files})
+
+    def setup_vite(self) -> None:
+        self._bridge_call("/setup_vite")
+
+    def start_vite(self) -> str:
+        self._bridge_call("/start_vite")
+        return self.preview_url
+
+    def wait_vite_ready(self, timeout: float = 45.0) -> str:
+        deadline = time.time() + timeout
+        last = "bridge unreachable"
+        while time.time() < deadline:
+            last = self.health_check()
+            if last == "ok":
+                return "ok"
             time.sleep(2)
+        raise RuntimeError(f"Vite not ready after {timeout:.0f}s: {last}")
+
+    def execute(self, cmd: str, args=None, timeout: float = 120.0) -> str:
+        """Dispatch a command to the sandbox."""
+        if cmd == "health_check":
+            return self.health_check()
+        if cmd == "setup_vite":
+            self.setup_vite()
+            return "ok"
+        if cmd == "write_files":
+            self.write_files(args or [])
+            return "ok"
+        if cmd == "start_vite":
+            return self.start_vite()
+        if cmd == "wait_vite_ready":
+            return self.wait_vite_ready(timeout)
+        raise RuntimeError(f"unknown command: {cmd}")
+
+    def health_check(self) -> str:
+        try:
+            with self._with_dns_override():
+                r = requests.get(
+                    self._bridge_url("/health"),
+                    headers=self._bridge_headers(),
+                    timeout=10,
+                )
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("vite_ready"):
+                    return "ok"
+                return f"vite not ready: {data}"
+            return f"HTTP {r.status_code}"
+        except Exception as e:
+            return str(e)
+
+    def destroy(self) -> None:
+        if self.app_name:
+            try:
+                self._api_request("DELETE", f"/apps/{self.app_name}?force=true", timeout=30)
+            except Exception as e:
+                print(f"[fly] Warning: could not delete app {self.app_name}: {e}")
+            self.app_name = None
+            self.machine_id = None
+            self.preview_url = None
 
 
-def get_machine_state(app_name: str):
-    """
-    Return (machine_id, state) for the first machine in the app, or (None, None).
-    """
+def get_or_create_worker(project_id: str, max_retries: int = 2) -> FlySandboxWorker:
+    """Get existing Fly sandbox worker or create new one."""
+    project_lock = _get_project_lock(project_id)
+    with project_lock:
+        with _lock:
+            existing = _workers.get(project_id)
+            if existing and existing.preview_url:
+                try:
+                    if existing.health_check() == "ok":
+                        return existing
+                except Exception:
+                    pass
+                existing.destroy()
+                _workers.pop(project_id, None)
+
+        for attempt in range(max_retries):
+            worker = FlySandboxWorker(project_id)
+            try:
+                worker.create()
+                with _lock:
+                    _workers[project_id] = worker
+                print(f"[fly] Sandbox created for {project_id}: {worker.preview_url}")
+                return worker
+            except Exception as e:
+                import traceback
+                print(f"[fly] Sandbox creation failed (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"[fly] Traceback:\n{traceback.format_exc()}")
+                worker.destroy()
+                if attempt < max_retries - 1:
+                    time.sleep(3)
+        raise RuntimeError(f"Failed to create Fly sandbox for {project_id}")
+
+
+def release_worker(project_id: str) -> None:
+    """Destroy and remove the Fly sandbox for a project."""
+    with _lock:
+        worker = _workers.pop(project_id, None)
+    if worker:
+        worker.destroy()
+        print(f"[fly] Sandbox released for {project_id}")
+
+
+def cleanup_stale_sandboxes() -> int:
+    """Delete sandbox apps not tracked by this process (leaked from crashes)."""
     if not FLY_API_TOKEN:
-        return None, None
-
-    headers = {
-        "Authorization": f"Bearer {FLY_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    url = f"https://api.machines.dev/v1/apps/{app_name}/machines"
+        return 0
+    headers = {"Authorization": f"Bearer {FLY_API_TOKEN}"}
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = httpx.get(
+            f"{FLY_API_HOST}/v1/apps?org_slug={FLY_ORG_SLUG}",
+            headers=headers,
+            timeout=15,
+        )
         resp.raise_for_status()
-        machines = resp.json() or []
-        if not machines:
-            return None, None
-        first = machines[0]
-        return first.get("id"), first.get("state")
+        data = resp.json()
+        apps = data if isinstance(data, list) else data.get("apps", [])
+
+        tracked = {w.app_name for w in _workers.values()}
+        tracked.update(_creating_apps)
+        stale = []
+        for app in apps:
+            name = app.get("name", "") if isinstance(app, dict) else str(app)
+            if (
+                name.startswith("kith-sandbox-")
+                and name != FLY_SANDBOX_BASE_APP
+                and name not in tracked
+            ):
+                stale.append(name)
+
+        if not stale:
+            print("[fly] No stale sandboxes to clean up")
+            return 0
+
+        print(f"[fly] Cleaning up {len(stale)} stale sandbox(es): {stale}")
+        deleted = 0
+        for name in stale:
+            try:
+                httpx.delete(
+                    f"{FLY_API_HOST}/v1/apps/{name}",
+                    headers=headers,
+                    timeout=30,
+                )
+                print(f"[fly] Deleted stale sandbox: {name}")
+                deleted += 1
+            except Exception as e:
+                print(f"[fly] Warning: failed to delete {name}: {e}")
+        return deleted
     except Exception as e:
-        print(f"Warning: failed to get machine state for {app_name}: {e}")
-        return None, None
+        print(f"[fly] WARNING: Stale sandbox cleanup failed: {e}")
+        return 0
 
 
-def start_machine(app_name: str, machine_id: str):
-    """
-    Start an existing Fly machine.
-    """
-    if not FLY_API_TOKEN or not machine_id:
-        return False
-
-    headers = {
-        "Authorization": f"Bearer {FLY_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    url = f"https://api.machines.dev/v1/apps/{app_name}/machines/{machine_id}/start"
+# ── Deferred startup cleanup (runs after module fully loads) ──
+def _deferred_startup_cleanup():
+    """Clean up stale sandboxes in a background thread so import isn't blocked."""
     try:
-        resp = requests.post(url, headers=headers, timeout=10)
-        if resp.status_code in (200, 202, 204, 409):
-            return True
-        resp.raise_for_status()
-        return True
+        deleted = cleanup_stale_sandboxes()
+        if deleted:
+            print(f"[fly] Startup cleanup: removed {deleted} stale sandbox(es)")
     except Exception as e:
-        print(f"Warning: failed to start machine {machine_id} for {app_name}: {e}")
-        return False
+        print(f"[fly] Startup cleanup error: {e}")
 
 
-def wake_sandbox_if_needed(app_name: str):
-    """
-    Attempt to wake an existing sandbox machine if it is suspended/stopped.
-    Returns True when app appears runnable after wake attempt.
-    """
-    machine_id, state = get_machine_state(app_name)
-    if not machine_id:
-        return False
-
-    # started/starting already fine
-    if state in ("started", "starting"):
-        return True
-
-    if state in ("suspended", "stopped", "created"):
-        if not start_machine(app_name, machine_id):
-            return False
-
-        import time
-        for _ in range(20):
-            _, current_state = get_machine_state(app_name)
-            if current_state in ("started", "starting"):
-                return True
-            time.sleep(1)
-
-    return False
+if FLY_API_TOKEN:
+    threading.Thread(target=_deferred_startup_cleanup, daemon=True).start()

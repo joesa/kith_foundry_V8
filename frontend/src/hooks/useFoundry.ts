@@ -22,7 +22,7 @@ export function useFoundry(projectId?: string) {
     const { getAccessToken, loading: authLoading } = useAuth();
 
     // Capture the token string into stable state — avoids WS reconnect loop.
-    // getAccessToken is now async (fetches fresh session from Supabase).
+    // getAccessToken is async (Nhost session/token).
     const [wsToken, setWsToken] = useState<string | null>(null);
     useEffect(() => {
         if (authLoading) return;
@@ -34,6 +34,8 @@ export function useFoundry(projectId?: string) {
     }, [authLoading, getAccessToken]);
     const [status, setStatus] = useState<string>("idle");
     const [wsConnected, setWsConnected] = useState(false);
+    const reconnectTimer = useRef<number | null>(null);
+    const reconnectAttempts = useRef(0);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const previewUrlRef = useRef<string | null>(null);
     const [iframeSrc, setIframeSrc] = useState<string | null>(null);
@@ -61,25 +63,81 @@ export function useFoundry(projectId?: string) {
     const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
     const ws = useRef<WebSocket | null>(null);
 
+    // Auto-fix: debounced error collection from preview iframe
+    const pendingErrors = useRef<Array<{ source: string, message: string, stack?: string }>>([]);
+    const errorFlushTimer = useRef<number | null>(null);
+
+    const sendPreviewErrors = useCallback(() => {
+        if (pendingErrors.current.length === 0) return;
+        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+            ws.current.send(JSON.stringify({
+                type: "preview_error",
+                errors: pendingErrors.current,
+            }));
+        }
+        pendingErrors.current = [];
+    }, []);
+
     useEffect(() => {
         // Wait until auth is resolved and we have a token
         if (authLoading || !wsToken) return;
 
-        // Build WS URL with auth token and project ID
-        let wsUrl = getWsUrl("/ws/chat");
-        const params: string[] = [];
-        if (projectId) params.push(`project_id=${encodeURIComponent(projectId)}`);
-        params.push(`token=${encodeURIComponent(wsToken)}`);
-        wsUrl += `?${params.join("&")}`;
+        let destroyed = false;
 
-        ws.current = new WebSocket(wsUrl);
-
-        ws.current.onopen = () => {
-            console.log("Connected to Kith Foundry backend");
-            setWsConnected(true);
+        // handleIframeError lives outside connect() so the cleanup can remove the listener
+        const handleIframeError = (event: MessageEvent) => {
+            if (event.data?.type === "preview-error" && event.data?.message) {
+                pendingErrors.current.push({
+                    source: event.data.source || "browser",
+                    message: event.data.message,
+                    stack: event.data.stack,
+                });
+                // Debounce: batch errors over 500ms window
+                if (errorFlushTimer.current) clearTimeout(errorFlushTimer.current);
+                errorFlushTimer.current = window.setTimeout(sendPreviewErrors, 500);
+            }
         };
+        window.addEventListener("message", handleIframeError);
 
-        ws.current.onmessage = (event) => {
+        const connect = () => {
+            if (destroyed) return;
+
+            // Build WS URL with auth token and project ID
+            let wsUrl = getWsUrl("/ws/chat");
+            const params: string[] = [];
+            if (projectId) params.push(`project_id=${encodeURIComponent(projectId)}`);
+            params.push(`token=${encodeURIComponent(wsToken)}`);
+            wsUrl += `?${params.join("&")}`;
+
+            const socket = new WebSocket(wsUrl);
+            ws.current = socket;
+
+            socket.onopen = () => {
+                if (destroyed) { socket.close(); return; }
+                console.log("Connected to Kith Foundry backend");
+                reconnectAttempts.current = 0;
+                setWsConnected(true);
+                setStatus("idle");
+                // Clear stale sandbox URL — new sandbox_ready will set the fresh one.
+                // This prevents the iframe from showing a 404 from the previous session's sandbox.
+                setIframeSrc(null);
+                previewUrlRef.current = null;
+                setPreviewUrl(null);
+            };
+
+            socket.onclose = (e) => {
+                if (destroyed) return;
+                setWsConnected(false);
+                // Don't reconnect on auth failure (4401) or not found (4404)
+                if (e.code === 4401 || e.code === 4404) return;
+                const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 15000);
+                reconnectAttempts.current += 1;
+                console.log(`WS closed (${e.code}), reconnecting in ${delay}ms...`);
+                setStatus("reconnecting");
+                reconnectTimer.current = window.setTimeout(connect, delay);
+            };
+
+            socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
 
             if (data.type === "status") {
@@ -185,6 +243,13 @@ export function useFoundry(projectId?: string) {
                         [data.file]: currentContent.replace(data.search_block, data.replace_block)
                     };
                 });
+            } else if (data.type === "auto_fix_status") {
+                if (data.status === "fixing") {
+                    setStatus("fixing");
+                } else if (data.status === "fixed" && data.message) {
+                    setMessages(prev => [...prev, { role: "system", content: data.message }]);
+                }
+                // "skipped" and "failed" are silent
             } else if (data.type === "error") {
                 if (data.message === "Authentication failed") {
                     // Token may have expired — force refresh and reconnect
@@ -199,10 +264,17 @@ export function useFoundry(projectId?: string) {
                 setIsStreaming(false);
                 setStreamingFile(null);
             }
-        };
+            }; // end socket.onmessage
+        }; // end connect()
+
+        connect();
 
         return () => {
+            destroyed = true;
+            if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
             setWsConnected(false);
+            window.removeEventListener("message", handleIframeError);
+            if (errorFlushTimer.current) clearTimeout(errorFlushTimer.current);
             if (ws.current) ws.current.close();
         };
     }, [projectId, authLoading, wsToken]);
@@ -224,6 +296,7 @@ export function useFoundry(projectId?: string) {
         setIframeSrc,
         hasExistingFiles,
         files,
+        setFiles,
         fileTree,
         messages,
         sendCommand,

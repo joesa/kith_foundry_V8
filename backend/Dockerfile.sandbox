@@ -1,40 +1,32 @@
-FROM ubuntu:22.04
+# Fly.io sandbox for Kith Foundry — Vite dev server + bridge API
+FROM node:20-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    curl \
-    git \
-    nginx \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip nginx curl \
     && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install fastapi uvicorn
 
 WORKDIR /workspace
 
-# Pre-seed a Vite React template
-RUN npm create vite@latest . -- --template react-ts \
-    && npm install
-
-# Copy the Kith-branded default files (replaces Vite defaults)
-COPY sandbox_defaults/App.tsx /workspace/src/App.tsx
-COPY sandbox_defaults/App.css /workspace/src/App.css
-COPY sandbox_defaults/main.tsx /workspace/src/main.tsx
-
-# Remove default Vite files we don't need
-RUN rm -f /workspace/src/index.css /workspace/src/App.css.bak 2>/dev/null || true
-
+# Bridge API (receives file writes from backend)
+RUN mkdir -p /app
 COPY bridge.py /app/bridge.py
-COPY start.sh /app/start.sh
+RUN pip3 install --no-cache-dir --break-system-packages fastapi uvicorn
+
+# Vite project scaffold
+COPY sandbox_scaffold/package.json /workspace/package.json
+COPY sandbox_scaffold/vite.config.ts /workspace/vite.config.ts
+COPY sandbox_scaffold/tailwind.config.js /workspace/tailwind.config.js
+COPY sandbox_scaffold/postcss.config.js /workspace/postcss.config.js
+COPY sandbox_scaffold/tsconfig.json /workspace/tsconfig.json
+COPY sandbox_scaffold/index.html /workspace/index.html
+COPY sandbox_scaffold/src /workspace/src
+COPY sandbox_scaffold/start.sh /app/start.sh
 COPY nginx.conf /etc/nginx/sites-available/default
-RUN chmod +x /app/start.sh
+
+RUN npm install \
+    && sed -i 's/\r//' /app/start.sh \
+    && chmod +x /app/start.sh \
+    && ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 
 EXPOSE 80
-
 CMD ["/app/start.sh"]

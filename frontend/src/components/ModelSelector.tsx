@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ChevronDown, Loader2, RefreshCw, Server } from 'lucide-react';
 import { getApiBaseUrl } from '../lib/runtimeConfig';
+import { useAuth } from '../contexts/AuthContext';
 
 interface ConfiguredProvider {
     id: number;
@@ -18,6 +19,7 @@ interface ModelSelectorProps {
 const API = getApiBaseUrl();
 
 export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
+    const { getAccessToken } = useAuth();
     const [open, setOpen] = useState(false);
     const [providers, setProviders] = useState<ConfiguredProvider[]>([]);
     const [expandedProvider, setExpandedProvider] = useState<number | null>(null);
@@ -36,9 +38,13 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
     // Fetch providers & auto-expand first one every time dropdown opens
     useEffect(() => {
         if (!open) return;
-        fetch(`${API}/api/v1/providers`)
-            .then(res => res.json())
-            .then(async (data) => {
+        (async () => {
+            const token = await getAccessToken();
+            const headers: Record<string, string> = {};
+            if (token) headers.Authorization = `Bearer ${token}`;
+            try {
+                const res = await fetch(`${API}/api/v1/providers`, { headers });
+                const data = await res.json();
                 const active = (data.providers || []).filter((p: ConfiguredProvider) => p.is_active);
                 setProviders(active);
                 // Auto-expand the first (or default) provider and fetch its models
@@ -48,15 +54,17 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
                     if (!providerModels[defaultP.id]) {
                         setLoadingModels(defaultP.id);
                         try {
-                            const res = await fetch(`${API}/api/v1/providers/${defaultP.id}/models`);
-                            const mdata = await res.json();
+                            const mres = await fetch(`${API}/api/v1/providers/${defaultP.id}/models`, { headers });
+                            const mdata = await mres.json();
                             setProviderModels(prev => ({ ...prev, [defaultP.id]: mdata.models || [] }));
                         } catch { /* ignore */ }
                         setLoadingModels(null);
                     }
                 }
-            })
-            .catch(err => console.error("Failed to load providers", err));
+            } catch (err) {
+                console.error("Failed to load providers", err);
+            }
+        })();
     }, [open]);
 
     const fetchModels = async (providerId: number) => {
@@ -69,7 +77,10 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
         setLoadingModels(providerId);
         setExpandedProvider(providerId);
         try {
-            const res = await fetch(`${API}/api/v1/providers/${providerId}/models`);
+            const token = await getAccessToken();
+            const headers: Record<string, string> = {};
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const res = await fetch(`${API}/api/v1/providers/${providerId}/models`, { headers });
             const data = await res.json();
             setProviderModels(prev => ({ ...prev, [providerId]: data.models || [] }));
         } catch (e) {
@@ -84,7 +95,10 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
         e.stopPropagation();
         setLoadingModels(providerId);
         try {
-            const res = await fetch(`${API}/api/v1/providers/${providerId}/models`);
+            const token = await getAccessToken();
+            const headers: Record<string, string> = {};
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const res = await fetch(`${API}/api/v1/providers/${providerId}/models`, { headers });
             const data = await res.json();
             setProviderModels(prev => ({ ...prev, [providerId]: data.models || [] }));
         } catch (err) {

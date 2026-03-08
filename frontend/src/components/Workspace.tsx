@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom"
 import Editor from "@monaco-editor/react";
 import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X } from "lucide-react";
 import { useFoundry } from "../hooks/useFoundry";
+import { useAutoSave } from "../hooks/useAutoSave";
 import { ModelSelector } from "./ModelSelector";
 import { FileExplorer } from "./FileExplorer";
 import { WelcomeScreen } from "./WelcomeScreen";
@@ -56,7 +57,7 @@ export default function Workspace() {
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const { getAccessToken } = useAuth();
-    const { wsConnected, status, previewUrl, iframeSrc, setIframeSrc, hasExistingFiles, files, fileTree, messages, sendCommand, isStreaming, streamingFile } = useFoundry(projectId);
+    const { wsConnected, status, previewUrl, iframeSrc, setIframeSrc, hasExistingFiles, files, setFiles, fileTree, messages, sendCommand, isStreaming, streamingFile } = useFoundry(projectId);
     const [input, setInput] = useState("");
     const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -75,6 +76,9 @@ export default function Workspace() {
     const isDragging = useRef<string | null>(null);
     const startX = useRef(0);
     const startWidth = useRef(0);
+
+    // Auto-save manual editor changes to the database
+    useAutoSave(projectId, files);
 
     // Drag resize handler
     const onMouseDown = useCallback((e: React.MouseEvent, pane: string) => {
@@ -119,10 +123,11 @@ export default function Workspace() {
         };
     }, []);
 
-    // Auto-scroll chat
+    // Auto-scroll chat — on new messages, during streaming, and on status changes
+    const streamingContent = streamingFile ? files[streamingFile] : undefined;
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
+    }, [messages, streamingFile, status, isStreaming, streamingContent]);
 
     // Auto-open files as they are written
     useEffect(() => {
@@ -144,8 +149,6 @@ export default function Workspace() {
             setActiveFile(streamingFile);
             if (!hasGenerated) {
                 setHasGenerated(true);
-                setShowExplorer(true);
-                setShowEditor(true);
             }
         }
     }, [streamingFile, hasGenerated]);
@@ -154,8 +157,6 @@ export default function Workspace() {
     useEffect(() => {
         if (hasExistingFiles && !hasGenerated) {
             setHasGenerated(true);
-            setShowExplorer(true);
-            setShowEditor(true);
         }
     }, [hasExistingFiles, hasGenerated]);
 
@@ -375,14 +376,16 @@ export default function Workspace() {
                                     {status === "booting_sandbox"
                                         ? "Booting sandbox..."
                                         : status === "applying_edits"
-                                            ? "Writing files..."
+                                            ? "Saving files..."
                                             : status === "analyzing"
                                                 ? "Analyzing request using " + (typeof selectedModel === "string" && selectedModel ? selectedModel : "AI") + "..."
                                                 : status === "reading"
                                                     ? "Reading current project files..."
                                                     : status === "generating"
                                                         ? "Generating code..."
-                                                        : "Working..."}
+                                                        : status === "reconnecting"
+                                                            ? "Reconnecting to server..."
+                                                            : "Working..."}
                                 </span>
                             </div>
                         )}
@@ -436,7 +439,7 @@ export default function Workspace() {
                                 </button>
                                 <button
                                     type="submit"
-                                    disabled={!input.trim() && attachedImages.length === 0}
+                                    disabled={(!input.trim() && attachedImages.length === 0) || !wsConnected}
                                     className="p-1.5 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-700 disabled:opacity-50 transition-colors"
                                 >
                                     <Send className="w-4 h-4" />
@@ -536,6 +539,14 @@ export default function Workspace() {
                                     cursorSmoothCaretAnimation: "on",
                                     readOnly: isStreaming && streamingFile === activeFile,
                                 }}
+                                onChange={(value) => {
+                                    if (value !== undefined && !(isStreaming && streamingFile === activeFile)) {
+                                        setFiles(prev => ({
+                                            ...prev,
+                                            [activeFile]: value,
+                                        }));
+                                    }
+                                }}
                             />
                         </div>
                     </div>
@@ -585,9 +596,53 @@ export default function Workspace() {
                             <WelcomeScreen />
                         ) : (
                             <iframe
+                                ref={(el) => {
+                                    if (!el) return;
+                                    el.onload = () => {
+                                        try {
+                                            const iframeWindow = el.contentWindow;
+                                            if (!iframeWindow) return;
+                                            // Inject error capture script into preview iframe
+                                            const script = iframeWindow.document.createElement("script");
+                                            script.textContent = `
+                                                (function() {
+                                                    var reported = {};
+                                                    function report(source, message, stack) {
+                                                        var key = source + ':' + message;
+                                                        if (reported[key]) return;
+                                                        reported[key] = true;
+                                                        window.parent.postMessage({
+                                                            type: 'preview-error',
+                                                            source: source,
+                                                            message: message,
+                                                            stack: stack || ''
+                                                        }, '*');
+                                                    }
+                                                    window.onerror = function(msg, url, line, col, err) {
+                                                        report('runtime', String(msg), err ? err.stack : url + ':' + line);
+                                                    };
+                                                    window.addEventListener('unhandledrejection', function(e) {
+                                                        var msg = e.reason ? (e.reason.message || String(e.reason)) : 'Unhandled rejection';
+                                                        report('promise', msg, e.reason ? e.reason.stack : '');
+                                                    });
+                                                    var origError = console.error;
+                                                    console.error = function() {
+                                                        var msg = Array.prototype.slice.call(arguments).join(' ');
+                                                        if (msg.length > 20) report('console', msg.substring(0, 500));
+                                                        origError.apply(console, arguments);
+                                                    };
+                                                })();
+                                            `;
+                                            iframeWindow.document.head.appendChild(script);
+                                        } catch (e) {
+                                            // Cross-origin iframe — can't inject (expected for sandbox URLs)
+                                        }
+                                    };
+                                }}
                                 src={iframeSrc}
                                 className="w-full h-full border-none bg-white"
                                 title="Live Preview"
+                                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                             />
                         )}
                     </div>

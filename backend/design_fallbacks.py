@@ -134,18 +134,18 @@ FORBIDDEN – do NOT include:
     "dashboard": """SCREEN TYPE: User Dashboard / Home
 
 REQUIRED LAYOUT:
-- App shell: top bar + sidebar navigation + main content area
-- Main content has a KPI row, chart area, and activity feed
+- Follow the MACRO LAYOUT ARCHETYPE from the DNA block exactly — it defines the structural skeleton
+- Do NOT substitute a generic KPI-card-grid if the archetype calls for something else
 
 REQUIRED ELEMENTS:
-- Top bar with product name + user avatar/menu
-- Sidebar navigation with 4-5 links (Dashboard active, Projects, Analytics, Team, Settings)
-- KPI summary row (3-4 metric cards with value + trend arrow)
-- Chart/graph placeholder area (bar chart using CSS divs)
-- Recent-activity list with 4+ items and timestamps
-- Quick-action buttons ("+ New Project", "View Reports")
+- Navigation (sidebar or top nav — match the archetype)
+- A data summary area structured per the archetype (bento tiles, a hero-stat strip with asymmetric sizing, or a split view — NOT a uniform row of 4 equal-sized cards)
+- At least one chart or data visualization (CSS-only bar/line chart using divs)
+- An activity feed, log, or secondary data pane
+- Quick-action buttons relevant to the product
 
 FORBIDDEN – do NOT include:
+- A uniform row of 3-4 identical-sized KPI boxes as the primary layout element
 - Login forms, marketing hero sections, onboarding wizards
 - Settings form fields or toggle switches as the main content""",
 
@@ -204,17 +204,19 @@ FORBIDDEN – do NOT include:
     "analytics": """SCREEN TYPE: Analytics / Reports / Insights
 
 REQUIRED LAYOUT:
-- Full-width main area with filter bar, stat row, chart, and data table
+- Follow the MACRO LAYOUT ARCHETYPE from the DNA block — let it define the skeleton
+- Favour asymmetric or editorial layouts over a top-row-of-equal-stat-cards pattern
 
 REQUIRED ELEMENTS:
-- Date-range selector / filter bar at top
-- 4 summary-stat cards in a row (totals, averages, trends with arrows)
-- Large chart placeholder (bar chart rendered with CSS divs, with legend)
+- Date-range selector / filter controls at top
+- Key metrics presented in a layout that matches the archetype (could be a big hero number + supporting stats, a horizontal strip, or bento tiles — NOT necessarily 4 equal cards)
+- Large chart (CSS-only bar or line using divs, with axis labels and legend)
 - Data table with 4+ columns and 5+ rows
-- Export / Download button
-- Period-comparison indicator ("vs. previous 30 days")
+- Export / Download action
+- Period-comparison label ("vs. previous 30 days")
 
 FORBIDDEN – do NOT include:
+- A uniform row of 4 identical stat boxes as the primary hero element
 - Login forms, marketing sections, onboarding wizards
 - Settings toggles, detail inspector panels""",
 

@@ -1,189 +1,127 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import subprocess
+"""
+Bridge API — runs inside the Fly sandbox container.
+Receives file writes and commands from the Kith Foundry backend.
+Protected by X-Bridge-Secret header (must match BRIDGE_SECRET env).
+
+Endpoints expected by fly_service.py:
+  GET  /health       → {"ok": true, "vite_ready": bool}
+  POST /health       → same
+  POST /write_files  → write files to /workspace
+  POST /setup_vite   → no-op (Vite is pre-installed in the Docker image)
+  POST /start_vite   → no-op (Vite is started by start.sh on boot)
+  POST /run_cmd      → run arbitrary shell command
+  GET  /fetch?url=   → HTTP GET from inside the sandbox
+"""
 import os
+import subprocess
+import urllib.request
+from pathlib import Path
+
+from fastapi import FastAPI, Header, HTTPException, Request
 
 app = FastAPI()
+WORKSPACE = Path("/workspace")
+WORKSPACE.mkdir(parents=True, exist_ok=True)
 
-class EditRequest(BaseModel):
-    file_path: str
-    search_block: str
-    replace_block: str
 
-class ReadRequest(BaseModel):
-    file_path: str
+def _verify_secret(x_bridge_secret: str | None) -> None:
+    expected = os.environ.get("BRIDGE_SECRET", "")
+    if not expected or not x_bridge_secret or x_bridge_secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid bridge secret")
 
-class RunRequest(BaseModel):
-    command: str
 
-@app.post("/api/v1/edit")
-async def edit_file(req: EditRequest):
-    # Security: Ensure file_path does not escape /workspace
-    full_path = os.path.abspath(os.path.join("/workspace", req.file_path))
-    if not full_path.startswith("/workspace"):
-        raise HTTPException(status_code=403, detail="Path traversal detected")
+def _check_vite() -> bool:
+    """Return True if Vite dev server is responding on localhost:5173."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:5173/", timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False
 
-    if not os.path.exists(full_path):
-        # Create file and parent directories if it doesn't exist
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as f:
-            f.write(req.replace_block)
-        return {"status": "success", "message": f"Created {req.file_path}"}
-    
-    with open(full_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    
-    if req.search_block not in content:
-        raise HTTPException(status_code=400, detail="Search block not found in file")
-    
-    new_content = content.replace(req.search_block, req.replace_block, 1)
-    
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-        
-    return {"status": "success"}
 
-@app.post("/api/v1/read")
-async def read_file(req: ReadRequest):
-    full_path = os.path.abspath(os.path.join("/workspace", req.file_path))
-    if not full_path.startswith("/workspace"):
-        raise HTTPException(status_code=403, detail="Path traversal detected")
-        
-    if not os.path.exists(full_path):
-        raise HTTPException(status_code=404, detail="File not found")
-        
-    with open(full_path, "r", encoding="utf-8") as f:
-        content = f.read()
-        
-    return {"status": "success", "content": content}
+@app.get("/health")
+@app.post("/health")
+async def health(x_bridge_secret: str | None = Header(None, alias="X-Bridge-Secret")):
+    _verify_secret(x_bridge_secret)
+    vite_ready = _check_vite()
+    return {"ok": True, "vite_ready": vite_ready}
 
-class WriteRequest(BaseModel):
-    file_path: str
-    content: str
 
-@app.post("/api/v1/write")
-async def write_file(req: WriteRequest):
-    """Write complete file content (full-file replacement)."""
-    full_path = os.path.abspath(os.path.join("/workspace", req.file_path))
-    if not full_path.startswith("/workspace"):
-        raise HTTPException(status_code=403, detail="Path traversal detected")
-    
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(req.content)
-        
-    return {"status": "success", "message": f"Wrote {req.file_path}"}
+@app.post("/setup_vite")
+async def setup_vite(x_bridge_secret: str | None = Header(None, alias="X-Bridge-Secret")):
+    """No-op — Vite project is pre-installed in the Docker image (npm install ran at build time)."""
+    _verify_secret(x_bridge_secret)
+    return {"ok": True}
 
-class FileEntry(BaseModel):
-    file_path: str
-    content: str
 
-class WriteBatchRequest(BaseModel):
-    files: list[FileEntry]
+@app.post("/start_vite")
+async def start_vite(x_bridge_secret: str | None = Header(None, alias="X-Bridge-Secret")):
+    """No-op — Vite is started by start.sh on container boot. Return the local URL."""
+    _verify_secret(x_bridge_secret)
+    return {"ok": True, "url": "http://localhost:5173"}
 
-@app.post("/api/v1/write_batch")
-async def write_batch(req: WriteBatchRequest):
-    """Write multiple files atomically. Sorts by dependency order to avoid HMR import errors."""
-    
-    def sort_key(f: FileEntry) -> int:
-        """Types first, then utils, then components, then App, then CSS, then main."""
-        path = f.file_path.lower()
-        if "type" in path: return 0
-        if "util" in path: return 1
-        if "component" in path or "page" in path: return 2
-        if "app.css" in path: return 3
-        if "app.tsx" in path or "app.jsx" in path: return 4
-        if "main.tsx" in path or "main.jsx" in path: return 5
-        return 3
-    
-    sorted_files = sorted(req.files, key=sort_key)
-    written = []
-    
-    for file_entry in sorted_files:
-        full_path = os.path.abspath(os.path.join("/workspace", file_entry.file_path))
-        if not full_path.startswith("/workspace"):
+
+@app.post("/write_files")
+async def write_files(
+    request: Request,
+    x_bridge_secret: str | None = Header(None, alias="X-Bridge-Secret"),
+):
+    _verify_secret(x_bridge_secret)
+    body = await request.json()
+    files = body.get("files", [])
+    written = 0
+    for f in files:
+        fp = f.get("file_path", "")
+        content = f.get("content", "")
+        if not fp:
             continue
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as f:
-            f.write(file_entry.content)
-        written.append(file_entry.file_path)
-    
-    return {"status": "success", "written": written, "count": len(written)}
+        path = WORKSPACE / fp
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content or "", encoding="utf-8")
+        written += 1
+    return {"ok": True, "written": written}
 
-@app.get("/api/v1/tree")
-async def get_file_tree():
-    """Returns the recursive file tree of the workspace src/ directory."""
-    import pathlib
-    
-    def build_tree(root_path: str, base_path: str = ""):
-        entries = []
-        try:
-            for item in sorted(pathlib.Path(root_path).iterdir()):
-                rel_path = os.path.join(base_path, item.name) if base_path else item.name
-                if item.name.startswith('.') or item.name == 'node_modules':
-                    continue
-                if item.is_dir():
-                    children = build_tree(str(item), rel_path)
-                    entries.append({
-                        "name": item.name,
-                        "path": rel_path,
-                        "type": "dir",
-                        "children": children
-                    })
-                else:
-                    entries.append({
-                        "name": item.name,
-                        "path": rel_path,
-                        "type": "file"
-                    })
-        except PermissionError:
-            pass
-        return entries
-    
-    tree = build_tree("/workspace/src", "src")
-    # Also include root config files
-    root_files = []
-    for f in ["package.json", "tsconfig.json", "vite.config.ts", "index.html"]:
-        p = os.path.join("/workspace", f)
-        if os.path.exists(p):
-            root_files.append({"name": f, "path": f, "type": "file"})
-    
-    return {"tree": root_files + tree}
 
-@app.post("/api/v1/run")
-async def run_command(req: RunRequest):
+@app.post("/run_cmd")
+async def run_cmd(
+    request: Request,
+    x_bridge_secret: str | None = Header(None, alias="X-Bridge-Secret"),
+):
+    _verify_secret(x_bridge_secret)
+    body = await request.json()
+    cmd = body.get("cmd", [])
+    cwd = body.get("cwd", str(WORKSPACE))
+    if not cmd:
+        raise HTTPException(status_code=400, detail="cmd required")
     try:
         result = subprocess.run(
-            req.command,
-            shell=True,
-            cwd="/workspace",
+            cmd,
+            cwd=cwd,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=300,
         )
         return {
-            "status": "success" if result.returncode == 0 else "error",
+            "ok": result.returncode == 0,
             "stdout": result.stdout,
             "stderr": result.stderr,
-            "returncode": result.returncode
+            "returncode": result.returncode,
         }
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Command timed out")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/run_background")
-async def run_background_command(req: RunRequest):
+
+@app.get("/fetch")
+async def fetch(
+    url: str,
+    x_bridge_secret: str | None = Header(None, alias="X-Bridge-Secret"),
+):
+    """HTTP GET from inside the sandbox (e.g. localhost:5173)."""
+    _verify_secret(x_bridge_secret)
     try:
-        # Start the process in the background
-        process = subprocess.Popen(
-            req.command,
-            shell=True,
-            cwd="/workspace",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        return {
-            "status": "success",
-            "pid": process.pid,
-            "message": f"Started background process: {req.command}"
-        }
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return {"status": r.status, "body": r.read().decode("utf-8", errors="replace")[:5000]}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": 0, "error": str(e)}

@@ -1,10 +1,9 @@
 import json
 import re
-from models import Message
+from models import Message, File
 from prompts import ARCHITECT_PROMPT, SURGEON_PROMPT
 import asyncio
-from fly_service import read_file_from_machine, get_file_tree
-from design_context import get_design_context_compact
+from design_context import get_design_context, get_design_context_compact
 import litellm
 import os
 
@@ -62,36 +61,43 @@ def collect_file_paths(tree_nodes: list, paths: list = None) -> list:
     return paths
 
 
-async def read_all_project_files(app_name: str, tree_data: dict) -> dict:
-    """Read the content of all source files from the sandbox."""
-    file_paths = collect_file_paths(tree_data.get("tree", []))
-    
+async def read_all_project_files(db, project_id: str) -> dict:
+    """Read the content of all source files from Supabase Storage."""
+    import storage_service
+
     source_extensions = {'.tsx', '.ts', '.jsx', '.js', '.css', '.json'}
     skip_files = {'package.json', 'tsconfig.json', 'vite.config.ts', 'package-lock.json'}
-    
-    relevant_paths = [
-        p for p in file_paths
-        if any(p.endswith(ext) for ext in source_extensions) and
-        os.path.basename(p) not in skip_files and
-        'node_modules' not in p
-    ]
-    
-    file_contents = {}
-    for path in relevant_paths:
-        try:
-            content = await asyncio.to_thread(read_file_from_machine, app_name, path)
-            if content and content.strip():
-                file_contents[path] = content
-        except Exception as e:
-            print(f"Warning: Could not read {path}: {e}")
-    
-    return file_contents
+
+    stored_files = db.query(File).filter(File.project_id == project_id).all()
+
+    # Filter to source files only (path-based filter, no content needed yet)
+    candidate_paths = []
+    db_fallback = {}
+    for f in stored_files:
+        ext = os.path.splitext(f.file_path)[1]
+        basename = os.path.basename(f.file_path)
+        if ext in source_extensions and basename not in skip_files:
+            candidate_paths.append(f.file_path)
+            if f.content:
+                db_fallback[f.file_path] = f.content  # legacy content fallback
+
+    if not candidate_paths:
+        return {}
+
+    # Download content from Supabase Storage (falls back to DB for legacy rows)
+    contents = await storage_service.download_project_files(
+        project_id, candidate_paths, db_fallback=db_fallback
+    )
+
+    # Only return files that actually have content
+    return {fp: content for fp, content in contents.items() if content}
 
 
-async def process_user_request(prompt: str, project_id: int, model_id: str, app_name: str = None, images: list = None, user_id: str = None):
+async def process_user_request(prompt: str, project_id: int, model_id: str, db=None, images: list = None, user_id: str = None):
     """
     Executes a streaming LLM call to generate multi-file modifications.
     Parses the JSON in-flight to stream individual file contents to the editor.
+    Reads project state from the database — no sandbox needed.
     """
     # Resolve model via user's routing config if no specific model requested
     api_key = None
@@ -99,6 +105,9 @@ async def process_user_request(prompt: str, project_id: int, model_id: str, app_
     if user_id and (not model_id or model_id == "default"):
         from model_resolver import resolve_model_for_task
         mc = resolve_model_for_task(user_id, "code_gen")
+        if mc.get("error"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail=mc["error"])
         model_id = mc["model"]
         api_key = mc.get("api_key")
         api_base = mc.get("api_base")
@@ -106,17 +115,18 @@ async def process_user_request(prompt: str, project_id: int, model_id: str, app_
 
     yield {"status": "analyzing", "message": f"Analyzing request using {model_id}..."}
     
-    # 1. Read the FULL project state
-    file_tree_str = ""
+    # 1. Read the FULL project state from DB
     all_files = {}
+    file_tree_str = ""
     
-    if app_name:
-        tree_data = await asyncio.to_thread(get_file_tree, app_name)
-        file_tree_str = json.dumps(tree_data.get("tree", []), indent=2)
-        
+    if db:
         yield {"status": "reading", "message": "Reading current project files..."}
-        all_files = await read_all_project_files(app_name, tree_data)
-    else:
+        all_files = await read_all_project_files(db, project_id)
+        # Build a simple tree from the file paths for context
+        tree_nodes = [{"name": os.path.basename(p), "path": p, "type": "file"} for p in sorted(all_files.keys())]
+        file_tree_str = json.dumps(tree_nodes, indent=2)
+    
+    if not file_tree_str:
         file_tree_str = '[{"name": "App.tsx", "path": "src/App.tsx", "type": "file"}]'
     
     # 2. Build the full project context string
@@ -132,7 +142,12 @@ async def process_user_request(prompt: str, project_id: int, model_id: str, app_
     # 2b. Fetch design context (CDO design system + screen inventory)
     design_ref = ""
     try:
-        design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
+        # Use full design context (includes approved mockup HTML) so the agent
+        # can faithfully replicate the approved visual designs.
+        design_ref = await asyncio.to_thread(get_design_context, project_id)
+        if not design_ref:
+            # Fallback to compact if no approved designs yet
+            design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
     except Exception as e:
         print(f"Design context fetch skipped: {e}")
 

@@ -1,12 +1,114 @@
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
-import { Lightbulb, Search, ArrowRight, Sparkles } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Lightbulb, Search, ArrowRight, Sparkles, Bookmark, Trash2, Lock, Users } from "lucide-react";
+import { useAuth } from "../../contexts/AuthContext";
+import { getApiBaseUrl } from "../../lib/runtimeConfig";
+
+interface SavedIdeaEntry {
+    id: string;
+    name: string;
+    content: any;
+    score: number | null;
+    source: string;
+    is_claimed: boolean;
+    claimed_by_other: boolean;
+    created_at: string;
+}
 
 export default function IdeationLanding() {
     const navigate = useNavigate();
+    const { getAccessToken } = useAuth();
+    const [savedIdeas, setSavedIdeas] = useState<SavedIdeaEntry[]>([]);
+    const [loadingSaved, setLoadingSaved] = useState(true);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [buildingId, setBuildingId] = useState<string | null>(null);
+
+    useEffect(() => {
+        fetchSavedIdeas();
+    }, []);
+
+    const fetchSavedIdeas = async () => {
+        try {
+            const token = await getAccessToken();
+            const res = await fetch(`${getApiBaseUrl()}/api/v1/ideation/saved`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setSavedIdeas(data.saved_ideas || []);
+            }
+        } catch (e) {
+            console.error("Failed to load saved ideas", e);
+        } finally {
+            setLoadingSaved(false);
+        }
+    };
+
+    const handleDeleteSaved = async (id: string) => {
+        setDeletingId(id);
+        try {
+            const token = await getAccessToken();
+            await fetch(`${getApiBaseUrl()}/api/v1/ideation/saved/${id}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            setSavedIdeas(prev => prev.filter(s => s.id !== id));
+        } catch (e) {
+            console.error("Failed to delete saved idea", e);
+        } finally {
+            setDeletingId(null);
+        }
+    };
+
+    const handleBuildSaved = async (idea: SavedIdeaEntry) => {
+        setBuildingId(idea.id);
+        try {
+            const token = await getAccessToken();
+            const content = idea.content || {};
+            const resp = await fetch(`${getApiBaseUrl()}/api/v1/ideation/accept`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    name: idea.name,
+                    description: content.description || "",
+                    target_audience: content.target_market || content.target_audience || "",
+                    problem_statement: content.problem_statement || content.why_now || "",
+                    source: idea.source || "questionnaire",
+                    idea_content: content,
+                }),
+            });
+            if (!resp.ok) throw new Error("Failed to create project");
+            const data = await resp.json();
+            navigate(`/csuite/${data.project_id}`);
+        } catch (e) {
+            console.error("Failed to build idea", e);
+        } finally {
+            setBuildingId(null);
+        }
+    };
 
     return (
         <div className="max-w-4xl mx-auto px-6 py-16">
+            {/* Saved ideas quick-link */}
+            <div className="flex justify-end mb-4">
+                <button
+                    onClick={() => navigate("/ideation/saved")}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl border border-zinc-700/60 bg-zinc-800/40 text-sm text-zinc-400 hover:text-white hover:border-zinc-600 transition-colors"
+                >
+                    <Bookmark className="w-4 h-4" />
+                    Saved Ideas
+                    {!loadingSaved && savedIdeas.length > 0 && (
+                        <span className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/20 px-1.5 py-0.5 rounded-full">
+                            {savedIdeas.length}
+                        </span>
+                    )}
+                </button>
+            </div>
+
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -76,6 +178,89 @@ export default function IdeationLanding() {
                     </div>
                 </motion.button>
             </div>
+
+            {/* Saved Ideas Section */}
+            {!loadingSaved && savedIdeas.length > 0 && (
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="mt-16 max-w-3xl mx-auto"
+                >
+                    <div className="flex items-center gap-3 mb-6">
+                        <Bookmark className="w-5 h-5 text-zinc-400" />
+                        <h2 className="text-xl font-bold text-white">Saved Ideas</h2>
+                        <span className="text-xs bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-full">{savedIdeas.length}</span>
+                    </div>
+
+                    {/* Exclusivity reminder */}
+                    <div className="mb-4 flex items-center gap-2 text-xs text-zinc-500">
+                        <Users className="w-3.5 h-3.5" />
+                        <span>Saved ideas are visible to all users until you start building — then they become exclusively yours.</span>
+                    </div>
+
+                    <div className="space-y-3">
+                        <AnimatePresence>
+                            {savedIdeas.map((idea) => (
+                                <motion.div
+                                    key={idea.id}
+                                    layout
+                                    initial={{ opacity: 0, height: 0 }}
+                                    animate={{ opacity: 1, height: "auto" }}
+                                    exit={{ opacity: 0, height: 0 }}
+                                    className="bg-[#12121A] border border-zinc-800/50 rounded-xl p-5 flex items-center gap-4"
+                                >
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <h3 className="text-sm font-semibold text-white truncate">{idea.name}</h3>
+                                            {idea.is_claimed && (
+                                                <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full">
+                                                    <Lock className="w-3 h-3" /> Yours
+                                                </span>
+                                            )}
+                                            {idea.claimed_by_other && (
+                                                <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold text-orange-300 bg-orange-500/10 border border-orange-500/20 px-2 py-0.5 rounded-full">
+                                                    <Lock className="w-3 h-3" /> Taken
+                                                </span>
+                                            )}
+                                            {idea.score && (
+                                                <span className="shrink-0 text-[10px] font-bold text-purple-300 bg-purple-500/10 px-2 py-0.5 rounded-full">{idea.score}/100</span>
+                                            )}
+                                        </div>
+                                        <p className="text-xs text-zinc-500 truncate">{idea.content?.description || ""}</p>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        {!idea.is_claimed && !idea.claimed_by_other && (
+                                            <button
+                                                onClick={() => handleBuildSaved(idea)}
+                                                disabled={buildingId === idea.id}
+                                                className="flex items-center gap-1.5 h-8 px-4 rounded-lg bg-purple-600 text-white text-xs font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
+                                            >
+                                                <Sparkles className="w-3.5 h-3.5" />
+                                                Build
+                                            </button>
+                                        )}
+                                        {idea.claimed_by_other && (
+                                            <span className="text-xs text-orange-400/70 italic">Another user is building this</span>
+                                        )}
+                                        {!idea.is_claimed && (
+                                            <button
+                                                onClick={() => handleDeleteSaved(idea.id)}
+                                                disabled={deletingId === idea.id}
+                                                className="h-8 w-8 rounded-lg border border-zinc-700 flex items-center justify-center text-zinc-500 hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-50"
+                                                title="Remove from saved"
+                                            >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                        )}
+                                    </div>
+                                </motion.div>
+                            ))}
+                        </AnimatePresence>
+                    </div>
+                </motion.div>
+            )}
         </div>
     );
 }

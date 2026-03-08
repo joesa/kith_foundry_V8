@@ -18,6 +18,9 @@ from models import (
 from auth import get_current_user
 from design_context import get_design_context
 
+import inngest
+from inngest_client import client as inngest_client, use_inngest
+
 litellm.drop_params = True
 router = APIRouter(prefix="/api/v1/projects", tags=["artifacts"])
 
@@ -193,7 +196,7 @@ Use realistic numbers with clear assumptions.""",
 - Container max-widths
 
 ## 5. Iconography & Imagery
-- Icon style and recommended library
+- Icon library: lucide-react (specify which icons to use for common actions)
 - Image treatment guidelines
 - Illustration style direction
 
@@ -203,7 +206,23 @@ Use realistic numbers with clear assumptions.""",
 - Touch target sizes
 - Screen reader considerations
 
-Provide exact CSS variable names and values where applicable. Format tokens as CSS custom properties ready to use in implementation.""",
+## 7. Animation & Motion System
+- Page transition patterns (specify framer-motion variants: fade, slide, scale with exact durations and easings)
+- Scroll-triggered entrance animations (useInView thresholds, stagger delays between children)
+- Parallax scroll specifications (useScroll/useTransform ranges for hero background layers)
+- Hover/focus micro-interactions (scale values, brightness changes, transition durations)
+- Loading state animations (skeleton shimmer CSS keyframes, spinner styles)
+- Number counter animations for dashboard metrics (duration, easing curve)
+- Sidebar collapse/expand animation (width transition, content fade timing)
+- AnimatePresence exit animations for route transitions
+
+## 8. Tailwind Theme Extension
+- Map all design tokens to Tailwind CSS custom properties
+- Provide the exact tailwind.config.js theme.extend block for custom colors, spacing, etc.
+- Define custom utility classes for glass-morphism, gradient text, glow effects
+- Specify responsive breakpoint behavior for each component pattern
+
+Provide exact CSS variable names and values where applicable. Format tokens as CSS custom properties ready to use in implementation. All animation specs should include exact framer-motion prop values.""",
     },
 }
 
@@ -273,7 +292,19 @@ def _bootstrap_payload_from_artifact(project_id: str, artifact: Artifact) -> dic
 
 # ── Background generation ────────────────────────────────────────────────────
 
-async def _generate_single_artifact(project_id: str, artifact_key: str, artifact_def: dict, context: str):
+def _resolve_artifact_model(user_id: str | None, db=None) -> dict:
+    """Resolve model config for artifact generation, with user's key."""
+    if user_id:
+        from model_resolver import resolve_model_for_task
+        return resolve_model_for_task(user_id, "artifacts", db=db)
+    return {"model": _get_model(), "api_key": None, "api_base": None, "provider_name": "Default"}
+
+
+# Limit concurrent LLM calls to avoid API rate limits
+_ARTIFACT_SEMAPHORE = asyncio.Semaphore(3)
+
+
+async def _generate_single_artifact(project_id: str, artifact_key: str, artifact_def: dict, context: str, user_id: str | None = None):
     """Generate a single artifact via LLM."""
     from models import SessionLocal
 
@@ -290,19 +321,29 @@ async def _generate_single_artifact(project_id: str, artifact_key: str, artifact
         db.commit()
 
         try:
-            resp = await litellm.acompletion(
-                model=_get_model(),
-                messages=[
+            model_config = _resolve_artifact_model(user_id, db=db)
+            if model_config.get("error"):
+                raise HTTPException(status_code=400, detail=model_config["error"])
+            call_kwargs = {
+                "model": model_config["model"],
+                "messages": [
                     {"role": "system", "content": f"You are a senior product strategist and business analyst. Generate a professional, detailed document.\n\n{artifact_def['prompt']}"},
                     {"role": "user", "content": context},
                 ],
-                temperature=0.7,
-                max_tokens=4000,
-            )
+                "temperature": 0.7,
+                "max_tokens": 4000,
+            }
+            if model_config.get("api_key"):
+                call_kwargs["api_key"] = model_config["api_key"]
+            if model_config.get("api_base"):
+                call_kwargs["api_base"] = model_config["api_base"]
+            print(f"📄 Artifact [{artifact_key}] using: {model_config['model']} via {model_config['provider_name']}")
+            resp = await litellm.acompletion(**call_kwargs)
             content_text = resp.choices[0].message.content.strip()
             artifact.content = {"text": content_text}
             artifact.status = AgentStatus.complete
         except Exception as e:
+            print(f"❌ Artifact [{artifact_key}] error: {e}")
             artifact.status = AgentStatus.error
             artifact.content = {"error": str(e)}
 
@@ -312,7 +353,13 @@ async def _generate_single_artifact(project_id: str, artifact_key: str, artifact
         db.close()
 
 
-async def _generate_all_artifacts(project_id: str):
+async def _throttled_artifact(project_id, key, artifact_def, context, user_id):
+    """Wrapper that throttles concurrent API calls."""
+    async with _ARTIFACT_SEMAPHORE:
+        await _generate_single_artifact(project_id, key, artifact_def, context, user_id)
+
+
+async def _generate_all_artifacts(project_id: str, user_id: str | None = None):
     """Generate all artifacts for a project in parallel (skips already complete ones)."""
     from models import SessionLocal
 
@@ -323,6 +370,7 @@ async def _generate_all_artifacts(project_id: str):
             return
 
         context = _build_project_context(project)
+        uid = user_id or project.user_id
 
         # Only generate artifacts that aren't already complete
         pending = db.query(Artifact).filter(
@@ -334,10 +382,10 @@ async def _generate_all_artifacts(project_id: str):
         tasks = []
         for key, artifact_def in ARTIFACT_DEFS.items():
             if artifact_def["title"] in pending_titles:
-                tasks.append(_generate_single_artifact(project_id, key, artifact_def, context))
+                tasks.append(_throttled_artifact(project_id, key, artifact_def, context, uid))
 
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks)
     finally:
         db.close()
 
@@ -427,7 +475,18 @@ async def generate_artifacts(
 
     db.commit()
 
-    background_tasks.add_task(_generate_all_artifacts, project_id)
+    if use_inngest():
+        try:
+            await inngest_client.send(inngest.Event(
+                name="artifacts/generate.requested",
+                data={"project_id": project_id, "user_id": user.id},
+            ))
+            print(f"📨 Inngest event: artifacts/generate.requested for {project_id[:8]}")
+        except Exception as e:
+            print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
+            background_tasks.add_task(_generate_all_artifacts, project_id, user.id)
+    else:
+        background_tasks.add_task(_generate_all_artifacts, project_id, user.id)
 
     return {"status": "generating"}
 
@@ -500,7 +559,18 @@ async def generate_single_artifact_endpoint(
     db.commit()
 
     context = _build_project_context(project)
-    background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context)
+    if use_inngest():
+        try:
+            await inngest_client.send(inngest.Event(
+                name="artifacts/generate-single.requested",
+                data={"project_id": project_id, "artifact_key": artifact_key, "artifact_def": artifact_def, "context": context, "user_id": user.id},
+            ))
+            print(f"📨 Inngest event: artifacts/generate-single.requested for {project_id[:8]}/{artifact_key}")
+        except Exception as e:
+            print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
+            background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context, user.id)
+    else:
+        background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context, user.id)
 
     return {"status": "generating", "artifact_key": artifact_key}
 
@@ -538,7 +608,18 @@ async def regenerate_artifact(
     db.commit()
 
     context = _build_project_context(project)
-    background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context)
+    if use_inngest():
+        try:
+            await inngest_client.send(inngest.Event(
+                name="artifacts/generate-single.requested",
+                data={"project_id": project_id, "artifact_key": artifact_key, "artifact_def": artifact_def, "context": context, "user_id": user.id},
+            ))
+            print(f"📨 Inngest event: artifacts/generate-single.requested (regen) for {project_id[:8]}/{artifact_key}")
+        except Exception as e:
+            print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
+            background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context, user.id)
+    else:
+        background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context, user.id)
 
     return {"status": "generating", "artifact_id": artifact.id}
 
@@ -587,14 +668,65 @@ Requirements package:
 
 {chr(10).join(ordered_sections)}
 {design_block}
+
+Available libraries (pre-installed, ready to import):
+- react-router-dom (BrowserRouter already wraps App in main.tsx)
+- framer-motion (motion, AnimatePresence, useScroll, useTransform, useInView)
+- lucide-react (named icon imports — use for ALL icons, never emoji)
+- tailwindcss v3 (via PostCSS — App.css must start with @tailwind base; @tailwind components; @tailwind utilities;)
+
 Implementation requirements:
-- Build incrementally with clear file-by-file changes
-- Use consistent naming and architecture
-- Prioritize correctness, maintainability, and UX quality
-- Include sensible defaults for auth, validation, and error handling
+- Build the COMPLETE application in a single generation — every page fully built
+- Use react-router-dom for all navigation between pages
+- Use Tailwind CSS utility classes with CSS custom properties for theming
+- Use framer-motion for all animations, transitions, and scroll effects
+- Use lucide-react for all icons throughout the application
+
+BUILD PHASES (all in one output):
+
+Phase 1 — STUNNING LANDING PAGE:
+- Hero with framer-motion entrance animations (fade-up stagger), parallax scroll via useScroll/useTransform
+- Floating animated decorative elements (gradient orbs, glowing accents)
+- Feature grid with useInView scroll-triggered staggered reveal animations
+- Social proof / testimonials section with animated cards
+- Pricing or value proposition section
+- Strong CTA sections with animated gradient backgrounds
+- Professional footer with nav links and copyright
+- ALL copy must be compelling and specific to the product — NEVER lorem ipsum
+
+Phase 2 — AUTH FLOW (Login + Register):
+- Beautiful full-screen auth layouts with animated form transitions
+- Mock authentication — accept ANY email/password, store in localStorage, redirect to dashboard
+- NO real backend — simulate a brief loading animation then redirect
+- Animated transitions between Login and Register pages
+- Social login buttons (Google, GitHub) as beautiful non-functional UI
+- "Forgot password" link (can show a simple message)
+
+Phase 3 — DASHBOARD:
+- Full layout with collapsible sidebar (lucide-react icons, active states, animated collapse)
+- Top header with user avatar, notification bell, search
+- Metrics/KPI cards (4-6) with animated number counters and trend indicators
+- Recent activity list with staggered entrance animations
+- Quick action buttons
+- Data table or content grid with proper structure
+- All sidebar links navigate to real routes
+- Responsive: sidebar collapses to hamburger on mobile
+
+Phase 4 — ALL REMAINING SCREENS:
+- Build every screen referenced in the design mockups and requirements as a full route
+- Each page has real structured content, not placeholder text
+- Wrap authenticated pages in the dashboard layout
+
+Design standards:
+- Dark mode by default with premium SaaS aesthetic
+- CSS custom properties for theme colors, Tailwind utilities for layout/spacing
+- Glass-morphism effects (backdrop-blur, semi-transparent surfaces)
+- Smooth transitions on ALL interactive elements
+- Consistent border-radius, shadows, and spacing throughout
+- Professional typography hierarchy
 - If Design Mockups are provided above, use them as the PRIMARY visual reference.
   Translate the HTML/CSS layout, colors, typography, and component structure
-  into React/TSX components + App.css. Preserve the exact look and feel.
+  into React/TSX components + Tailwind + App.css variables. Preserve the exact look and feel.
 - Follow any CDO Design Foundation guidelines (color palette, spacing, UX patterns).
 """
 

@@ -15,12 +15,14 @@ import litellm
 
 from models import (
     get_db, User, Project, Idea, IdeaQuestionnaireResponse,
-    GeneratedIdeaGlobal, ProjectStatus, IdeaSource,
+    GeneratedIdeaGlobal, SavedIdea, ProjectStatus, IdeaSource,
 )
 from auth import get_current_user
 from ideation_prompts import QUESTIONNAIRE_QUESTIONS, QUESTIONNAIRE_IDEA_PROMPT
 
 litellm.drop_params = True
+if os.getenv("LITELLM_DEBUG") == "1":
+    litellm._turn_on_debug()  # Logs full request/response; do not use in production (logs API keys)
 router = APIRouter(prefix="/api/v1/ideation", tags=["ideation"])
 
 
@@ -41,6 +43,12 @@ class AcceptIdeaRequest(BaseModel):
 class QuestionnaireRequest(BaseModel):
     responses: dict
 
+class SaveIdeaRequest(BaseModel):
+    name: str
+    content: dict
+    score: Optional[int] = None
+    source: str = "questionnaire"
+
 
 # ── LLM helpers ──────────────────────────────────────────────────────────────
 
@@ -58,41 +66,167 @@ def _resolve_ideation_model(user_id: str | None = None) -> dict:
     return {"model": _get_model(), "api_key": None, "api_base": None, "provider_name": "Default"}
 
 
-async def _llm_json(system: str, user_msg: str, user_id: str | None = None) -> dict:
-    """Call LLM and parse JSON response."""
+def _repair_json(text: str) -> dict | None:
+    """Attempt to repair truncated JSON from LLM output."""
+    import re
+    # Extract the outermost JSON object
+    match = re.search(r'\{[\s\S]*', text)
+    if not match:
+        return None
+    fragment = match.group()
+
+    # Try parsing as-is first
     try:
-        mc = _resolve_ideation_model(user_id)
-        call_kwargs = {
-            "model": mc["model"],
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_msg},
-            ],
-            "temperature": 0.9,
-            "max_tokens": 4000,
-        }
-        if mc.get("api_key"):
-            call_kwargs["api_key"] = mc["api_key"]
-        if mc.get("api_base"):
-            call_kwargs["api_base"] = mc["api_base"]
-        resp = await litellm.acompletion(**call_kwargs)
-        text = resp.choices[0].message.content.strip()
-        # Strip markdown code fences if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-        return json.loads(text)
+        return json.loads(fragment)
     except json.JSONDecodeError:
-        # Try to extract JSON from the response
-        import re
-        match = re.search(r'\{[\s\S]*\}', text)
-        if match:
-            return json.loads(match.group())
-        raise HTTPException(status_code=500, detail="LLM returned invalid JSON")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
+        pass
+
+    # Truncated JSON repair: close open strings, arrays, objects
+    depth_brace = 0
+    depth_bracket = 0
+    in_string = False
+    escape = False
+    for ch in fragment:
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth_brace += 1
+        elif ch == '}':
+            depth_brace -= 1
+        elif ch == '[':
+            depth_bracket += 1
+        elif ch == ']':
+            depth_bracket -= 1
+
+    # If we're inside a string, close it
+    repaired = fragment
+    if in_string:
+        repaired += '"'
+    # Close any open arrays/objects
+    repaired += ']' * max(0, depth_bracket)
+    repaired += '}' * max(0, depth_brace)
+
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        # Last resort: strip trailing garbage after last complete element and close
+        # Find last valid comma or colon-value boundary
+        for trim in range(min(200, len(repaired)), 0, -1):
+            candidate = fragment[:len(fragment) - trim]
+            # Remove trailing partial value
+            candidate = re.sub(r',\s*$', '', candidate)
+            candidate = re.sub(r',\s*"[^"]*$', '', candidate)
+            closing = ']' * candidate.count('[') + '}' * candidate.count('{')
+            closing = closing[::-1]  # Not quite right, need matched pairs
+            # Simple approach: count opens minus closes
+            ob = candidate.count('{') - candidate.count('}')
+            ab = candidate.count('[') - candidate.count(']')
+            candidate += ']' * max(0, ab) + '}' * max(0, ob)
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+async def _llm_json(system: str, user_msg: str, user_id: str | None = None, retries: int = 2) -> dict:
+    """Call LLM and parse JSON response, with retry on truncation."""
+    import re
+    last_error = None
+
+    for attempt in range(retries + 1):
+        try:
+            mc = _resolve_ideation_model(user_id)
+            if mc.get("error"):
+                raise HTTPException(status_code=400, detail=mc["error"])
+            call_kwargs = {
+                "model": mc["model"],
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+                "temperature": 0.9,
+                "max_tokens": 8000,
+            }
+            if mc.get("api_key"):
+                call_kwargs["api_key"] = mc["api_key"]
+            elif "anthropic/" in str(mc.get("model", "")):
+                # Explicitly pass env key for default anthropic model
+                key = os.getenv("ANTHROPIC_API_KEY")
+                if key:
+                    call_kwargs["api_key"] = key
+            if mc.get("api_base"):
+                call_kwargs["api_base"] = mc["api_base"]
+            resp = await litellm.acompletion(**call_kwargs)
+            text = resp.choices[0].message.content.strip()
+
+            # Check if response was truncated
+            finish_reason = getattr(resp.choices[0], 'finish_reason', None)
+            truncated = finish_reason == 'length'
+
+            # Strip markdown code fences if present
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+
+            # Try direct parse
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+
+            # Try extracting JSON object
+            match = re.search(r'\{[\s\S]*\}', text)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+
+            # Try repairing truncated JSON
+            repaired = _repair_json(text)
+            if repaired:
+                print(f"[ideation] Repaired truncated JSON on attempt {attempt + 1}")
+                return repaired
+
+            if truncated and attempt < retries:
+                print(f"[ideation] Response truncated, retrying ({attempt + 1}/{retries})...")
+                continue
+
+            last_error = "LLM returned invalid JSON"
+
+        except json.JSONDecodeError as e:
+            last_error = f"JSON parse error: {e}"
+            if attempt < retries:
+                print(f"[ideation] JSON error, retrying ({attempt + 1}/{retries})...")
+                continue
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            err_msg = str(e)
+            print(f"[ideation] LLM error: {err_msg}")
+            traceback.print_exc()
+            # Include model info to help debug
+            try:
+                mc = _resolve_ideation_model(user_id)
+                print(f"[ideation] Model config: model={mc.get('model')}, provider={mc.get('provider_name')}, has_api_key={bool(mc.get('api_key'))}")
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail=f"LLM error: {err_msg}")
+
+    raise HTTPException(status_code=500, detail=last_error or "LLM returned invalid JSON")
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -161,6 +295,32 @@ async def accept_idea(body: AcceptIdeaRequest, user: User = Depends(get_current_
         idea_id=idea_id,
     )
     db.add(project)
+
+    # Claim the idea globally — no other user can build the same idea
+    idea_hash = hashlib.sha256(
+        json.dumps({"name": body.name, "desc": (body.description or "")[:100]}, sort_keys=True).encode()
+    ).hexdigest()
+    global_idea = db.query(GeneratedIdeaGlobal).filter(GeneratedIdeaGlobal.idea_hash == idea_hash).first()
+    if global_idea:
+        global_idea.claimed_by = user.id
+        global_idea.claimed_at = datetime.utcnow()
+    else:
+        db.add(GeneratedIdeaGlobal(
+            id=str(uuid.uuid4()),
+            idea_hash=idea_hash,
+            summary=f"{body.name}: {(body.description or '')[:200]}",
+            claimed_by=user.id,
+            claimed_at=datetime.utcnow(),
+        ))
+
+    # If this was a saved idea, mark it as claimed
+    saved = db.query(SavedIdea).filter(
+        SavedIdea.user_id == user.id,
+        SavedIdea.idea_hash == idea_hash,
+    ).first()
+    if saved:
+        saved.is_claimed = True
+
     db.commit()
 
     return {"project_id": project_id, "idea_id": idea_id}
@@ -196,6 +356,9 @@ Respond with ONLY valid JSON:
         ).hexdigest()
 
         existing = db.query(GeneratedIdeaGlobal).filter(GeneratedIdeaGlobal.idea_hash == idea_hash).first()
+        if existing and existing.claimed_by and existing.claimed_by != user.id:
+            # Another user is building this — try again
+            continue
         if not existing:
             # It's unique! Store in global table
             global_idea = GeneratedIdeaGlobal(
@@ -228,12 +391,16 @@ async def submit_questionnaire(body: QuestionnaireRequest, user: User = Depends(
 
     result = await _llm_json(QUESTIONNAIRE_IDEA_PROMPT, f"Here are my questionnaire answers:\n{answers_text}", user_id=user.id)
 
-    # Dedup each idea
+    # Dedup each idea + filter out claimed ideas
+    filtered_ideas = []
     for idea in result.get("ideas", []):
         idea_hash = hashlib.sha256(
             json.dumps({"name": idea.get("name", ""), "desc": idea.get("description", "")[:100]}, sort_keys=True).encode()
         ).hexdigest()
         existing = db.query(GeneratedIdeaGlobal).filter(GeneratedIdeaGlobal.idea_hash == idea_hash).first()
+        if existing and existing.claimed_by and existing.claimed_by != user.id:
+            # Another user is already building this — skip it
+            continue
         if not existing:
             global_idea = GeneratedIdeaGlobal(
                 id=str(uuid.uuid4()),
@@ -241,8 +408,11 @@ async def submit_questionnaire(body: QuestionnaireRequest, user: User = Depends(
                 summary=f"{idea.get('name', '')}: {idea.get('description', '')[:200]}",
             )
             db.add(global_idea)
+        idea["_idea_hash"] = idea_hash
+        filtered_ideas.append(idea)
     db.commit()
 
+    result["ideas"] = filtered_ideas
     return result
 
 
@@ -250,3 +420,92 @@ async def submit_questionnaire(body: QuestionnaireRequest, user: User = Depends(
 async def get_questionnaire_questions(user: User = Depends(get_current_user)):
     """Return the canonical 15-question questionnaire definition."""
     return {"questions": QUESTIONNAIRE_QUESTIONS}
+
+
+# ── Saved Ideas ──────────────────────────────────────────────────────────────
+
+@router.post("/save")
+async def save_idea(body: SaveIdeaRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Save an idea for later without claiming exclusivity."""
+    # Compute idea hash
+    idea_hash = hashlib.sha256(
+        json.dumps({"name": body.name, "desc": body.content.get("description", "")[:100]}, sort_keys=True).encode()
+    ).hexdigest()
+
+    # Check if user already saved this exact idea
+    existing = db.query(SavedIdea).filter(
+        SavedIdea.user_id == user.id,
+        SavedIdea.idea_hash == idea_hash,
+    ).first()
+    if existing:
+        return {"saved_idea_id": existing.id, "message": "Already saved"}
+
+    try:
+        source_enum = IdeaSource(body.source)
+    except ValueError:
+        source_enum = IdeaSource.questionnaire
+
+    saved = SavedIdea(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        name=body.name,
+        content=body.content,
+        score=body.score,
+        source=source_enum,
+        idea_hash=idea_hash,
+        is_claimed=False,
+    )
+    db.add(saved)
+    db.commit()
+
+    return {"saved_idea_id": saved.id, "message": "Idea saved for later"}
+
+
+@router.get("/saved")
+async def list_saved_ideas(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List all saved ideas for the current user, with claim status."""
+    saved = (
+        db.query(SavedIdea)
+        .filter(SavedIdea.user_id == user.id)
+        .order_by(SavedIdea.created_at.desc())
+        .all()
+    )
+    result = []
+    for s in saved:
+        # Check if another user has claimed this idea (started building)
+        claimed_by_other = False
+        if s.idea_hash:
+            global_idea = db.query(GeneratedIdeaGlobal).filter(
+                GeneratedIdeaGlobal.idea_hash == s.idea_hash,
+                GeneratedIdeaGlobal.claimed_by != None,
+                GeneratedIdeaGlobal.claimed_by != user.id,
+            ).first()
+            claimed_by_other = global_idea is not None
+
+        result.append({
+            "id": s.id,
+            "name": s.name,
+            "content": s.content,
+            "score": s.score,
+            "source": s.source.value if s.source else None,
+            "is_claimed": s.is_claimed,
+            "claimed_by_other": claimed_by_other,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        })
+    return {"saved_ideas": result}
+
+
+@router.delete("/saved/{saved_id}")
+async def unsave_idea(saved_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Remove a saved idea (only if not yet claimed/building)."""
+    saved = db.query(SavedIdea).filter(
+        SavedIdea.id == saved_id,
+        SavedIdea.user_id == user.id,
+    ).first()
+    if not saved:
+        raise HTTPException(status_code=404, detail="Saved idea not found")
+    if saved.is_claimed:
+        raise HTTPException(status_code=400, detail="Cannot unsave — you've already started building this idea")
+    db.delete(saved)
+    db.commit()
+    return {"message": "Idea removed from saved"}

@@ -3,6 +3,7 @@ C-Suite API — Run parallel C-Suite agent analysis on a project.
 """
 import uuid
 import os
+import inngest
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -13,6 +14,7 @@ from models import (
 )
 from auth import get_current_user
 from csuite_agent import run_all_agents_background, run_selected_agents_background, generate_improvement_plan
+from inngest_client import client as inngest_client, use_inngest
 router = APIRouter(prefix="/api/v1/csuite", tags=["csuite"])
 
 
@@ -60,8 +62,24 @@ async def run_csuite(
     project.status = ProjectStatus.csuite_pending
     db.commit()
 
-    # Run agents in background
-    background_tasks.add_task(run_all_agents_background, project_id)
+    # Run agents — via Inngest when USE_INNGEST=1, else FastAPI BackgroundTasks
+    if use_inngest():
+        try:
+            result = await inngest_client.send(
+                inngest.Event(
+                    name="csuite/run.requested",
+                    data={"project_id": project_id},
+                )
+            )
+            print(f"📨 Inngest event sent: csuite/run.requested for {project_id[:8]} → {result}")
+        except Exception as e:
+            import traceback
+            print(f"⚠️  Inngest send FAILED ({type(e).__name__}: {e}) — falling back to BackgroundTasks")
+            traceback.print_exc()
+            background_tasks.add_task(run_all_agents_background, project_id)
+    else:
+        print(f"▶️  BackgroundTask: run_all_agents_background for {project_id[:8]}")
+        background_tasks.add_task(run_all_agents_background, project_id)
 
     return {"status": "started", "project_name": project.name}
 
@@ -86,6 +104,7 @@ async def csuite_status(
             "role": a.agent_role.value,
             "status": a.status.value,
             "score": a.score,
+            "error_message": a.error_message,
             "recommendation": result.get("recommendation"),
             "strengths": result.get("strengths", []),
             "risks": result.get("risks", []),
@@ -188,7 +207,20 @@ async def refine_csuite(
     project.status = ProjectStatus.csuite_pending
     db.commit()
 
-    background_tasks.add_task(run_all_agents_background, project_id, body.corrections)
+    if use_inngest():
+        try:
+            await inngest_client.send(
+                inngest.Event(
+                    name="csuite/refine.requested",
+                    data={"project_id": project_id, "correction_notes": body.corrections},
+                )
+            )
+            print(f"📨 Inngest event sent: csuite/refine.requested for {project_id[:8]}")
+        except Exception as e:
+            print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
+            background_tasks.add_task(run_all_agents_background, project_id, body.corrections)
+    else:
+        background_tasks.add_task(run_all_agents_background, project_id, body.corrections)
 
     return {"status": "started", "project_name": project.name, "mode": "refine"}
 
@@ -244,8 +276,27 @@ async def apply_improvement(
         db.add(analysis)
     db.commit()
 
-    background_tasks.add_task(
-        run_selected_agents_background, project_id, body.roles, body.enhanced_context
-    )
+    if use_inngest():
+        try:
+            await inngest_client.send(
+                inngest.Event(
+                    name="csuite/improve.apply.requested",
+                    data={
+                        "project_id": project_id,
+                        "roles": body.roles,
+                        "enhanced_context": body.enhanced_context,
+                    },
+                )
+            )
+            print(f"📨 Inngest event sent: csuite/improve.apply.requested for {project_id[:8]}")
+        except Exception as e:
+            print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
+            background_tasks.add_task(
+                run_selected_agents_background, project_id, body.roles, body.enhanced_context
+            )
+    else:
+        background_tasks.add_task(
+            run_selected_agents_background, project_id, body.roles, body.enhanced_context
+        )
 
     return {"status": "started", "roles": body.roles, "mode": "improve"}

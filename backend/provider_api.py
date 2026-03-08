@@ -1,4 +1,5 @@
 import os
+import base64
 import aiohttp
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -6,28 +7,54 @@ from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
 from models import ProviderKey, engine, Base, User
-from auth import get_optional_user
-from cryptography.fernet import Fernet
+from auth import get_current_user, get_optional_user
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 router = APIRouter()
 
-# Encryption key — generate once and store in .env
-ENCRYPTION_KEY = os.getenv("PROVIDER_ENCRYPTION_KEY", "")
-if not ENCRYPTION_KEY:
-    # Auto-generate and warn — in production this should be in .env
-    ENCRYPTION_KEY = Fernet.generate_key().decode()
-    print(f"⚠️  No PROVIDER_ENCRYPTION_KEY in .env. Generated temporary key: {ENCRYPTION_KEY}")
-    print(f"   Add PROVIDER_ENCRYPTION_KEY={ENCRYPTION_KEY} to your .env to persist keys across restarts.")
+# ── AES-256-GCM Encryption ────────────────────────────────────────────────────
+# Key must be 32 raw bytes, stored base64-urlsafe in PROVIDER_ENCRYPTION_KEY.
+# Encrypted values are stored as "gcm:<base64(nonce[12] + ciphertext + tag[16])>".
 
-fernet = Fernet(ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY)
+_aes_key_cache: bytes | None = None
+
+
+def _get_aes_key() -> bytes:
+    global _aes_key_cache
+    if _aes_key_cache is None:
+        raw = os.getenv("PROVIDER_ENCRYPTION_KEY", "")
+        if not raw:
+            raw = base64.urlsafe_b64encode(os.urandom(32)).decode()
+            print(f"⚠️  No PROVIDER_ENCRYPTION_KEY in .env. Generated temporary: {raw}")
+            print(f"   Add PROVIDER_ENCRYPTION_KEY={raw} to .env to persist across restarts.")
+        # Decode — pad to multiple of 4 for safety
+        key_bytes = base64.urlsafe_b64decode(raw + "==")
+        if len(key_bytes) < 32:
+            raise ValueError(f"PROVIDER_ENCRYPTION_KEY decodes to {len(key_bytes)} bytes; need 32.")
+        _aes_key_cache = key_bytes[:32]
+    return _aes_key_cache
 
 
 def encrypt_key(api_key: str) -> str:
-    return fernet.encrypt(api_key.encode()).decode()
+    """AES-256-GCM encrypt. Returns 'gcm:<base64url(nonce+ciphertext+tag)>'."""
+    nonce = os.urandom(12)          # 96-bit nonce (GCM spec recommendation)
+    ct = AESGCM(_get_aes_key()).encrypt(nonce, api_key.encode("utf-8"), None)
+    return "gcm:" + base64.urlsafe_b64encode(nonce + ct).decode()
 
 
 def decrypt_key(encrypted: str) -> str:
-    return fernet.decrypt(encrypted.encode()).decode()
+    """Decrypt AES-256-GCM (gcm: prefix). Falls back to Fernet for legacy rows."""
+    if encrypted.startswith("gcm:"):
+        data = base64.urlsafe_b64decode(encrypted[4:] + "==")
+        nonce, ct = data[:12], data[12:]
+        return AESGCM(_get_aes_key()).decrypt(nonce, ct, None).decode("utf-8")
+    # Legacy Fernet fallback (rows encrypted before AES-256-GCM upgrade)
+    try:
+        from cryptography.fernet import Fernet
+        fernet_key = os.getenv("PROVIDER_ENCRYPTION_KEY", "")
+        return Fernet(fernet_key.encode()).decrypt(encrypted.encode()).decode()
+    except Exception:
+        raise ValueError("Cannot decrypt provider key — unsupported format or wrong key.")
 
 
 def mask_key(api_key: str) -> str:
@@ -62,10 +89,12 @@ def get_db():
 
 # --- Routes ---
 @router.get("/api/v1/providers")
-def list_providers():
+def list_providers(user: User = Depends(get_current_user)):
     db = get_db()
     try:
-        keys = db.query(ProviderKey).order_by(ProviderKey.created_at.desc()).all()
+        keys = db.query(ProviderKey).filter(
+            ProviderKey.user_id == user.id
+        ).order_by(ProviderKey.created_at.desc()).all()
         result = []
         for k in keys:
             try:
@@ -89,18 +118,19 @@ def list_providers():
 
 
 @router.post("/api/v1/providers")
-def create_provider(data: ProviderCreate, user: Optional[User] = Depends(get_optional_user)):
+def create_provider(data: ProviderCreate, user: User = Depends(get_current_user)):
     db = get_db()
     try:
-        # If setting as default, clear existing defaults for this provider
+        # If setting as default, clear existing defaults for this user+provider
         if data.is_default:
             db.query(ProviderKey).filter(
+                ProviderKey.user_id == user.id,
                 ProviderKey.provider == data.provider,
                 ProviderKey.is_default == True
             ).update({"is_default": False})
 
         key = ProviderKey(
-            user_id=user.id if user else None,
+            user_id=user.id,
             name=data.name,
             provider=data.provider,
             api_key_encrypted=encrypt_key(data.api_key),
@@ -123,10 +153,10 @@ def create_provider(data: ProviderCreate, user: Optional[User] = Depends(get_opt
 
 
 @router.put("/api/v1/providers/{provider_id}")
-def update_provider(provider_id: int, data: ProviderUpdate):
+def update_provider(provider_id: int, data: ProviderUpdate, user: User = Depends(get_current_user)):
     db = get_db()
     try:
-        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id, ProviderKey.user_id == user.id).first()
         if not key:
             raise HTTPException(status_code=404, detail="Provider not found")
 
@@ -144,10 +174,10 @@ def update_provider(provider_id: int, data: ProviderUpdate):
 
 
 @router.delete("/api/v1/providers/{provider_id}")
-def delete_provider(provider_id: int):
+def delete_provider(provider_id: int, user: User = Depends(get_current_user)):
     db = get_db()
     try:
-        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id, ProviderKey.user_id == user.id).first()
         if not key:
             raise HTTPException(status_code=404, detail="Provider not found")
         db.delete(key)
@@ -158,15 +188,15 @@ def delete_provider(provider_id: int):
 
 
 @router.patch("/api/v1/providers/{provider_id}/default")
-def set_default_provider(provider_id: int):
+def set_default_provider(provider_id: int, user: User = Depends(get_current_user)):
     db = get_db()
     try:
-        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id, ProviderKey.user_id == user.id).first()
         if not key:
             raise HTTPException(status_code=404, detail="Provider not found")
 
-        # Clear all existing defaults
-        db.query(ProviderKey).filter(ProviderKey.is_default == True).update({"is_default": False})
+        # Clear all existing defaults for this user
+        db.query(ProviderKey).filter(ProviderKey.user_id == user.id, ProviderKey.is_default == True).update({"is_default": False})
         key.is_default = True
         db.commit()
         return {"message": f"{key.name} set as default for all generations"}
@@ -175,10 +205,10 @@ def set_default_provider(provider_id: int):
 
 
 @router.patch("/api/v1/providers/{provider_id}/toggle")
-def toggle_provider(provider_id: int):
+def toggle_provider(provider_id: int, user: User = Depends(get_current_user)):
     db = get_db()
     try:
-        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id, ProviderKey.user_id == user.id).first()
         if not key:
             raise HTTPException(status_code=404, detail="Provider not found")
 
@@ -193,10 +223,10 @@ def toggle_provider(provider_id: int):
 
 
 @router.post("/api/v1/providers/{provider_id}/test")
-async def test_provider(provider_id: int):
+async def test_provider(provider_id: int, user: User = Depends(get_current_user)):
     db = get_db()
     try:
-        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id, ProviderKey.user_id == user.id).first()
         if not key:
             raise HTTPException(status_code=404, detail="Provider not found")
 
@@ -285,11 +315,11 @@ async def test_provider(provider_id: int):
 
 
 @router.get("/api/v1/providers/{provider_id}/models")
-async def fetch_provider_models(provider_id: int):
+async def fetch_provider_models(provider_id: int, user: User = Depends(get_current_user)):
     """Fetch available models from a configured provider."""
     db = get_db()
     try:
-        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id).first()
+        key = db.query(ProviderKey).filter(ProviderKey.id == provider_id, ProviderKey.user_id == user.id).first()
         if not key:
             raise HTTPException(status_code=404, detail="Provider not found")
 

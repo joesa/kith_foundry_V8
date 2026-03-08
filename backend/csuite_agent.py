@@ -7,67 +7,149 @@ import asyncio
 from datetime import datetime
 
 import litellm
+from fastapi import HTTPException
 
 from models import Project, CSuiteAnalysis, ProjectStatus, CSuiteRole, AgentStatus
 
 litellm.drop_params = True
 
+
+def _repair_json(raw: str) -> dict | None:
+    """
+    Attempt to repair truncated JSON from an LLM response.
+    Common issue: max_tokens cuts off mid-string, leaving unterminated strings/arrays.
+    Strategy: close open strings, arrays, objects and re-parse.
+    """
+    import re
+    s = raw.rstrip()
+    # Close any open string literal
+    # Count unescaped quotes — if odd, close the string
+    quotes = len(re.findall(r'(?<!\\)"', s))
+    if quotes % 2 == 1:
+        s += '"'
+    # Now iteratively close open brackets/braces
+    for _ in range(20):
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            stripped = s.rstrip().rstrip(',')
+            # Check what needs closing
+            open_b = stripped.count('[') - stripped.count(']')
+            open_o = stripped.count('{') - stripped.count('}')
+            if open_b > 0:
+                stripped += ']'
+            elif open_o > 0:
+                stripped += '}'
+            else:
+                break
+            s = stripped
+    # Final attempt
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return None
+
 CSUITE_PROMPTS = {
-    CSuiteRole.ceo: """You are the CEO evaluating this startup idea. Assess:
-- Overall strategic vision and market opportunity
-- Scalability and long-term potential
-- Team feasibility (can this be built by 1-2 people initially?)
-- Competitive landscape and defensibility""",
-    CSuiteRole.cto: """You are the CTO evaluating this startup idea technically. Assess:
-- Technical feasibility for a small team MVP
-- Architecture complexity and scalability concerns
-- Key technical risks and unknowns
-- Recommended tech stack and infrastructure needs
-- Time-to-MVP estimate""",
-    CSuiteRole.cfo: """You are the CFO evaluating this startup's financial viability. Assess:
-- Revenue model strength and pricing strategy
-- Unit economics potential (LTV/CAC estimates)
-- Capital requirements and burn rate estimates
-- Path to profitability
-- Financial risks""",
-    CSuiteRole.cmo: """You are the CMO evaluating the go-to-market strategy. Assess:
-- Target market clarity and size (TAM/SAM/SOM)
-- Marketing channel viability
-- Customer acquisition strategy
-- Brand positioning and differentiation
-- Growth potential and viral mechanics""",
-    CSuiteRole.cpo: """You are the CPO evaluating the product strategy. Assess:
-- Problem-solution fit clarity
-- MVP feature scope (is it too broad or too narrow?)
-- User experience considerations
-- Product differentiation from alternatives
-- Feature prioritization recommendations""",
-    CSuiteRole.coo: """You are the COO evaluating operational feasibility. Assess:
-- Day-to-day operational complexity
-- Regulatory and compliance considerations
-- Supply chain or service delivery challenges
-- Scalability of operations
-- Key operational risks""",
-    CSuiteRole.cdo: """You are the CDO (Chief Design Officer) evaluating design needs. Assess:
-- Design complexity for MVP
-- Key screens/components needed
-- Brand identity requirements
-- UX patterns to consider
-- Design system recommendations
-- Accessibility considerations""",
+    CSuiteRole.ceo: """You are the CEO of a seasoned venture-backed company evaluating this startup idea as if you were deciding whether to found it or invest. This is a DEEP, HONEST, CRITICAL analysis — not cheerleading.
+
+Cover ALL of the following with depth and specificity:
+1. Strategic Vision & Market Timing — is this the right idea at the right time? What macro/micro trends support or threaten it?
+2. Founder-Market Fit — what expertise and unfair advantages does this opportunity demand?
+3. Scalability Ceiling — what is the realistic scale ceiling (local niche vs. global platform)? What breaks at scale?
+4. Competitive Moat — what are the realistic defensibility mechanisms (network effects, data, switching costs, brand)?  Who are the serious threats and why would users choose this over them?
+5. Exit Potential — realistic acquirers, IPO viability, strategic value?
+6. Team & Execution Risk — what are the most likely execution failure modes?
+7. Overall Verdict — a hard, honest recommendation with the 3 things that MUST be true for this to succeed.""",
+
+    CSuiteRole.cto: """You are a senior CTO with experience scaling systems from 0 to millions of users. Evaluate this idea with deep technical rigour — not surface-level "it's feasible".
+
+Cover ALL of the following:
+1. Technical Feasibility — can this actually be built? What are the genuinely hard technical problems (don't skip this)?
+2. MVP Architecture — specific, opinionated tech stack recommendation with justification. What databases, frameworks, infra, and third-party APIs are appropriate?
+3. Time-to-MVP — realistic estimate broken down by phase (weeks, not vague ranges). What are the critical-path items?
+4. Scalability Risks — what breaks first at 1k, 10k, 100k users? What requires re-architecture?
+5. Security & Compliance — specific data protection, auth, and regulatory considerations (GDPR, HIPAA, PCI etc. as relevant)?
+6. Technical Debt Traps — what shortcuts in the MVP will cause the most pain later?
+7. Build vs. Buy — which components should be custom-built vs. third-party services, and why?
+8. Biggest Technical Unknown — the one technical bet that could kill the project if wrong.""",
+
+    CSuiteRole.cfo: """You are a CFO with deep startup finance experience. Provide a rigorous financial analysis — use real numbers and realistic ranges, not vague optimism.
+
+Cover ALL of the following:
+1. Revenue Model Analysis — evaluate each revenue stream: how defensible is pricing, what is the realistic ARPU/ACV range, and what are the model's weaknesses?
+2. Unit Economics — estimate realistic CAC ranges by likely channel, LTV estimates, LTV:CAC ratio, and payback period. Be honest if these are unknown and what assumptions are needed.
+3. Capital Requirements — how much runway is needed to reach key milestones (MVP, first $10k MRR, first $100k MRR)? What are the major cost drivers?
+4. Burn Rate Scenarios — conservative, base, and optimistic monthly burn estimates for a 2-person founding team in Year 1.
+5. Path to Profitability — what revenue level triggers profitability, and how long realistically to get there?
+6. Fundraising Landscape — is this venture-fundable, bootstrappable, or requires grants/strategic partnerships? What milestones unlock each funding stage?
+7. Financial Risks — top 3 financial risks that could render the business non-viable.
+8. Key Financial KPIs — the 5 metrics the CFO would monitor weekly.""",
+
+    CSuiteRole.cmo: """You are a CMO with experience taking both B2B and B2C products from zero to significant market presence. Provide deep go-to-market analysis — not a generic marketing checklist.
+
+Cover ALL of the following:
+1. ICP (Ideal Customer Profile) — be extremely specific: job title, company size, industry, pain intensity, existing solution they're using today, and what makes them switch?
+2. TAM/SAM/SOM — concrete estimates with methodology (bottom-up or top-down) and sources of truth.
+3. Channel Strategy — evaluate 4-5 specific acquisition channels with expected CAC ranges, conversion rates, and scalability ceiling for this specific product.
+4. Messaging & Positioning — what is the single most compelling message? What headline would convert? What is the positioning relative to the top 3 alternatives?
+5. Content & SEO Moat — is there an organic content angle? What search terms, communities, or media properties hold the target audience?
+6. Viral & Referral Mechanics — does this product have inherent virality or referral potential? How would you engineer it?
+7. Launch Strategy — a specific 90-day launch plan with channels, tactics, and success metrics.
+8. Brand Risk — what brand/reputation risks exist and how to mitigate?""",
+
+    CSuiteRole.cpo: """You are a CPO who has shipped multiple products from 0 to product-market fit. Provide a rigorous product strategy analysis — challenge assumptions and be specific.
+
+Cover ALL of the following:
+1. Problem Validation — how well-defined and validated is the core problem? What evidence exists that people have this pain urgently enough to pay?
+2. Solution Clarity — is the proposed solution the best way to solve the problem, or are there simpler/more elegant approaches being overlooked?
+3. MVP Scope — define the absolute minimum feature set for the first release. What should explicitly NOT be in v1? What scope creep traps exist?
+4. User Journey — describe the critical path user journey step-by-step. Where will users drop off and why?
+5. Differentiation — what makes this product genuinely different from the top 3 alternatives a user might choose? Is the differentiation durable?
+6. Product Risks — top failure modes: wrong problem, wrong solution, wrong user, or wrong timing?
+7. Instrumentation — what are the 5 core product metrics, and what specific events need to be tracked from day 1?
+8. Roadmap Philosophy — what should v2 and v3 look like, and what customer signals should trigger each evolution?""",
+
+    CSuiteRole.coo: """You are a COO with experience building operational frameworks for early-stage startups. Provide a detailed operational feasibility analysis.
+
+Cover ALL of the following:
+1. Operational Complexity Audit — map out the key operational processes required: customer onboarding, support, fulfillment, data ops, etc. Rate each by complexity.
+2. Regulatory & Compliance Landscape — specific laws, regulations, licenses, or certifications required. Flag any hard blockers.
+3. Supplier & Partner Dependencies — what third-party services, APIs, or partners are mission-critical? What is the risk if they fail or raise prices?
+4. Staffing & Org Design — what roles are required for MVP vs. Series A? What is the sequencing for hiring?
+5. Customer Success Operations — how will customer support be handled, what SLAs are appropriate, and what does churn look like operationally?
+6. Scalability of Ops — what breaks operationally at 100 customers vs. 10,000? What processes need to be automated?
+7. Geographic/International Considerations — are there operational barriers to expansion (localization, compliance, logistics)?
+8. Key Operational Risks — the 3 operational scenarios most likely to derail the business.""",
+
+    CSuiteRole.cdo: """You are the CDO (Chief Design Officer) — a senior design leader with experience building design systems and product experiences from zero. Provide a deep design strategy analysis.
+
+Cover ALL of the following:
+1. UX Complexity Assessment — how complex is the required user experience? What interaction patterns and information architecture challenges exist?
+2. Critical Screen Inventory — list ALL screens/states needed for MVP with complexity rating (simple/medium/complex) for each. Include edge cases and empty states.
+3. Design System Requirements — what component library, tokens, and patterns are needed? Should they build on existing (Tailwind, shadcn, MUI) or go custom?
+4. Brand Identity Needs — what visual identity system is required? Logo, color, typography, iconography, illustration style?
+5. Accessibility Requirements — specific WCAG compliance level needed, key accessibility considerations for this product's user base.
+6. Mobile vs. Desktop Strategy — where does the primary experience live? What is the responsive/native strategy?
+7. User Research Gaps — what assumptions about user behaviour need to be validated through design research before building?
+8. Design-to-Engineering Handoff — what design tooling, documentation, and process is recommended to minimize rework?""",
 }
 
-RESPONSE_SCHEMA = """Respond with ONLY valid JSON:
+RESPONSE_SCHEMA = """Respond with ONLY valid JSON matching this exact schema:
 {
     "score": 75,
     "verdict": "go",
-    "recommendation": "2-3 sentence summary recommendation",
-    "strengths": ["strength 1", "strength 2", "strength 3"],
-    "risks": ["risk 1", "risk 2"],
-    "suggestions": ["actionable suggestion 1", "actionable suggestion 2"]
+    "recommendation": "3-4 sentence executive summary of the overall assessment and key recommendation.",
+    "deep_analysis": "4-6 paragraphs of detailed analysis from your specific executive perspective. This should be substantive, specific to this product, and cover the most critical dimensions of your evaluation. No bullet points here — full prose paragraphs.",
+    "strengths": ["detailed strength with specific reasoning", "strength 2", "strength 3", "strength 4"],
+    "risks": ["specific risk with explanation of impact", "risk 2", "risk 3"],
+    "suggestions": ["concrete actionable suggestion with specifics", "suggestion 2", "suggestion 3"],
+    "key_metrics": ["specific metric or benchmark this role tracks", "metric 2", "metric 3"],
+    "timeline": "Realistic timeline estimate from your role's perspective with phases.",
+    "priority_actions": ["most important immediate action", "second action", "third action"],
+    "competitive_note": "1-2 sentences on competitive positioning from your specific role's lens."
 }
 
-Score: 0-100 (be honest and critical)
+Score: 0-100 (be critically honest — 75 is a strong idea, 85+ is exceptional, 60-74 is viable with caveats, below 60 has serious issues)
 Verdict: "go" (score >= 70), "conditional" (50-69), "no_go" (< 50)"""
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
@@ -126,6 +208,8 @@ async def run_single_agent(
 
         try:
             model_config = _resolve_csuite_model(project.user_id, db=db)
+            if model_config.get("error"):
+                raise HTTPException(status_code=400, detail=model_config["error"])
             call_kwargs = {
                 "model": model_config["model"],
                 "messages": [
@@ -133,7 +217,7 @@ async def run_single_agent(
                     {"role": "user", "content": project_context},
                 ],
                 "temperature": 0.7,
-                "max_tokens": 2000,
+                "max_tokens": 8000,
             }
             if model_config["api_key"]:
                 call_kwargs["api_key"] = model_config["api_key"]
@@ -150,27 +234,84 @@ async def run_single_agent(
 
             import re
             match = re.search(r'\{[\s\S]*\}', text)
-            result = json.loads(match.group() if match else text)
+            raw_json = match.group() if match else text
+            try:
+                result = json.loads(raw_json)
+            except json.JSONDecodeError:
+                # LLM output was likely truncated — attempt repair
+                result = _repair_json(raw_json)
+                if result is None:
+                    raise ValueError(f"Could not parse or repair LLM JSON for {role.value}")
 
+            # Re-fetch after the long LLM call — the row may have been
+            # replaced by a concurrent re-run while we awaited the API.
+            analysis = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
+            if not analysis:
+                return  # row was superseded; silently discard result
             analysis.analysis = result
             analysis.score = min(100, max(0, int(result.get("score", 50))))
             analysis.status = AgentStatus.complete
             analysis.completed_at = datetime.utcnow()
         except Exception as e:
-            analysis.status = AgentStatus.error
-            analysis.error_message = str(e)
-            analysis.completed_at = datetime.utcnow()
+            print(f"❌ C-Suite [{role.value}] crashed: {e}")
+            analysis = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
+            if analysis and analysis.status != AgentStatus.complete:
+                analysis.status = AgentStatus.error
+                analysis.error_message = str(e)
+                analysis.completed_at = datetime.utcnow()
 
         db.commit()
     finally:
         db.close()
 
 
+# Limit concurrent LLM calls to avoid API rate limits
+_LLM_SEMAPHORE = asyncio.Semaphore(3)
+
+# Per-project locks — prevents two concurrent runs stomping on each other's DB rows
+_PROJECT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def _throttled_agent(project, role, analysis_id, correction_notes):
+    """Wrapper that throttles concurrent API calls and catches errors."""
+    async with _LLM_SEMAPHORE:
+        try:
+            await run_single_agent(project, role, analysis_id, correction_notes)
+        except Exception as e:
+            print(f"❌ C-Suite [{role.value}] crashed: {e}")
+            # Mark as error so the UI doesn't hang
+            from models import SessionLocal
+            from sqlalchemy.exc import InvalidRequestError
+            err_db = SessionLocal()
+            try:
+                analysis = err_db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
+                if analysis and analysis.status != AgentStatus.complete:
+                    analysis.status = AgentStatus.error
+                    analysis.error_message = str(e)
+                    analysis.completed_at = datetime.utcnow()
+                    err_db.commit()
+            except InvalidRequestError:
+                pass  # Row was deleted by a concurrent re-run — safe to ignore
+            finally:
+                err_db.close()
+
+
 async def run_all_agents_background(project_id: str, correction_notes: str | None = None):
     from models import SessionLocal
 
-    db = SessionLocal()
-    try:
+    # Acquire per-project lock — if a run is already in flight, cancel the new one
+    # so it doesn't delete/recreate rows that the in-flight agents still hold.
+    if project_id not in _PROJECT_LOCKS:
+        _PROJECT_LOCKS[project_id] = asyncio.Lock()
+    lock = _PROJECT_LOCKS[project_id]
+    if lock.locked():
+        print(f"⚠️  C-Suite [{project_id[:8]}] already running — skipping duplicate run (lock held)")
+        return
+    print(f"🔓 C-Suite [{project_id[:8]}] lock acquired — starting agents")
+
+    async with lock:
+      db = SessionLocal()
+      try:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             return
@@ -182,17 +323,30 @@ async def run_all_agents_background(project_id: str, correction_notes: str | Non
         _ = project.idea
 
         tasks = [
-            run_single_agent(project, analysis.agent_role, analysis.id, correction_notes)
+            _throttled_agent(project, analysis.agent_role, analysis.id, correction_notes)
             for analysis in analyses
         ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks)
+
+        # Safety net: mark any agents still pending/running as error
+        db.expire_all()
+        stuck = db.query(CSuiteAnalysis).filter(
+            CSuiteAnalysis.project_id == project_id,
+            CSuiteAnalysis.status.in_([AgentStatus.pending, AgentStatus.running]),
+        ).all()
+        for s in stuck:
+            s.status = AgentStatus.error
+            s.error_message = "Agent did not complete (possible rate limit)"
+            s.completed_at = datetime.utcnow()
+        if stuck:
+            db.commit()
 
         project = db.query(Project).filter(Project.id == project_id).first()
         if project:
             project.status = ProjectStatus.csuite_complete
             project.updated_at = datetime.utcnow()
             db.commit()
-    finally:
+      finally:
         db.close()
 
 
@@ -225,10 +379,10 @@ async def run_selected_agents_background(
         _ = project.idea
 
         tasks = [
-            run_single_agent(project, analysis.agent_role, analysis.id, correction_notes)
+            _throttled_agent(project, analysis.agent_role, analysis.id, correction_notes)
             for analysis in analyses
         ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks)
 
         # Mark project complete after partial re-run
         project = db.query(Project).filter(Project.id == project_id).first()

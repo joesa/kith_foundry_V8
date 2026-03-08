@@ -9,10 +9,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres.mnrijzampgecdloxzkbm:q4F9kWeUOMbv4M4U@aws-1-us-east-2.pooler.supabase.com:5432/postgres"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is required. Set it in .env to your Nhost Postgres connection string (Dashboard → Settings → Database).")
+# SQLAlchemy requires postgresql:// not postgres://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -117,8 +119,7 @@ class Project(Base):
     target_audience = Column(Text, nullable=True)
     problem_statement = Column(Text, nullable=True)
     status = Column(SAEnum(ProjectStatus), default=ProjectStatus.ideation, nullable=False)
-    fly_app_name = Column(String, unique=True, nullable=True, index=True)
-    fly_machine_ipv6 = Column(String, nullable=True)
+    fly_sandbox_id = Column(String, nullable=True, index=True)
     preview_url = Column(String, nullable=True)
     auto_save_enabled = Column(Boolean, default=True)
     idea_id = Column(String, ForeignKey("ideas.id"), nullable=True)
@@ -163,7 +164,25 @@ class GeneratedIdeaGlobal(Base):
     id = Column(String, primary_key=True, index=True)
     idea_hash = Column(String, unique=True, nullable=False, index=True)
     summary = Column(Text, nullable=False)
+    claimed_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)  # user who started building
+    claimed_at = Column(DateTime, nullable=True)  # when they started building
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SavedIdea(Base):
+    """Ideas saved by users for later. Not exclusive until claimed (built)."""
+    __tablename__ = "saved_ideas"
+    id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    content = Column(JSON, nullable=False)  # Full idea details
+    score = Column(Integer, nullable=True)
+    source = Column(SAEnum(IdeaSource), nullable=False)
+    idea_hash = Column(String, nullable=True, index=True)  # links to GeneratedIdeaGlobal
+    is_claimed = Column(Boolean, default=False)  # True = user started building, idea is exclusive
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
 
 
 class CSuiteAnalysis(Base):

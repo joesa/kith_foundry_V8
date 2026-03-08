@@ -142,6 +142,16 @@ async def delete_project(project_id: str, user: User = Depends(get_current_user)
     project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Wipe all Supabase Storage files for this project first
+    try:
+        import asyncio
+        from storage_service import delete_all_project_files_sync
+        await asyncio.to_thread(delete_all_project_files_sync, project_id)
+    except Exception as e:
+        print(f"[delete_project] Storage wipe warning (continuing): {e}")
+
+    # Delete DB row — cascades to files, messages, csuite_analyses, artifacts, design_mockups
     db.delete(project)
     db.commit()
     return {"deleted": True}
