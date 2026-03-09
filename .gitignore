@@ -21,6 +21,7 @@ Thumbs.db
 
 # Agents
 .agents/
+vendor/ui-ux-pro-max-skill/
 
 # Misc
 *.log

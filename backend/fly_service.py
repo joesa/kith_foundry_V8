@@ -13,14 +13,17 @@ import subprocess
 import json
 import socket
 import contextlib
+from pathlib import Path
 import httpx
 import requests
 from typing import Optional
 
 load_dotenv = __import__("dotenv").load_dotenv
+_BACKEND_DIR = Path(__file__).resolve().parent
 load_dotenv()
+load_dotenv(_BACKEND_DIR / ".env", override=False)
 
-FLY_API_TOKEN = os.getenv("FLY_API_TOKEN", "")
+FLY_API_TOKEN = ""
 FLY_ORG_SLUG = os.getenv("FLY_ORG_SLUG", "personal")
 FLY_API_HOST = os.getenv("FLY_API_HOSTNAME", "https://api.machines.dev")
 FLY_REGION = os.getenv("FLY_SANDBOX_REGION", "ord")
@@ -35,6 +38,47 @@ _lock = threading.Lock()
 _project_locks: dict[str, threading.Lock] = {}
 _creating_apps: set[str] = set()
 _resolved_image: Optional[str] = None
+
+
+def _resolve_flyctl() -> Optional[str]:
+    return shutil.which("flyctl") or shutil.which("flyctl.exe")
+
+
+def _resolve_fly_api_token() -> str:
+    token = os.getenv("FLY_API_TOKEN", "").strip()
+    if token:
+        return token
+
+    flyctl = _resolve_flyctl()
+    if not flyctl:
+        return ""
+
+    try:
+        proc = subprocess.run(
+            [flyctl, "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception:
+        return ""
+
+    if proc.returncode != 0:
+        return ""
+
+    lines = [line.strip() for line in ((proc.stdout or "") + "\n" + (proc.stderr or "")).splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("FlyV1 ") or line.startswith("fm") or line.startswith("fo1_"):
+            return line
+    return ""
+
+
+def _get_fly_api_token() -> str:
+    global FLY_API_TOKEN
+    if FLY_API_TOKEN:
+        return FLY_API_TOKEN
+    FLY_API_TOKEN = _resolve_fly_api_token()
+    return FLY_API_TOKEN
 
 
 def _get_project_lock(project_id: str) -> threading.Lock:
@@ -53,7 +97,7 @@ def _allocate_public_ip(app_name: str) -> None:
     Without a public IP, the bridge can run inside the VM but will never be
     reachable through Fly Proxy or at *.fly.dev.
     """
-    flyctl = shutil.which("flyctl") or shutil.which("flyctl.exe")
+    flyctl = _resolve_flyctl()
     if not flyctl:
         raise RuntimeError("flyctl not found; cannot allocate public IP for sandbox app")
 
@@ -84,7 +128,7 @@ def _allocate_public_ip(app_name: str) -> None:
 
 def _get_public_ip(app_name: str) -> str:
     """Return the app's shared public IPv4 allocated by Fly."""
-    flyctl = shutil.which("flyctl") or shutil.which("flyctl.exe")
+    flyctl = _resolve_flyctl()
     if not flyctl:
         raise RuntimeError("flyctl not found; cannot inspect public IP for sandbox app")
 
@@ -137,13 +181,14 @@ def _resolve_sandbox_image() -> str:
         print(f"[fly] Using image from FLY_SANDBOX_IMAGE env: {_resolved_image}")
         return _resolved_image
 
-    if not FLY_API_TOKEN:
+    token = _get_fly_api_token()
+    if not token:
         raise RuntimeError("FLY_API_TOKEN is not set — cannot resolve sandbox image")
 
     try:
         resp = httpx.get(
             f"{FLY_API_HOST}/v1/apps/{FLY_SANDBOX_BASE_APP}/machines",
-            headers={"Authorization": f"Bearer {FLY_API_TOKEN}"},
+            headers={"Authorization": f"Bearer {token}"},
             timeout=15,
         )
         resp.raise_for_status()
@@ -160,8 +205,8 @@ def _resolve_sandbox_image() -> str:
         raise
 
 
-if not FLY_API_TOKEN:
-    print("[fly] WARNING: FLY_API_TOKEN is not set — sandbox creation will fail")
+if not _get_fly_api_token():
+    print("[fly] WARNING: FLY_API_TOKEN is not set and flyctl auth token could not be resolved — sandbox creation will fail")
 else:
     print(f"[fly] Token loaded ({len(FLY_API_TOKEN)} chars), org={FLY_ORG_SLUG}, region={FLY_REGION}")
     try:
@@ -243,11 +288,12 @@ class FlySandboxWorker:
         timeout: float = 60.0,
     ) -> dict:
         url = f"{FLY_API_HOST}/v1{path}"
+        token = _get_fly_api_token()
         headers = {
-            "Authorization": f"Bearer {FLY_API_TOKEN}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        if not FLY_API_TOKEN:
+        if not token:
             raise RuntimeError("FLY_API_TOKEN is not set — cannot create Fly sandbox")
         with httpx.Client(timeout=timeout) as client:
             resp = client.request(method, url, headers=headers, json=json_body)
@@ -502,9 +548,10 @@ def release_worker(project_id: str) -> None:
 
 def cleanup_stale_sandboxes() -> int:
     """Delete sandbox apps not tracked by this process (leaked from crashes)."""
-    if not FLY_API_TOKEN:
+    token = _get_fly_api_token()
+    if not token:
         return 0
-    headers = {"Authorization": f"Bearer {FLY_API_TOKEN}"}
+    headers = {"Authorization": f"Bearer {token}"}
     try:
         resp = httpx.get(
             f"{FLY_API_HOST}/v1/apps?org_slug={FLY_ORG_SLUG}",

@@ -1,0 +1,30 @@
+---
+description: Restart local dev services after code changes
+alwaysApply: true
+---
+
+# Restart Dev Services
+
+After making code changes in this repo, rerun the shared restart script before finishing the task.
+
+Preferred commands:
+
+```bash
+./restart-dev.sh restart --wsl-shutdown
+```
+
+Windows alternatives:
+
+```powershell
+.\restart-dev.ps1 restart --wsl-shutdown
+restart-dev.cmd restart --wsl-shutdown
+```
+
+After restart, verify the local stack is healthy:
+
+- Backend responds on `http://127.0.0.1:8000/docs`
+- Frontend responds on `http://127.0.0.1:5173/`
+- Inngest dev server responds on `http://127.0.0.1:8288/`
+
+Use this rule after substantive code edits, not for read-only exploration.
+Prefer the shared restart scripts over ad-hoc per-process start/stop commands.

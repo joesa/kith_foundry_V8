@@ -179,6 +179,21 @@ export default function ProjectDashboardPage() {
 
     const completedArtifacts = artifacts.filter(a => a.status === "complete").length;
     const totalArtifacts = Object.keys(ARTIFACT_META).length;
+    const allArtifactsComplete = totalArtifacts > 0 && completedArtifacts === totalArtifacts;
+    const bootstrapReady = Boolean(bootstrapData?.prompt);
+    const canGenerateBootstrap = allArtifactsComplete;
+    const canAccessBuildFlow = bootstrapReady;
+    const nextStep = !allArtifactsComplete ? "artifacts" : !bootstrapReady ? "bootstrap" : null;
+    const lockedActionClass = "opacity-45 saturate-50 cursor-not-allowed pointer-events-none";
+    const pulseAnimation = {
+        boxShadow: [
+            "0 0 0 rgba(168,85,247,0)",
+            "0 0 0 1px rgba(168,85,247,0.32), 0 0 24px rgba(168,85,247,0.18)",
+            "0 0 0 rgba(168,85,247,0)",
+        ],
+        scale: [1, 1.01, 1],
+    };
+    const pulseTransition = { duration: 2.2, repeat: Infinity, ease: "easeInOut" as const };
 
     return (
         <div className="max-w-6xl mx-auto px-6 py-10">
@@ -190,20 +205,34 @@ export default function ProjectDashboardPage() {
                         <p className="text-zinc-400 max-w-2xl">{project?.description}</p>
                     </div>
                     <div className="flex items-center gap-3">
-                        <Link
-                            to={`/project/${projectId}/design-studio`}
-                            className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors"
-                        >
-                            <Palette className="w-4 h-4" />
-                            Design Studio
-                        </Link>
-                        <Link
-                            to={`/project/${projectId}/editor?autobuild=1`}
-                            className="flex items-center gap-2 h-10 px-5 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 transition-all shadow-lg shadow-purple-500/20"
-                        >
-                            <Code2 className="w-4 h-4" />
-                            Open Editor
-                        </Link>
+                        {canAccessBuildFlow ? (
+                            <Link
+                                to={`/project/${projectId}/design-studio`}
+                                className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors"
+                            >
+                                <Palette className="w-4 h-4" />
+                                Design Studio
+                            </Link>
+                        ) : (
+                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-800 bg-zinc-900/40 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
+                                <Palette className="w-4 h-4" />
+                                Design Studio
+                            </div>
+                        )}
+                        {canAccessBuildFlow ? (
+                            <Link
+                                to={`/project/${projectId}/editor?autobuild=1`}
+                                className="flex items-center gap-2 h-10 px-5 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 transition-all shadow-lg shadow-purple-500/20"
+                            >
+                                <Code2 className="w-4 h-4" />
+                                Open Editor
+                            </Link>
+                        ) : (
+                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl bg-zinc-800/60 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
+                                <Code2 className="w-4 h-4" />
+                                Open Editor
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -220,34 +249,47 @@ export default function ProjectDashboardPage() {
                                 {project.overall_verdict === "no_go" ? "NO GO" : project.overall_verdict.toUpperCase()}
                             </span>
                         )}
-                        <Link
-                            to={`/csuite/${projectId}`}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/20 transition-colors"
-                        >
-                            <Rocket className="w-3.5 h-3.5" />
-                            Improve
-                        </Link>
+                        {canAccessBuildFlow ? (
+                            <Link
+                                to={`/csuite/${projectId}`}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/20 transition-colors"
+                            >
+                                <Rocket className="w-3.5 h-3.5" />
+                                Improve
+                            </Link>
+                        ) : (
+                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900/40 border border-zinc-800 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
+                                <Rocket className="w-3.5 h-3.5" />
+                                Improve
+                            </div>
+                        )}
                     </div>
                 )}
             </motion.div>
 
             {/* Bootstrap prompt section */}
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-                <div className="bg-[#12121A] border border-zinc-800/50 rounded-xl p-5">
+                <div className={`bg-[#12121A] border border-zinc-800/50 rounded-xl p-5 transition-opacity ${canGenerateBootstrap ? "opacity-100" : "opacity-60"}`}>
                     <div className="flex items-center justify-between gap-3 mb-3">
                         <div>
                             <h2 className="text-lg font-bold text-white">AI Bootstrap Prompt</h2>
-                            <p className="text-xs text-zinc-400 mt-1">Compile generated artifacts into one master build prompt for the editor.</p>
+                            <p className="text-xs text-zinc-400 mt-1">
+                                {allArtifactsComplete
+                                    ? "Generate the AI bootstrap prompt to unlock Design Studio, Build with Kith, and Open Editor."
+                                    : "Locked until all project artifacts have been generated."}
+                            </p>
                         </div>
                         <div className="flex items-center gap-2">
-                            <button
+                            <motion.button
                                 onClick={handleGenerateBootstrapPrompt}
-                                disabled={bootstrapLoading || !artifacts.some(a => a.status === "complete")}
-                                title={!artifacts.some(a => a.status === "complete") ? "Generate your project artifacts first" : undefined}
+                                disabled={bootstrapLoading || !canGenerateBootstrap}
+                                title={!canGenerateBootstrap ? "Generate all project artifacts first" : undefined}
+                                animate={nextStep === "bootstrap" && !bootstrapLoading ? pulseAnimation : undefined}
+                                transition={nextStep === "bootstrap" && !bootstrapLoading ? pulseTransition : undefined}
                                 className="h-9 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {bootstrapLoading ? "Generating..." : "Generate"}
-                            </button>
+                                {bootstrapLoading ? "Generating..." : "Generate AI Bootstrap Prompt"}
+                            </motion.button>
                             <button
                                 onClick={handleCopyPrompt}
                                 disabled={!bootstrapData?.prompt}
@@ -255,12 +297,18 @@ export default function ProjectDashboardPage() {
                             >
                                 {copied ? "Copied" : "Copy Prompt"}
                             </button>
-                            <Link
-                                to={`/project/${projectId}/editor?autobuild=1`}
-                                className="h-9 px-4 rounded-lg bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 flex items-center"
-                            >
-                                Build with Kith
-                            </Link>
+                            {canAccessBuildFlow ? (
+                                <Link
+                                    to={`/project/${projectId}/editor?autobuild=1`}
+                                    className="h-9 px-4 rounded-lg bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 flex items-center"
+                                >
+                                    Build with Kith
+                                </Link>
+                            ) : (
+                                <div className={`h-9 px-4 rounded-lg bg-zinc-800/60 text-zinc-500 text-sm font-medium flex items-center ${lockedActionClass}`}>
+                                    Build with Kith
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -289,9 +337,11 @@ export default function ProjectDashboardPage() {
                     <p className="text-sm text-zinc-400 mt-1">{completedArtifacts}/{totalArtifacts} generated</p>
                 </div>
                 {completedArtifacts < totalArtifacts && (
-                    <button
+                    <motion.button
                         onClick={handleGenerateArtifacts}
                         disabled={generating}
+                        animate={nextStep === "artifacts" && !generating ? pulseAnimation : undefined}
+                        transition={nextStep === "artifacts" && !generating ? pulseTransition : undefined}
                         className="flex items-center gap-2 h-10 px-5 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
                     >
                         {generating ? (
@@ -305,7 +355,7 @@ export default function ProjectDashboardPage() {
                                 Generate All Artifacts
                             </>
                         )}
-                    </button>
+                    </motion.button>
                 )}
             </div>
 
@@ -329,13 +379,13 @@ export default function ProjectDashboardPage() {
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: i * 0.04 }}
                             className={`bg-[#12121A] border rounded-xl overflow-hidden transition-all ${
-                                isComplete
+                                isComplete && allArtifactsComplete
                                     ? "border-zinc-700/50 hover:border-purple-500/30 cursor-pointer"
                                     : isGenerating
                                         ? "border-purple-500/30"
                                         : "border-zinc-800/30"
                             }`}
-                            onClick={() => isComplete && setExpandedArtifact(isExpanded ? null : type)}
+                            onClick={() => isComplete && allArtifactsComplete && setExpandedArtifact(isExpanded ? null : type)}
                         >
                             <div className="p-5">
                                 <div className="flex items-center gap-3 mb-1">
@@ -362,8 +412,11 @@ export default function ProjectDashboardPage() {
                                 {/* Generate button for pending artifacts */}
                                 {isPending && !isGenerating && (
                                     <button
+                                        disabled={!allArtifactsComplete}
+                                        title={!allArtifactsComplete ? "Use Generate All Artifacts to unlock the next step" : undefined}
                                         onClick={async (e) => {
                                             e.stopPropagation();
+                                            if (!allArtifactsComplete) return;
                                             try {
                                                 const token = await getAccessToken();
                                                 await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/artifacts/generate-single/${type}`, {
@@ -390,7 +443,7 @@ export default function ProjectDashboardPage() {
                                                 }, 2000);
                                             } catch { /* ignore */ }
                                         }}
-                                        className="mt-2 ml-12 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[11px] font-medium hover:bg-purple-500/20 transition-colors"
+                                        className="mt-2 ml-12 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[11px] font-medium hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
                                         <Sparkles className="w-3 h-3" />
                                         Generate

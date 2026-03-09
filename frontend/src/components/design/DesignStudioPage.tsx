@@ -62,6 +62,87 @@ const PRIORITY_COLORS: Record<string, string> = {
     low: "text-sky-300 bg-sky-500/10 border-sky-500/30",
 };
 
+const DIRECTION_SWATCH_SIZE = { width: 380, height: 240 };
+const MOCKUP_PREVIEW_SIZE = { width: 1200, height: 900 };
+
+function ScaledHtmlPreview({
+    title,
+    html,
+    baseWidth,
+    baseHeight,
+    className = "",
+}: {
+    title: string;
+    html: string;
+    baseWidth: number;
+    baseHeight: number;
+    className?: string;
+}) {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+
+    useEffect(() => {
+        const node = containerRef.current;
+        if (!node) return;
+
+        const updateSize = () => {
+            setContainerSize({ width: node.clientWidth, height: node.clientHeight });
+        };
+
+        updateSize();
+
+        if (typeof ResizeObserver === "undefined") {
+            window.addEventListener("resize", updateSize);
+            return () => window.removeEventListener("resize", updateSize);
+        }
+
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            setContainerSize({
+                width: entry.contentRect.width,
+                height: entry.contentRect.height,
+            });
+        });
+
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, []);
+
+    const scale =
+        containerSize.width > 0 && containerSize.height > 0
+            ? Math.min(containerSize.width / baseWidth, containerSize.height / baseHeight, 1)
+            : 0;
+
+    return (
+        <div ref={containerRef} className={`relative overflow-hidden ${className}`}>
+            {scale > 0 && (
+                <div
+                    className="absolute left-1/2 top-1/2"
+                    style={{
+                        width: baseWidth * scale,
+                        height: baseHeight * scale,
+                        transform: "translate(-50%, -50%)",
+                    }}
+                >
+                    <iframe
+                        title={title}
+                        srcDoc={html}
+                        className="pointer-events-none border-0"
+                        style={{
+                            width: baseWidth,
+                            height: baseHeight,
+                            transform: `scale(${scale})`,
+                            transformOrigin: "top left",
+                        }}
+                        sandbox="allow-scripts"
+                    />
+                </div>
+            )}
+        </div>
+    );
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
  * DIRECTION PICKER MODAL
  * ═══════════════════════════════════════════════════════════════════════ */
@@ -118,7 +199,7 @@ function DirectionPickerModal({
                         <div className="flex flex-col items-center justify-center py-16">
                             <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-3" />
                             <p className="text-zinc-400 text-sm">Generating design directions...</p>
-                            <p className="text-zinc-600 text-xs mt-1">AI is creating 5 unique visual proposals</p>
+                            <p className="text-zinc-600 text-xs mt-1">AI is creating 10 unique visual proposals</p>
                             <button
                                 onClick={onStopLoading}
                                 className="mt-4 h-8 px-4 rounded-lg bg-red-600/20 hover:bg-red-600/30 border border-red-600/40 text-red-400 text-xs font-medium flex items-center gap-1.5 transition-colors"
@@ -138,15 +219,13 @@ function DirectionPickerModal({
                                     className="group text-left rounded-xl border border-zinc-800 hover:border-purple-500/50 bg-zinc-900/50 hover:bg-zinc-900/80 overflow-hidden transition-all duration-200 hover:shadow-lg hover:shadow-purple-500/10"
                                 >
                                     {/* Rendered swatch */}
-                                    <div className="h-[160px] w-full overflow-hidden border-b border-zinc-800">
-                                        <iframe
-                                            title={`Swatch: ${d.name}`}
-                                            srcDoc={d.html_swatch}
-                                            className="w-[380px] h-[240px] origin-top-left pointer-events-none"
-                                            style={{ transform: "scale(0.72)", transformOrigin: "top left" }}
-                                            sandbox="allow-scripts"
-                                        />
-                                    </div>
+                                    <ScaledHtmlPreview
+                                        title={`Swatch: ${d.name}`}
+                                        html={d.html_swatch}
+                                        baseWidth={DIRECTION_SWATCH_SIZE.width}
+                                        baseHeight={DIRECTION_SWATCH_SIZE.height}
+                                        className="h-[160px] w-full border-b border-zinc-800 bg-zinc-950"
+                                    />
                                     <div className="p-3">
                                         <h3 className="text-sm font-bold text-white group-hover:text-purple-300 transition-colors">{d.name}</h3>
                                         <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{d.description}</p>
@@ -304,7 +383,7 @@ function PreviewOverlay({
 export default function DesignStudioPage() {
     const { projectId } = useParams<{ projectId: string }>();
     const navigate = useNavigate();
-    const { getAccessToken } = useAuth();
+    const { getAccessToken, signOut } = useAuth();
 
     // Core state
     const [mockups, setMockups] = useState<Mockup[]>([]);
@@ -334,6 +413,22 @@ export default function DesignStudioPage() {
 
     /* ─── API helpers ──────────────────────────────────────────────── */
 
+    const expireSession = useCallback(async () => {
+        if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+        }
+        setGenerating(false);
+        setLoading(false);
+        setError("Session expired. Please log in again.");
+        try {
+            await signOut();
+        } catch {
+            // ignore sign-out cleanup errors
+        }
+        navigate("/login", { replace: true });
+    }, [navigate, signOut]);
+
     const authHeaders = useCallback(async () => {
         const token = await getAccessToken();
         if (!token) return null;
@@ -343,30 +438,28 @@ export default function DesignStudioPage() {
     const ensureAuth = useCallback(async (): Promise<Record<string, string> | null> => {
         const headers = await authHeaders();
         if (!headers) {
-            setError("Session expired. Please log in again.");
-            navigate("/login", { replace: true });
+            await expireSession();
             return null;
         }
         return headers;
-    }, [authHeaders, navigate]);
+    }, [authHeaders, expireSession]);
 
     const handleApi401 = useCallback((resp: Response) => {
-        if (resp.status === 401) navigate("/login", { replace: true });
-    }, [navigate]);
+        if (resp.status === 401) {
+            void expireSession();
+        }
+    }, [expireSession]);
 
     const fetchMockups = useCallback(async () => {
         try {
             const headers = await authHeaders();
             if (!headers) {
-                setError("Session expired. Please log in again.");
-                setLoading(false);
-                navigate("/login", { replace: true });
+                await expireSession();
                 return [];
             }
             const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/design/mockups`, { headers });
             if (resp.status === 401) {
-                navigate("/login", { replace: true });
-                setLoading(false);
+                await expireSession();
                 return [];
             }
             if (resp.ok) {
@@ -381,7 +474,7 @@ export default function DesignStudioPage() {
                     setGenerating(true);
                     setPhase("generating");
                     const token = await getAccessToken();
-                    if (token) startPolling(token);
+                    if (token) startPolling();
                 }
 
                 return next;
@@ -393,7 +486,7 @@ export default function DesignStudioPage() {
         }
         return [];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [projectId, getAccessToken]);
+    }, [projectId, getAccessToken, authHeaders, expireSession]);
 
     /* ─── Auto-discover on mount ──────────────────────────────────── */
 
@@ -470,7 +563,7 @@ export default function DesignStudioPage() {
 
     /* ─── Polling ─────────────────────────────────────────────────── */
 
-    const startPolling = useCallback((token: string) => {
+    const startPolling = useCallback(() => {
         if (pollRef.current) clearInterval(pollRef.current);
 
         // Grace period: don't end polling in the first few seconds — the
@@ -480,9 +573,18 @@ export default function DesignStudioPage() {
 
         pollRef.current = window.setInterval(async () => {
             try {
+                const token = await getAccessToken();
+                if (!token) {
+                    await expireSession();
+                    return;
+                }
                 const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/design/mockups`, {
                     headers: { Authorization: `Bearer ${token}` },
                 });
+                if (resp.status === 401) {
+                    await expireSession();
+                    return;
+                }
                 if (!resp.ok) return;
                 const data = await resp.json();
                 const next: Mockup[] = data.mockups || [];
@@ -503,7 +605,7 @@ export default function DesignStudioPage() {
                 }
             } catch { /* ignore polling errors */ }
         }, 2500);
-    }, [projectId]);
+    }, [projectId, getAccessToken, expireSession]);
 
     /* ─── Handlers ────────────────────────────────────────────────── */
 
@@ -528,8 +630,7 @@ export default function DesignStudioPage() {
             });
             handleApi401(resp);
             if (!resp.ok) throw new Error("Failed to start design generation");
-            const token = await getAccessToken();
-            startPolling(token || "");
+            startPolling();
         } catch (e: any) {
             setError(e.message);
             setGenerating(false);
@@ -549,8 +650,7 @@ export default function DesignStudioPage() {
             );
             handleApi401(resp);
             if (!resp.ok) throw new Error("Failed to regenerate");
-            const token = await getAccessToken();
-            startPolling(token || "");
+            startPolling();
         } catch (e: any) {
             setError(e.message);
             setRegeneratingIds((prev) => { const s = new Set(prev); s.delete(mockupId); return s; });
@@ -1026,12 +1126,12 @@ export default function DesignStudioPage() {
                                                 {/* Thumbnail area */}
                                                 <div className="h-48 relative bg-zinc-950 overflow-hidden">
                                                     {isDone && m.component_code ? (
-                                                        <iframe
+                                                        <ScaledHtmlPreview
                                                             title={m.name}
-                                                            srcDoc={m.component_code}
-                                                            className="w-[1200px] h-[800px] origin-top-left pointer-events-none"
-                                                            style={{ transform: "scale(0.3)", transformOrigin: "top left" }}
-                                                            sandbox="allow-scripts"
+                                                            html={m.component_code}
+                                                            baseWidth={MOCKUP_PREVIEW_SIZE.width}
+                                                            baseHeight={MOCKUP_PREVIEW_SIZE.height}
+                                                            className="h-full w-full"
                                                         />
                                                     ) : isGen ? (
                                                         <div className="h-full flex items-center justify-center">
@@ -1141,12 +1241,12 @@ export default function DesignStudioPage() {
                                                 {/* Thumbnail */}
                                                 <div className="h-56 relative bg-zinc-950 overflow-hidden">
                                                     {isDone && m.component_code ? (
-                                                        <iframe
+                                                        <ScaledHtmlPreview
                                                             title={m.name}
-                                                            srcDoc={m.component_code}
-                                                            className="w-[1200px] h-[900px] origin-top-left pointer-events-none"
-                                                            style={{ transform: "scale(0.3)", transformOrigin: "top left" }}
-                                                            sandbox="allow-scripts"
+                                                            html={m.component_code}
+                                                            baseWidth={MOCKUP_PREVIEW_SIZE.width}
+                                                            baseHeight={MOCKUP_PREVIEW_SIZE.height}
+                                                            className="h-full w-full"
                                                         />
                                                     ) : isGen ? (
                                                         <div className="h-full flex flex-col items-center justify-center">

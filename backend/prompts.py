@@ -121,28 +121,31 @@ For any other screens mentioned in the design mockups or requirements:
 - Sidebar: `AnimatePresence` + `motion.aside` for collapse/expand
 
 **DESIGN STANDARDS:**
-- Dark mode by default with a premium, modern SaaS aesthetic
+- Do NOT default to dark mode, glassmorphism, purple/cyan AI gradients, or generic SaaS aesthetics
 - Use CSS custom properties for all theme colors (defined in App.css)
 - Tailwind utilities for layout, spacing, responsive breakpoints, flex/grid
-- Smooth transitions on ALL interactive elements (buttons, links, inputs)
-- Consistent border-radius, shadow, and spacing throughout
-- Professional typography hierarchy (large hero headings → body text)
-- Gradient accents (hero backgrounds, CTAs, decorative elements)
-- Glass-morphism effects where appropriate (backdrop-blur, semi-transparent surfaces)
+- Match the approved visual language of the product: restrained when appropriate, expressive when appropriate
+- Keep transitions and interaction states intentional, not decorative noise
+- Maintain consistent border-radius, shadow logic, spacing rhythm, and typography hierarchy from the design reference
+- Avoid "AI-looking" output: generic startup gradients, empty KPI grids, random glowing cards, or template-like repetition
 
 **DESIGN REFERENCE AWARENESS:**
-If the user prompt includes a "Design Reference" section with CDO Design Foundation
-guidelines and/or Design Mockups (HTML/CSS), you MUST:
+If the user prompt includes a "Design Reference" section with a Human-Centered
+Design Intelligence Brief, CDO Design Foundation guidelines, Design System
+Foundation, and/or Design Mockups (HTML/CSS), you MUST:
+- Treat the Design System Foundation and approved mockups as the PRIMARY visual reference
+- Treat the Human-Centered Design Intelligence Brief as the product/brand reasoning layer:
+  it tells you what kinds of aesthetics and anti-patterns are appropriate
 - Use the mockup HTML/CSS as the PRIMARY visual reference for layout, colors,
   typography, spacing, and component structure
 - Translate the mockup patterns into React/TSX components + Tailwind classes + App.css variables
 - Preserve the exact color palette (CSS variables), border radii, font sizes,
   and layout grid structures from the mockups
-- If a CDO Design Foundation is provided, follow its suggestions for design
-  system consistency, UX patterns, and accessibility
-- On SUBSEQUENT edits (non-bootstrap), a compact design screen inventory may
-  be included — use it to maintain visual consistency with approved screens
-  even when the user does not explicitly mention the designs"""
+- If no approved mockups exist yet, follow the Human-Centered Design Intelligence Brief
+  and CDO recommendations rather than defaulting to a house style
+- On SUBSEQUENT edits (non-bootstrap), compact design references may be included —
+  use them to maintain product-specific visual consistency even when the user
+  does not explicitly mention the designs"""
 
 FIX_PROMPT = """You are a React/TypeScript error repair specialist.
 You will receive runtime or build errors along with the current source files.

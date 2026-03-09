@@ -25,6 +25,14 @@ from design_fallbacks import (
     screen_specific_requirements as _screen_specific_requirements_impl,
     fallback_mockup_html as _fallback_mockup_html_impl,
 )
+from design_intelligence import (
+    compose_project_context,
+    build_design_brief,
+    build_compiled_design_spec,
+    format_design_brief,
+    format_compiled_design_spec,
+    extract_product_name,
+)
 
 import inngest
 from inngest_client import client as inngest_client, use_inngest
@@ -612,11 +620,11 @@ def _pick_palette(project_context: str) -> dict:
 def _build_project_context(project: Project, cdo_analysis: CSuiteAnalysis | None, db=None) -> str:
     idea_context = ""
     if project.idea and project.idea.content:
-        idea_context = json.dumps(project.idea.content, indent=2)
+        idea_context = project.idea.content
 
     cdo_suggestions = ""
     if cdo_analysis and cdo_analysis.analysis:
-        cdo_suggestions = json.dumps(cdo_analysis.analysis, indent=2)
+        cdo_suggestions = cdo_analysis.analysis
 
     # Pull the Design System Foundation artifact if available
     design_system_text = ""
@@ -630,17 +638,14 @@ def _build_project_context(project: Project, cdo_analysis: CSuiteAnalysis | None
             raw = dsf.content.get("text") if isinstance(dsf.content, dict) else str(dsf.content)
             if raw and raw.strip():
                 design_system_text = raw.strip()
-
-    return f"""Product: {project.name}
-Description: {project.description or 'N/A'}
-Target Audience: {project.target_audience or 'N/A'}
-
-Idea: {idea_context}
-
-CDO Design Recommendations: {cdo_suggestions or 'None available'}
-
-Design System Foundation:
-{design_system_text or 'Not yet generated — use the Design DNA block in the prompt as the style authority.'}"""
+    return compose_project_context(
+        product_name=project.name,
+        description=project.description,
+        target_audience=project.target_audience,
+        idea=idea_context,
+        cdo_analysis=cdo_suggestions,
+        design_system_text=design_system_text,
+    )
 
 
 async def _discover_screens_from_context(project_context: str, user_id: str | None = None) -> list[dict]:
@@ -749,9 +754,15 @@ def _screen_variant(screen_desc: str) -> str:
     return _screen_variant_impl(screen_desc)
 
 
-def _fallback_mockup_html(project_name: str, screen_desc: str) -> str:
+def _fallback_mockup_html(project_name: str, screen_desc: str, project_context: str | None = None) -> str:
     """Deterministic visible fallback UI when model output is invalid/blank."""
-    return _fallback_mockup_html_impl(project_name, screen_desc)
+    html = _fallback_mockup_html_impl(project_name, screen_desc)
+    if project_context:
+        try:
+            return _enforce_theme_css(html, _derive_design_dna(project_context))
+        except Exception:
+            return html
+    return html
 
 
 def _fallback_mockup_html_LEGACY(project_name: str, screen_desc: str) -> str:
@@ -957,17 +968,82 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
 
 
 def _project_name_from_context(project_context: str) -> str:
-    try:
-        for line in (project_context or "").splitlines():
-            if line.lower().startswith("product:"):
-                return line.split(":", 1)[1].strip() or "Product"
-    except Exception:
-        pass
-    return "Product"
+    return extract_product_name(project_context)
 
 
 def _screen_specific_requirements(screen_desc: str) -> str:
     return _screen_specific_requirements_impl(screen_desc)
+
+
+def _get_mockup_reference_summaries(
+    db: Session,
+    project_id: str,
+    *,
+    exclude_mockup_id: str | None = None,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    query = (
+        db.query(DesignMockup)
+        .filter(
+            DesignMockup.project_id == project_id,
+            DesignMockup.status.in_([MockupStatus.complete, MockupStatus.approved]),
+        )
+        .order_by(DesignMockup.sort_order.asc())
+    )
+    if exclude_mockup_id:
+        query = query.filter(DesignMockup.id != exclude_mockup_id)
+
+    refs = []
+    for m in query.limit(limit).all():
+        refs.append({
+            "name": m.screen_name,
+            "description": m.description or "",
+            "status": m.status.value,
+        })
+    return refs
+
+
+def _looks_like_ai_cliche_html(code: str) -> list[str]:
+    lower = (code or "").lower()
+    issues: list[str] = []
+
+    if any(token in lower for token in ("#7c5cff", "#8338ec", "#a78bfa", "#ff00", "#00e5ff")) and "gradient" in lower:
+        issues.append("Palette leans toward default AI purple/cyan gradient clichés.")
+    if lower.count("box-shadow") >= 8 and lower.count("linear-gradient") >= 6:
+        issues.append("Visual treatment may be over-stylized instead of product-authentic.")
+    if lower.count("kpi") >= 2 or lower.count("metric") >= 4:
+        issues.append("Layout appears too close to a generic dashboard template.")
+    if "lorem ipsum" in lower or "placeholder" in lower:
+        issues.append("Output still contains placeholder content.")
+
+    return issues
+
+
+def _build_design_brief_text(
+    project_context: str,
+    *,
+    screen_desc: str,
+    direction: str | None = None,
+    references: list[dict[str, str]] | None = None,
+    compact: bool = False,
+) -> tuple[dict, dict, str]:
+    brief = build_design_brief(
+        project_context,
+        screen_desc=screen_desc,
+        direction=direction,
+        approved_mockups=references,
+    )
+    compiled_spec = build_compiled_design_spec(
+        project_context,
+        screen_desc=screen_desc,
+        direction=direction,
+        approved_mockups=references,
+    )
+    combined = "\n\n".join([
+        format_compiled_design_spec(compiled_spec, compact=compact),
+        format_design_brief(brief, compact=compact),
+    ]).strip()
+    return brief, compiled_spec, combined
 
 
 def _looks_like_react_or_tsx(code: str) -> bool:
@@ -1047,6 +1123,47 @@ def _is_visually_complete_html(code: str) -> bool:
     return tags >= 8 and text_len >= 150 and interactive >= 2
 
 
+def _screen_specific_quality_notes(code: str, screen_desc: str) -> list[str]:
+    c = re.sub(r"<style[\s\S]*?</style>", "", code or "", flags=re.I)
+    lower = c.lower()
+    text = re.sub(r"<[^>]+>", " ", c)
+    text_len = len(re.sub(r"\s+", " ", text).strip())
+    section_like = len(re.findall(r"<(header|nav|main|section|article|aside|footer|form|table|ul|ol)\b", c, flags=re.I))
+    button_count = len(re.findall(r"<button\b", c, flags=re.I))
+    input_count = len(re.findall(r"<(input|select|textarea)\b", c, flags=re.I))
+    row_count = len(re.findall(r"<(tr|li)\b", c, flags=re.I))
+    variant = _screen_variant(screen_desc)
+    screen_lower = (screen_desc or "").lower()
+    notes: list[str] = []
+
+    if text_len < 260 or section_like < 3:
+        notes.append("The screen feels underfilled; add more role-appropriate content blocks, support details, and realistic UI density.")
+
+    if variant == "settings" and (input_count < 4 or button_count < 2):
+        notes.append("Settings screens must include multiple populated settings groups, clear save/cancel actions, and enough controls to feel production-ready.")
+
+    if variant in ("dashboard", "analytics") and not any(token in lower for token in ("chart", "trend", "activity", "alerts", "report", "overview")):
+        notes.append("Analytical screens need a clear primary data surface plus supporting context, not just isolated cards or headings.")
+
+    if variant == "list" and row_count < 4:
+        notes.append("List and gallery screens need a convincingly populated set of rows or cards rather than a sparse placeholder layout.")
+
+    if variant == "detail" and not any(token in lower for token in ("status", "priority", "activity", "metadata", "details", "comments")):
+        notes.append("Detail screens should show both primary content and supporting metadata or activity, not a mostly empty body.")
+
+    if "alert" in screen_lower and not any(token in lower for token in ("email", "sms", "push", "threshold", "digest", "notification")):
+        notes.append("Alert configuration screens should show real notification rules, channels, thresholds, or escalation settings instead of an empty shell.")
+
+    if any(token in screen_lower for token in ("log", "history", "timeline", "intervention")) and row_count < 3:
+        notes.append("Log and history screens should contain multiple visible entries, timestamps, or recent records so the page feels active and complete.")
+
+    deduped: list[str] = []
+    for note in notes:
+        if note not in deduped:
+            deduped.append(note)
+    return deduped
+
+
 async def _transform_to_static_html(raw_code: str, screen_desc: str, project_context: str, user_id: str | None = None) -> str:
     """Convert TSX/fragment-like output into renderable static HTML/CSS."""
     dna = _derive_design_dna(project_context)
@@ -1104,39 +1221,63 @@ class AddScreenRequest(BaseModel):
 
 # ── Design Directions ────────────────────────────────────────────────────────
 
+TARGET_DIRECTION_COUNT = 10
+
+
+def _fallback_direction_proposals() -> list[dict]:
+    return [
+        {"name": "Editorial Trust", "description": "Composed, typographic, and trustworthy with strong hierarchy", "palette": ["#F6F2EA", "#FFFDF8", "#3D5A73", "#C98B4B", "#1E1B18"], "style_keywords": ["editorial", "precise", "credible"], "layout_approach": "Structured columns with strong information hierarchy"},
+        {"name": "Soft Humanist", "description": "Approachable, warm, and human-centered with calm surfaces", "palette": ["#F7F3EC", "#FFFDF9", "#5E7C6B", "#C9865B", "#2A2926"], "style_keywords": ["warm", "human", "calm", "refined"], "layout_approach": "Breathing-room layout with gentle grouping and low-friction forms"},
+        {"name": "Operational Clarity", "description": "Discipline and clarity for dense workflows without generic dashboard clichés", "palette": ["#F4F7FA", "#FFFFFF", "#1F4E79", "#4FA3A5", "#17212B"], "style_keywords": ["systematic", "clear", "analytical"], "layout_approach": "Information-dense shell with focused primary and secondary work zones"},
+        {"name": "Material Depth", "description": "Layered surfaces and tactile controls with controlled depth", "palette": ["#10151C", "#18212B", "#8EA4BF", "#D2A679", "#E7EDF3"], "style_keywords": ["layered", "tactile", "composed"], "layout_approach": "Stacked depth cues with framed content and measured contrast"},
+        {"name": "Expressive Brand System", "description": "Memorable and brand-forward with stronger personality and compositional rhythm", "palette": ["#FBF6F0", "#FFFDFC", "#A14D3F", "#2F7A71", "#1D1B1A"], "style_keywords": ["distinctive", "brand-led", "crafted"], "layout_approach": "Hero-led composition with branded moments and editorial rhythm"},
+        {"name": "Field-Ready Utility", "description": "Direct, durable, and high-contrast for operational environments where speed matters", "palette": ["#F3F0E8", "#FFFDF9", "#2E3A2F", "#C97B2A", "#191A18"], "style_keywords": ["rugged", "practical", "high-contrast"], "layout_approach": "Utility-first framing with strong action zones and minimal ornament"},
+        {"name": "Clinical Precision", "description": "Measured and technical with disciplined data presentation and low-noise surfaces", "palette": ["#F5F8FA", "#FFFFFF", "#2F5D7C", "#7BA7BC", "#13202B"], "style_keywords": ["precise", "clinical", "disciplined"], "layout_approach": "Structured analytical bands with prominent evidence and annotation areas"},
+        {"name": "Botanical Journal", "description": "Research-oriented and organic, with quiet type and natural material references", "palette": ["#F3F0E6", "#FCFAF4", "#5A6B52", "#B49A46", "#263026"], "style_keywords": ["botanical", "scholarly", "quiet"], "layout_approach": "Paper-like sections with annotated callouts and calm asymmetry"},
+        {"name": "Pre-Dawn Triage", "description": "Low-light monitoring aesthetic for early-morning response workflows and live checks", "palette": ["#0D1320", "#182033", "#6FA3D9", "#E6B655", "#E8EEF8"], "style_keywords": ["night-ops", "focused", "monitoring"], "layout_approach": "Compact command surfaces with clear status hierarchies and restrained glow"},
+        {"name": "Acoustic Minimalist", "description": "Swiss-influenced reduction centered on signal clarity, restraint, and breathing room", "palette": ["#F7F7F2", "#FFFFFF", "#2C3E73", "#E08A3B", "#17191C"], "style_keywords": ["minimal", "signal-led", "refined"], "layout_approach": "Sparse but deliberate grids with one strong focal module per section"},
+    ]
+
 async def _generate_direction_proposals(project_context: str, user_id: str | None = None) -> list[dict]:
-    """Ask LLM for 5 completely different design direction proposals."""
-    system = """You are a world-class creative director. Given a product description, propose 5 COMPLETELY DIFFERENT design directions. Each direction should be visually and stylistically distinct from the others — different palettes, typography choices, layout philosophies, and overall moods.
+    """Ask LLM for 10 completely different design direction proposals."""
+    _, _, brief_text = _build_design_brief_text(
+        project_context,
+        screen_desc="Direction exploration for the overall product",
+        compact=True,
+    )
+    system = f"""You are a world-class creative director. Given a product description, propose {TARGET_DIRECTION_COUNT} COMPLETELY DIFFERENT design directions. Each direction should be visually and stylistically distinct from the others, while still feeling like something a senior designer might seriously propose for this product.
 
 Respond with ONLY valid JSON:
-{
+{{
     "directions": [
-        {
+        {{
             "name": "Midnight Luxe",
             "description": "Dark, premium aesthetic with gold accents and editorial typography",
             "palette": ["#0A0E1A", "#1A1F36", "#D4AF37", "#F5F0E8", "#8B7355"],
             "style_keywords": ["dark", "premium", "editorial", "gold-accent"],
             "layout_approach": "Full-bleed hero sections with asymmetric grid, magazine-style typography"
-        }
+        }}
     ]
-}
+}}
 
 RULES:
-- Exactly 5 directions
+- Exactly {TARGET_DIRECTION_COUNT} directions
 - palette: array of exactly 5 hex colours [bg, surface, primary, accent, text]
-- Each direction must feel COMPLETELY different — as different as north from south
-- Include a mix: one dark luxe, one LIGHT/airy (use #F5F5F5 or similar for bg — NOT dark), one bold/vibrant, one minimal/clean, one creative/unique
-- NEVER give 5 directions that all use dark backgrounds — at least 2 must be light (#E8+ for background)
+- Each direction must feel COMPLETELY different in composition, palette mood, and typography attitude
+- Offer real variety across restrained, expressive, light, dark, editorial, or product-heavy directions where it makes sense
 - style_keywords: 3-5 evocative words
 - layout_approach: brief description of the structural/spatial philosophy
-- Avoid "dark purple gradient SaaS" as any direction — each must feel like a totally different brand"""
+- Avoid default AI-looking color clichés and generic dark-purple-gradient SaaS directions
+- Keep every direction product-credible and human-centered
+
+{brief_text}"""
 
     try:
         mc = _resolve_design_model(user_id)
         call_kwargs = _build_litellm_kwargs(mc, [
             {"role": "system", "content": system},
             {"role": "user", "content": project_context},
-        ], temperature=1.0, max_tokens=3000)
+        ], temperature=1.0, max_tokens=4500)
         resp = await litellm.acompletion(**call_kwargs)
         text = resp.choices[0].message.content.strip()
         if text.startswith("```"):
@@ -1148,22 +1289,51 @@ RULES:
         data = json.loads(match.group() if match else text)
         directions = data.get("directions", [])
         if isinstance(directions, list) and len(directions) >= 1:
-            return directions[:5]
+            normalized: list[dict] = []
+            for i, item in enumerate(directions[:TARGET_DIRECTION_COUNT]):
+                if not isinstance(item, dict):
+                    continue
+                palette = item.get("palette", [])
+                if not isinstance(palette, list):
+                    palette = []
+                palette = [str(c) for c in palette[:5]]
+                while len(palette) < 5:
+                    palette.append(["#0A0E1A", "#1A1F36", "#7C5CFC", "#A78BFA", "#E8E0D4"][len(palette)])
+
+                style_keywords = item.get("style_keywords", [])
+                if not isinstance(style_keywords, list):
+                    style_keywords = []
+
+                normalized.append({
+                    "name": str(item.get("name") or f"Direction {i + 1}"),
+                    "description": str(item.get("description") or ""),
+                    "palette": palette,
+                    "style_keywords": [str(k) for k in style_keywords[:5]],
+                    "layout_approach": str(item.get("layout_approach") or ""),
+                })
+
+            if normalized:
+                existing_names = {item["name"].strip().lower() for item in normalized if item.get("name")}
+                for fallback in _fallback_direction_proposals():
+                    fallback_name = str(fallback.get("name") or "").strip().lower()
+                    if fallback_name in existing_names:
+                        continue
+                    normalized.append(fallback)
+                    existing_names.add(fallback_name)
+                    if len(normalized) >= TARGET_DIRECTION_COUNT:
+                        break
+                return normalized[:TARGET_DIRECTION_COUNT]
     except Exception as e:
         print(f"❌ Direction proposals failed: {e}")
 
     # Fallback
-    return [
-        {"name": "Midnight Luxe", "description": "Dark premium aesthetic with gold accents", "palette": ["#0A0E1A", "#151A2E", "#D4AF37", "#F5E6C8", "#E8E0D4"], "style_keywords": ["dark", "premium", "editorial"], "layout_approach": "Full-bleed hero with asymmetric grid"},
-        {"name": "Ocean Breeze", "description": "Light airy coastal palette with clean typography", "palette": ["#F7FAFE", "#FFFFFF", "#0077B6", "#00B4D8", "#1D3557"], "style_keywords": ["light", "airy", "coastal", "clean"], "layout_approach": "Spacious whitespace with centred content"},
-        {"name": "Neon Pulse", "description": "Bold vibrant gradients with electric accents", "palette": ["#0F0F23", "#1A1A3E", "#FF006E", "#8338EC", "#F0F0F0"], "style_keywords": ["bold", "vibrant", "neon", "gradient"], "layout_approach": "Large hero with gradient overlays and card grids"},
-        {"name": "Paper Minimal", "description": "Ultra-clean minimal with warm paper tones", "palette": ["#FAF9F6", "#FFFFFF", "#2D2D2D", "#6B6B6B", "#1A1A1A"], "style_keywords": ["minimal", "warm", "paper", "clean"], "layout_approach": "Single-column editorial with generous spacing"},
-        {"name": "Forest Studio", "description": "Earthy greens and warm woods", "palette": ["#1B2619", "#2A3C2A", "#7CB342", "#FFB74D", "#F5F5DC"], "style_keywords": ["earthy", "organic", "warm", "natural"], "layout_approach": "Organic shapes with rounded containers"},
-    ]
+    return _fallback_direction_proposals()
 
 
 async def _generate_direction_swatch(direction: dict, product_name: str, user_id: str | None = None) -> str:
     """Generate a mini HTML swatch card (~380×240 viewport) for a design direction."""
+    if not isinstance(direction, dict):
+        direction = {}
     palette = direction.get("palette", ["#0A0E1A", "#1A1F36", "#7C5CFC", "#A78BFA", "#E8E0D4"])
     bg, surface, primary, accent, text_col = palette[0], palette[1], palette[2], palette[3], palette[4]
     name = direction.get("name", "Direction")
@@ -1223,6 +1393,481 @@ button{{background:{primary};color:#fff;border:none;padding:8px 20px;border-radi
 </body></html>"""
 
 
+# ── Human-centered mockup pipeline ───────────────────────────────────────────
+
+def _build_product_system_guardrails(screen_desc: str, *, has_north_star: bool) -> str:
+    variant = _screen_variant(screen_desc)
+    density_requirements = {
+        "auth": "Balance the promotional and form areas so neither side feels empty or placeholder-like.",
+        "landing": "Carry the page through multiple finished sections beyond the hero so it reads like a launched marketing site.",
+        "onboarding": "Show enough explanation, selectable options, and progress/navigation controls to feel like a real step in a flow.",
+        "dashboard": "Anchor the page with a primary workflow surface and supporting secondary content instead of isolated summary cards.",
+        "settings": "Populate the main area with multiple real settings groups and controls rather than a single sparse form block.",
+        "detail": "Fill both the main pane and supporting metadata area with concrete information, status, and activity.",
+        "list": "Show a convincingly populated set of rows or cards so the screen feels active and in use.",
+        "analytics": "Provide a meaningful analytical composition with comparison, hierarchy, and supporting detail instead of a thin placeholder view.",
+        "editor": "Use all major panels with credible tools, canvas content, and property controls; do not leave large blank slabs.",
+        "app": "Use enough role-specific content and supporting detail that the page feels shipped, not staged.",
+    }
+    nav_rule = (
+        "Reuse the same navigation pattern, shell proportions, and page framing established by the north-star."
+        if has_north_star
+        else "Choose one navigation pattern and shell structure that can anchor the rest of the product, then stay consistent with it."
+    )
+    return f"""Product-system lock:
+- {nav_rule}
+- Preserve the same spacing rhythm across screens: comparable section gaps, card padding, corner radius, border weight, and shadow intensity
+- Keep typography roles stable: headline treatment, body copy tone, label sizing, and CTA emphasis should feel like one system
+- Keep palette semantics stable: background for page canvas, surface for panels, primary for main interactive emphasis, accent for supporting emphasis only
+- Adapt the screen to its function without switching to a different product genre or inventing a new brand language
+- {density_requirements.get(variant, density_requirements['app'])}"""
+
+def _build_mockup_system_prompt(
+    *,
+    product_name: str,
+    screen_desc: str,
+    brief_text: str,
+    revision_context: str,
+    direction: str | None = None,
+    north_star_css: str | None = None,
+    north_star_html: str | None = None,
+    creative_mode: str = "guided",
+) -> str:
+    direction_block = ""
+    if direction:
+        direction_block = f"""
+User-requested direction:
+{direction}
+
+Treat this as a strong stylistic preference, but execute it with human product-design judgement rather than generic AI styling.
+"""
+
+    if north_star_css:
+        html_ref_block = ""
+        if north_star_html:
+            truncated = north_star_html[:6000]
+            if len(north_star_html) > 6000:
+                truncated += "\n<!-- … truncated for reference -->"
+            html_ref_block = f"""
+
+North-star HTML reference:
+```html
+{truncated}
+```"""
+
+        return f"""You are a principal product designer building the NEXT SCREEN of an existing application.
+This screen must feel like it belongs to the same product family as the approved/generated north-star, while still being fit for its own job.
+
+Product name: "{product_name}"
+
+{brief_text}
+{direction_block}
+North-star style contract:
+```css
+{north_star_css}
+```
+{html_ref_block}
+
+Consistency requirements:
+- Preserve the same product identity, visual language, tone, and navigation conventions as the north-star
+- Reuse the same CSS variables, typography family, spacing logic, and surface treatment
+- Treat this product-system lock as non-negotiable:
+{_build_product_system_guardrails(screen_desc, has_north_star=True)}
+- You may adapt composition and content hierarchy for this screen's purpose, but do not invent a new brand
+- Keep the same level of realism and polish as a human product designer would
+- Avoid generic AI-looking colors, empty glow-heavy styling, or synthetic dashboard clichés
+
+Screen to design:
+{screen_desc}
+
+Functional requirements:
+{_screen_specific_requirements(screen_desc)}
+
+Output requirements:
+- Output a complete standalone <!DOCTYPE html> document with embedded CSS
+- Raw HTML only, no markdown fences, no explanations, no scripts
+- Use realistic product-specific copy for "{product_name}"
+- The screen must look finished, credible, and production-minded
+{revision_context}"""
+
+    freedom_line = (
+        "You have broad creative freedom, but every decision must be justified by the product, audience, CDO guidance, and Design System Foundation."
+        if creative_mode == "ai_free"
+        else "Use creative judgement, but root the screen in the product reality, CDO guidance, and Design System Foundation."
+    )
+
+    return f"""You are an award-winning product designer with strong human craft judgement.
+Your job is to create a screen that looks like an experienced designer made it, not like an AI app template.
+
+Product name: "{product_name}"
+
+{brief_text}
+{direction_block}
+{freedom_line}
+
+Treat the compiled design spec above as a hard contract for non-negotiables, forbidden moves, and screen obligations.
+
+Design principles:
+- Do not default to dark mode, glassmorphism, purple/cyan AI gradients, or generic SaaS styling
+- Let the product's industry, trust signals, and audience shape the visual language
+- Choose layout, density, typography, and motion intentionally
+- Be expressive when appropriate, restrained when appropriate, but always believable
+- Surfaces, controls, and hierarchy must feel purposeful and product-specific
+- Avoid placeholder-looking sections, repetitive equal-weight cards, and decorative styling with no UX reason
+
+{_build_product_system_guardrails(screen_desc, has_north_star=False)}
+
+Screen to design:
+{screen_desc}
+
+Functional requirements:
+{_screen_specific_requirements(screen_desc)}
+
+Output requirements:
+- Output a complete standalone <!DOCTYPE html> document with embedded CSS
+- Raw HTML only, no markdown fences, no explanations, no scripts
+- Use realistic product-specific copy for "{product_name}"
+- Make it feel like a real shipped product, not a template or wireframe
+{revision_context}"""
+
+
+async def _transform_to_static_html_authentic(
+    raw_code: str,
+    screen_desc: str,
+    project_context: str,
+    brief_text: str,
+    user_id: str | None = None,
+    direction: str | None = None,
+    north_star_css: str | None = None,
+    north_star_html: str | None = None,
+) -> str:
+    mc = _resolve_design_model(user_id)
+    product_name = _project_name_from_context(project_context)
+    
+    revision_context = """
+Convert the provided UI code into a COMPLETE standalone HTML document.
+Rules:
+- Output ONLY HTML + CSS (no JavaScript, no JSX/TSX, no imports/exports, no className)
+- Include <!DOCTYPE html>, <html>, <head>, <style>, and <body>
+- Make the result visually credible and product-specific, not a generic dashboard
+- Honor the functional requirements of the target screen
+- Use realistic content and fully rendered sections
+- No markdown fences or explanations"""
+
+    system = _build_mockup_system_prompt(
+        product_name=product_name,
+        screen_desc=screen_desc,
+        brief_text=brief_text,
+        revision_context=revision_context,
+        direction=direction,
+        north_star_css=north_star_css,
+        north_star_html=north_star_html,
+        creative_mode="guided",
+    )
+    
+    call_kwargs = _build_litellm_kwargs(mc, [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": f"Project context:\n{project_context}\n\nScreen:\n{screen_desc}\n\nCode to convert:\n{raw_code}",
+        },
+    ], temperature=0.3, max_tokens=4200)
+    resp = await litellm.acompletion(**call_kwargs)
+    return _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
+
+
+async def _repair_html_authentic(
+    candidate: str,
+    screen_desc: str,
+    project_context: str,
+    brief_text: str,
+    attempt: int,
+    user_id: str | None = None,
+    direction: str | None = None,
+    north_star_css: str | None = None,
+    north_star_html: str | None = None,
+) -> str:
+    mc = _resolve_design_model(user_id)
+    product_name = _project_name_from_context(project_context)
+    
+    revision_context = f"""
+The HTML mockup below is incomplete, thin, or visually unconvincing.
+This is repair attempt {attempt}.
+
+Fix the following:
+- Fill blank or placeholder areas with realistic, visible content
+- Make the composition feel intentional and product-specific
+- Remove any AI-looking clichés if present
+- Ensure the page feels complete, coherent, and believable
+- Return ONLY the corrected complete HTML document with embedded CSS
+- No explanations, no markdown fences, no scripts"""
+
+    system = _build_mockup_system_prompt(
+        product_name=product_name,
+        screen_desc=screen_desc,
+        brief_text=brief_text,
+        revision_context=revision_context,
+        direction=direction,
+        north_star_css=north_star_css,
+        north_star_html=north_star_html,
+        creative_mode="guided",
+    )
+    
+    call_kwargs = _build_litellm_kwargs(mc, [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Project context:\n{project_context}\n\nHTML to repair:\n{candidate}"},
+    ], temperature=0.55, max_tokens=4500)
+    resp = await litellm.acompletion(**call_kwargs)
+    return _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
+
+
+async def _review_mockup_authenticity(
+    candidate: str,
+    screen_desc: str,
+    brief_text: str,
+    user_id: str | None = None,
+) -> dict:
+    heuristic_notes = _looks_like_ai_cliche_html(candidate)
+    mc = _resolve_design_model(user_id)
+    system = f"""You are a principal design reviewer.
+Review the HTML mockup against the design brief and decide whether it feels like thoughtful human product design rather than generic AI output.
+
+Return ONLY valid JSON:
+{{
+  "pass": true,
+  "notes": ["..."]
+}}
+
+Review criteria:
+- Is the design aligned with the brief and product context?
+- Does it satisfy the compiled screen obligations and consistency contract?
+- Does it avoid default AI color clichés and synthetic styling?
+- Does the hierarchy feel intentional and screen-appropriate?
+- Does it look like part of a real product rather than a template?
+
+{brief_text}"""
+    try:
+        call_kwargs = _build_litellm_kwargs(mc, [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Screen:\n{screen_desc}\n\nHTML:\n{candidate}"},
+        ], temperature=0.2, max_tokens=700)
+        resp = await litellm.acompletion(**call_kwargs)
+        raw = _strip_code_fences(resp.choices[0].message.content.strip())
+        match = re.search(r"\{[\s\S]*\}", raw)
+        data = json.loads(match.group(0) if match else raw)
+        notes = [str(note).strip() for note in data.get("notes", []) if str(note).strip()]
+        if heuristic_notes:
+            notes = list(dict.fromkeys(heuristic_notes + notes))
+        passed = bool(data.get("pass", False)) and not heuristic_notes
+        return {"pass": passed, "notes": notes}
+    except Exception:
+        return {"pass": not heuristic_notes, "notes": heuristic_notes}
+
+
+async def _revise_mockup_from_review(
+    candidate: str,
+    screen_desc: str,
+    project_context: str,
+    brief_text: str,
+    review_notes: list[str],
+    user_id: str | None = None,
+    direction: str | None = None,
+    north_star_css: str | None = None,
+    north_star_html: str | None = None,
+) -> str:
+    mc = _resolve_design_model(user_id)
+    product_name = _project_name_from_context(project_context)
+    
+    str_notes = chr(10).join(f"- {note}" for note in review_notes)
+    revision_context = f"""
+You are revising an HTML mockup after senior design review.
+
+Review notes to address:
+{str_notes}
+
+Rules:
+- Keep the screen's intent and structure, but improve the craft and authenticity
+- Remove generic AI-looking decisions
+- Preserve realism, polish, and consistency
+- Return ONLY the revised complete HTML document with embedded CSS
+- No markdown fences, no explanations, no scripts"""
+
+    system = _build_mockup_system_prompt(
+        product_name=product_name,
+        screen_desc=screen_desc,
+        brief_text=brief_text,
+        revision_context=revision_context,
+        direction=direction,
+        north_star_css=north_star_css,
+        north_star_html=north_star_html,
+        creative_mode="guided",
+    )
+    
+    call_kwargs = _build_litellm_kwargs(mc, [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Project context:\n{project_context}\n\nScreen:\n{screen_desc}\n\nHTML to revise:\n{candidate}"},
+    ], temperature=0.55, max_tokens=5000)
+    resp = await litellm.acompletion(**call_kwargs)
+    return _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
+
+
+def _load_consistency_contract(
+    db: Session,
+    project_id: str,
+    *,
+    exclude_mockup_id: str | None = None,
+) -> tuple[str | None, str | None]:
+    query = (
+        db.query(DesignMockup)
+        .filter(
+            DesignMockup.project_id == project_id,
+            DesignMockup.status.in_([MockupStatus.complete, MockupStatus.approved]),
+        )
+        .order_by(DesignMockup.sort_order.asc())
+    )
+    if exclude_mockup_id:
+        query = query.filter(DesignMockup.id != exclude_mockup_id)
+    ref = query.first()
+    if not ref or not ref.component_code:
+        return None, None
+    html = ref.component_code
+    return _extract_north_star_css(html) or None, html
+
+
+async def _generate_mockup_with_design_brief(
+    mockup_id: str,
+    project_context: str,
+    screen_desc: str,
+    *,
+    creative_mode: str = "guided",
+    user_id: str | None = None,
+    direction: str | None = None,
+    north_star_css: str | None = None,
+    north_star_html: str | None = None,
+) -> None:
+    from models import SessionLocal
+
+    if mockup_id in _cancelled_mockups:
+        _cancelled_mockups.discard(mockup_id)
+        return
+
+    db = SessionLocal()
+    try:
+        mockup = db.query(DesignMockup).filter(DesignMockup.id == mockup_id).first()
+        if not mockup:
+            return
+
+        mockup.status = MockupStatus.generating
+        db.commit()
+
+        if not north_star_css and not north_star_html:
+            auto_css, auto_html = _load_consistency_contract(
+                db, mockup.project_id, exclude_mockup_id=mockup_id
+            )
+            north_star_css = north_star_css or auto_css
+            north_star_html = north_star_html or auto_html
+
+        references = _get_mockup_reference_summaries(
+            db, mockup.project_id, exclude_mockup_id=mockup_id
+        )
+        brief, _, brief_text = _build_design_brief_text(
+            project_context,
+            screen_desc=screen_desc,
+            direction=direction,
+            references=references,
+            compact=False,
+        )
+        revision_context = f"\n\nRevision notes from user: {mockup.prompt}" if mockup.prompt else ""
+        product_name = _project_name_from_context(project_context)
+        system = _build_mockup_system_prompt(
+            product_name=product_name,
+            screen_desc=screen_desc,
+            brief_text=brief_text,
+            revision_context=revision_context,
+            direction=direction,
+            north_star_css=north_star_css,
+            north_star_html=north_star_html,
+            creative_mode=creative_mode,
+        )
+
+        mc = _resolve_design_model(user_id)
+        call_kwargs = _build_litellm_kwargs(mc, [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Product context:\n{project_context}\n\nScreen:\n{screen_desc}"},
+        ], temperature=0.95 if creative_mode == "ai_free" and not north_star_css else 0.7, max_tokens=5000)
+        resp = await litellm.acompletion(**call_kwargs)
+
+        if mockup_id in _cancelled_mockups:
+            _cancelled_mockups.discard(mockup_id)
+            return
+
+        candidate = _ensure_html_document(
+            _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
+        )
+
+        if not _is_renderable_ui_html(candidate):
+            print(f"🔧 [{screen_desc[:40]}] Converting non-renderable output to static HTML")
+            transformed = await _transform_to_static_html_authentic(
+                candidate, screen_desc, project_context, brief_text, user_id=user_id,
+                direction=direction, north_star_css=north_star_css, north_star_html=north_star_html
+            )
+            candidate = _ensure_html_document(transformed)
+
+        if not (_is_renderable_ui_html(candidate) and _is_visually_complete_html(candidate)):
+            if _is_renderable_ui_html(candidate):
+                print(f"🔄 [{screen_desc[:40]}] Repairing thin output")
+                repaired = await _repair_html_authentic(
+                    candidate, screen_desc, project_context, brief_text, 1, user_id=user_id,
+                    direction=direction, north_star_css=north_star_css, north_star_html=north_star_html
+                )
+                candidate = _ensure_html_document(repaired)
+            else:
+                print(f"⚠️ [{screen_desc[:40]}] Falling back after non-renderable output")
+                candidate = _fallback_mockup_html(product_name, screen_desc, project_context)
+
+        review = await _review_mockup_authenticity(
+            candidate, screen_desc, brief_text, user_id=user_id
+        )
+        review_notes = list(review.get("notes") or [])
+        review_notes.extend(_screen_specific_quality_notes(candidate, screen_desc))
+
+        deduped_review_notes: list[str] = []
+        for note in review_notes:
+            if note and note not in deduped_review_notes:
+                deduped_review_notes.append(note)
+
+        if deduped_review_notes and _is_renderable_ui_html(candidate):
+            print(f"🧠 [{screen_desc[:40]}] Revising after authenticity review")
+            revised = await _revise_mockup_from_review(
+                candidate,
+                screen_desc,
+                project_context,
+                brief_text,
+                deduped_review_notes,
+                user_id=user_id,
+                direction=direction,
+                north_star_css=north_star_css,
+                north_star_html=north_star_html
+            )
+            candidate = _ensure_html_document(_strip_script_tags(revised))
+
+        if not _is_renderable_ui_html(candidate):
+            candidate = _fallback_mockup_html(product_name, screen_desc, project_context)
+
+        mockup.component_code = candidate
+        mockup.status = MockupStatus.complete
+        mockup.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:
+        if "mockup" in locals() and mockup is not None:
+            mockup.status = MockupStatus.error
+            mockup.component_code = f"<div style='padding:2rem;color:red'>Generation failed: {str(e)}</div>"
+            mockup.updated_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
 # ── Background generation ────────────────────────────────────────────────────
 
 async def _self_repair_html(candidate: str, screen_desc: str, project_context: str, attempt: int, user_id: str | None = None) -> str:
@@ -1278,228 +1923,16 @@ async def _generate_mockup_component(
     consistency block that forces the LLM to replicate the north-star's exact
     CSS and HTML structure — preventing late screens from diverging.
     """
-    from models import SessionLocal
+    return await _generate_mockup_with_design_brief(
+        mockup_id,
+        project_context,
+        screen_desc,
+        creative_mode="guided",
+        user_id=user_id,
+        north_star_css=north_star_css,
+        north_star_html=north_star_html,
+    )
 
-    # Bail immediately if already cancelled
-    if mockup_id in _cancelled_mockups:
-        _cancelled_mockups.discard(mockup_id)
-        return
-
-    db = SessionLocal()
-    try:
-        mockup = db.query(DesignMockup).filter(DesignMockup.id == mockup_id).first()
-        if not mockup:
-            return
-
-        mockup.status = MockupStatus.generating
-        db.commit()
-
-        revision_context = ""
-        if mockup.prompt:
-            revision_context = f"\n\nRevision notes from user: {mockup.prompt}"
-
-        dna = _derive_design_dna(project_context)
-        dna_block = _format_design_dna_block(dna)
-
-        # Compute theme mode for the system prompt reinforcement
-        bg_hex = dna["palette"]["bg"].lstrip("#")
-        try:
-            _r, _g, _b = int(bg_hex[0:2],16), int(bg_hex[2:4],16), int(bg_hex[4:6],16)
-            _theme_mode = "DARK" if (0.299*_r + 0.587*_g + 0.114*_b) < 80 else "LIGHT"
-            _forbidden = "white, #fff, #ffffff, #fafafa, #f9f9f9" if _theme_mode == "DARK" else "black, #000, #000000"
-        except Exception:
-            _theme_mode = "DARK"
-            _forbidden = "white, #fff, #ffffff"
-
-        # ── North-star consistency block (injected for non-first screens) ────
-        north_star_block = ""
-        if north_star_css:
-            _html_ref = ""
-            if north_star_html:
-                _trunc = north_star_html[:6000]
-                if len(north_star_html) > 6000:
-                    _trunc += "\n<!-- … truncated — follow the patterns above -->"
-                _html_ref = f"""
-
-NORTH STAR HTML REFERENCE — study the navigation, sidebar, header, footer, card
-shapes, button markup, and section order.  Replicate those HTML patterns for this
-screen (adapt content, keep the structure):
-
-```html
-{_trunc}
-```"""
-
-            north_star_block = f"""
-
-══════════════════════════════════════════════════════════════════════════════
-NORTH STAR CONSISTENCY — the first screen's FULL stylesheet is below.
-Paste it into your <style> tag VERBATIM and only ADD new rules for this screen.
-Do NOT modify, override, or remove any existing rule.
-══════════════════════════════════════════════════════════════════════════════
-```css
-{north_star_css}
-```
-{_html_ref}
-CONSISTENCY RULES (non-negotiable):
-- Use ONLY the CSS variables and class names from the north star
-- Do NOT introduce new hex colours, new fonts, or new border-radius values
-- Navigation must be structurally identical to the north star (same sidebar/top-nav)
-- Buttons, cards, badges, inputs must use the same classes and visual treatment
-"""
-
-        system = f"""You are a world-class UI/UX designer building a HIGH-FIDELITY HTML mockup.
-
-Generate a SINGLE COMPLETE standalone HTML document for THIS SPECIFIC screen.
-
-{dna_block}
-{north_star_block}
-
-🚨 STRUCTURAL MANDATE — READ THIS BEFORE ANYTHING ELSE:
-Archetype: {dna['archetype']['name']}
-Required skeleton: {dna['archetype']['structure_hint']}
-The PAGE SKELETON in section 7 of the DNA block above is NON-NEGOTIABLE.
-Build that exact structural blueprint. Do NOT substitute a generic card-grid or box layout.
-
-⚠️  THEME CONSISTENCY — THIS IS MANDATORY:
-This is a {_theme_mode} THEME product. EVERY screen must have background-color: {dna['palette']['bg']}.
-NEVER use {_forbidden} as a background on body, sections, cards, or any major container.
-All colors MUST come from the CSS variables in the :root block above — no hardcoded hex values outside :root.
-
-SCREEN IDENTITY — match the screen type exactly:
-- Login/Register → use the SPLIT-SCREEN pattern: brand/visual left half, form right half. NOT a centered box.
-- Landing Page → full-viewport hero with bold headline + CTA, then alternating full-bleed feature sections, testimonials, pricing, footer. NO app chrome.
-- Dashboard → follow the archetype skeleton above exactly. Fill with realistic data. NO generic 4-card KPI row.
-- Settings → two-panel: category nav left, form area right with grouped sections and toggles.
-- Detail views → asymmetric split or full-width with sticky sidebar metadata.
-Every screen MUST have UNIQUE geometry — avoid repeating the same grid structure across screens.
-NEVER output a half-finished or skeletal design — ALL sections must have real, visible content.
-
-SCREEN-SPECIFIC REQUIREMENTS:
-{_screen_specific_requirements(screen_desc)}
-
-VISUAL DIVERSITY RULES — THIS IS CRITICAL:
-- THE ARCHETYPE PAGE SKELETON IS THE LAYOUT — build it, do not invent a different structure
-- DO NOT default to a 3-column or 4-column uniform card grid layout under any circumstances
-- If archetype is "bento-mosaic" → CSS grid with mixed span tiles; if "magazine" → full-bleed alternating sections; if "split-screen" → two half-page panels; if "feed-timeline" → 3-col with center feed; if "landing-hero" → stacked full-width sections; if "minimal-focus" → centered single column; if "canvas-workspace" → floating panels; if "command-center" → sidebar + asymmetric main area
-- VARY the geometry: mix full-bleed rows, asymmetric columns, large+small tile combos, horizontal color bands
-- USE diagonal clip-paths (clip-path: polygon), gradient overlays, oversized display typography as design elements
-- AVOID uniform boxy-card-on-dark-background — that looks like a template, not a product
-
-DESIGN SYSTEM PRIORITY:
-- The product context below may contain a "Design System Foundation" section
-- If it does, treat its colors, typography, spacing tokens, and component specs as THE AUTHORITATIVE STYLE — they override generic defaults
-- The DNA block above is the fallback; where the Design System Foundation conflicts with it, FOLLOW the Design System Foundation
-- Specifically: if the Design System Foundation defines a color palette, use THOSE hex values in :root (not the DNA palette)
-
-PRODUCTION POLISH — THIS IS WHAT SEPARATES FIGMA-QUALITY FROM WIREFRAMES:
-Every element must use these techniques. Hollow boxes = automatic failure.
-
-1. BUTTONS — never plain colored rectangles:
-   - Primary: gradient fill + colored box-shadow glow: `background: linear-gradient(135deg, var(--primary), var(--accent)); box-shadow: 0 4px 20px color-mix(in srgb, var(--primary) 40%, transparent);`
-   - Secondary: filled surface, subtle border: `background: var(--surface); border: 1px solid var(--border);` → NOT `background: transparent`
-   - Destructive: `background: color-mix(in srgb, #ef4444 15%, transparent); border: 1px solid #ef444450; color: #f87171;`
-
-2. CARDS / PANELS — always have a filled surface with depth:
-   - Use `background: var(--surface)` minimum — NEVER `background: transparent` on a content card
-   - Add subtle inset highlight: `box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset;`
-   - For hover/active state: add a left accent border: `border-left: 3px solid var(--primary);`
-
-3. ICON CONTAINERS — every icon must live in a colored wrapper:
-   - `display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; background: color-mix(in srgb, var(--primary) 15%, transparent); border-radius: 8px;`
-   - Use emoji or 2-letter monogram as icon, styled with color: var(--primary)
-
-4. TYPOGRAPHY HIERARCHY — premium apps use dramatic size contrast:
-   - Display numbers/stats: `font-size: clamp(28px, 4vw, 48px); font-weight: 800; background: linear-gradient(135deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent;`
-   - Section labels: `font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);`
-   - Body: `font-size: 13-14px; color: var(--text); line-height: 1.6;`
-
-5. STATUS BADGES — filled, not bordered-only:
-   - Success: `background: color-mix(in srgb, #22c55e 15%, transparent); color: #4ade80; border: 1px solid color-mix(in srgb, #22c55e 25%, transparent); padding: 2px 10px; border-radius: 999px;`
-   - Warning: same pattern with #f59e0b
-   - Error: same pattern with #ef4444
-   - Neutral: `background: color-mix(in srgb, var(--muted) 15%, transparent); color: var(--muted);`
-
-6. NAVIGATION — active state must be visually obvious:
-   - Active item: `background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); border-left: 3px solid var(--primary);`
-   - Sidebar background: `background: color-mix(in srgb, var(--bg) 60%, var(--surface) 40%);`
-
-7. SECTION BACKGROUNDS — alternate to create visual rhythm:
-   - Primary sections: `background: var(--bg)`
-   - Alternate sections: `background: var(--surface)`  
-   - Accent band: `background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 10%, transparent), color-mix(in srgb, var(--accent) 6%, transparent))`
-
-8. INPUTS — must look considered, not default browser:
-   - `background: color-mix(in srgb, var(--bg) 80%, var(--surface) 20%); border: 1px solid var(--border); padding: 10px 14px; color: var(--text);`
-   - Focus ring (add CSS): `outline: 2px solid color-mix(in srgb, var(--primary) 50%, transparent); outline-offset: 2px;`
-
-9. IMAGES / AVATARS — never blank divs:
-   - Avatar: `background: linear-gradient(135deg, var(--primary), var(--accent)); border-radius: 50%; display:flex; align-items:center; justify-content:center; font-weight:700; color: var(--bg);` with 2-letter initials
-   - Thumbnail/placeholder: gradient background with centered icon emoji
-
-10. PAGE-LEVEL DEPTH — add ambient glow behind key content areas:
-    - Hero/header: `position:relative; overflow:hidden;` with a `::before` or inner div: `background: radial-gradient(600px 400px at 50% 0%, color-mix(in srgb, var(--primary) 12%, transparent), transparent 70%);`
-
-FORBIDDEN — automatic failure, regenerate if present:
-- Any `background: transparent` or `background: none` on a card, panel, or button
-- Hollow outline buttons where the inside is see-through (use filled buttons)
-- Plain gray/unstyled placeholder boxes
-- More than 2 line-only separators with no content variation on a page
-- No use of color whatsoever on an entire section
-
-CONTENT RULES:
-- Use realistic product-specific copy relevant to "{dna['product_name']}" — no lorem ipsum
-- Show actual data values, realistic user names, product-specific labels and numbers
-- Every screen must feel like a real launched product, not a wireframe or template
-- Do NOT include <script> tags — pure HTML + CSS only
-
-OUTPUT: Raw HTML only — no markdown fences, no explanations, no comments.{revision_context}"""
-
-        try:
-            mc = _resolve_design_model(user_id)
-            call_kwargs = _build_litellm_kwargs(mc, [
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"Product context:\n{project_context}\n\nScreen to design:\n{screen_desc}"},
-            ], temperature=1.0, max_tokens=4500)
-            print(f"🎨 Design [{screen_desc[:40]}] using: {mc['model']} via {mc['provider_name']}")
-            resp = await litellm.acompletion(**call_kwargs)
-
-            # Honour stop request that arrived while the LLM was running
-            if mockup_id in _cancelled_mockups:
-                _cancelled_mockups.discard(mockup_id)
-                return
-
-            raw_code = _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
-            raw_code = _enforce_theme_css(raw_code, dna)
-            candidate = _ensure_html_document(raw_code)
-
-            # If output is non-renderable at all, run one transform pass first.
-            if not _is_renderable_ui_html(candidate):
-                print(f"🔧 [{screen_desc[:40]}] Non-renderable — transforming to static HTML")
-                transformed = await _transform_to_static_html(candidate, screen_desc, project_context, user_id=user_id)
-                candidate = _ensure_html_document(_strip_script_tags(transformed))
-
-            # Self-repair: 1 pass only if design is truly skeletal/broken.
-            if not (_is_renderable_ui_html(candidate) and _is_visually_complete_html(candidate)):
-                if _is_renderable_ui_html(candidate):
-                    # Renderable but thin — one repair attempt
-                    print(f"🔄 [{screen_desc[:40]}] Thin output — single repair pass")
-                    repaired = await _self_repair_html(candidate, screen_desc, project_context, 1, user_id=user_id)
-                    candidate = _ensure_html_document(repaired)
-                else:
-                    # Completely broken — use fallback immediately
-                    print(f"⚠️ [{screen_desc[:40]}] Non-renderable after transform — using fallback")
-                    candidate = _fallback_mockup_html(_project_name_from_context(project_context), screen_desc)
-
-            mockup.component_code = candidate
-            mockup.status = MockupStatus.complete
-        except Exception as e:
-            mockup.status = MockupStatus.error
-            mockup.component_code = f"<div style='padding:2rem;color:red'>Generation failed: {str(e)}</div>"
-
-        mockup.updated_at = datetime.utcnow()
-        db.commit()
-    finally:
-        db.close()
 
 
 # ── AI Creative Freedom generation ───────────────────────────────────────────
@@ -1597,229 +2030,17 @@ async def _generate_mockup_ai_free(
     direction: optional chosen design direction description to guide the north-star style.
     north_star_html: full HTML of the north-star screen for deeper style extraction.
     """
-    from models import SessionLocal
+    return await _generate_mockup_with_design_brief(
+        mockup_id,
+        project_context,
+        screen_desc,
+        creative_mode="ai_free",
+        user_id=user_id,
+        direction=direction,
+        north_star_css=north_star_css,
+        north_star_html=north_star_html,
+    )
 
-    # Bail immediately if already cancelled
-    if mockup_id in _cancelled_mockups:
-        _cancelled_mockups.discard(mockup_id)
-        return
-
-    db = SessionLocal()
-    try:
-        mockup = db.query(DesignMockup).filter(DesignMockup.id == mockup_id).first()
-        if not mockup:
-            return
-
-        mockup.status = MockupStatus.generating
-        db.commit()
-
-        revision_context = f"\n\nRevision notes from user: {mockup.prompt}" if mockup.prompt else ""
-        product_name = _project_name_from_context(project_context)
-
-        if north_star_css is None:
-            # North-star screen — full creative freedom
-            if direction:
-                # User explicitly chose a NEW design direction — execute it with ZERO compromise
-                system = f"""You are an award-winning UI/UX designer. The user chose a COMPLETELY NEW design direction and rejected the previous designs.
-
-═══════════════════════════════════════════════════════════════════════════════
-APP NAME: "{product_name}"
-Use "{product_name}" as the app/product name in ALL headers, navigation bars, logos, footers, page titles, and branding throughout. NEVER invent a different product name.
-═══════════════════════════════════════════════════════════════════════════════
-
-═══════════════════════════════════════════════════════════════════════════════
-CRITICAL — USER'S CHOSEN DESIGN DIRECTION (NON-NEGOTIABLE)
-═══════════════════════════════════════════════════════════════════════════════
-{direction}
-
-The user wants designs that look TOTALLY different from before — as different as north from south, as English from French or Danish. NOT a slight variation. A RADICAL new visual identity.
-- Use the palette, typography, layout philosophy, and mood from this direction EXACTLY
-- If the direction says light/airy — NO dark backgrounds. If it says dark/luxe — embrace it fully
-- If the direction says minimal — avoid heavy gradients and glows. If it says bold/vibrant — go all in
-- Your output must be unrecognisable from a generic dark SaaS dashboard — commit to this direction
-═══════════════════════════════════════════════════════════════════════════════
-
-Design a STUNNING, production-ready interface for this screen:
-{screen_desc}
-
-ADAPTIVE QUALITY (apply in a way that SERVES the direction):
-- Buttons, cards, icons: polished and intentional — match the direction's style (gradient if bold, flat if minimal, etc.)
-- Typography: dramatic scale contrast where it fits — large headings, small labels
-- NEVER use background: transparent on cards/panels — always a defined surface
-- Use the direction's colours for ALL elements — no generic purple/dark fallbacks
-- THIS IS THE NORTH STAR — every subsequent screen will inherit this design system
-
-ANIMATIONS (optional, match the mood):
-- Subtle entrance animations, gentle motion — only if they fit the direction's feel
-
-FORBIDDEN:
-- Ignoring the direction and defaulting to dark theme, purple accents, or generic SaaS look
-- background: transparent on content containers
-- Plain grey placeholders
-- Lorem ipsum
-- Using any product/app name other than "{product_name}"
-
-CONTENT: All copy must be product-specific for "{product_name}" — no lorem ipsum.
-OUTPUT: Complete standalone <!DOCTYPE html> document with embedded CSS. Raw HTML only, no markdown fences.{revision_context}"""
-            else:
-                # No direction — full creative freedom, varied aesthetic
-                system = f"""You are an award-winning UI/UX designer with COMPLETE creative freedom.
-
-═══════════════════════════════════════════════════════════════════════════════
-APP NAME: "{product_name}"
-Use "{product_name}" as the app/product name in ALL headers, navigation bars, logos, footers, page titles, and branding throughout. NEVER invent a different product name.
-═══════════════════════════════════════════════════════════════════════════════
-
-Design a STUNNING, production-ready interface for this screen:
-{screen_desc}
-
-CREATIVE MANDATE — no style constraints, this is YOUR design:
-- Choose your own colour palette (bold, muted, monochrome, vibrant — total freedom)
-- Choose your own layout: bento mosaic, editorial magazine, split-screen, canvas workspace, vertical feed, landing hero, minimal focus — anything you like
-- Choose font personality and typographic scale
-- THIS IS THE NORTH STAR — every subsequent screen will inherit your design system, so make it count
-
-ABSOLUTE QUALITY STANDARDS (non-negotiable regardless of style):
-- Buttons: gradient fill (use two related hues) + coloured glow box-shadow — never flat or transparent
-- Cards/panels: always a filled background surface + depth shadow — NEVER background:transparent on a content container
-- Icon containers: every icon lives in a coloured rounded wrapper (~36×36 px, tinted brand background)
-- Typography: dramatic scale contrast — mix 48-72px display headings with 10-11px uppercase muted labels
-- Status badges: filled colour backgrounds (color-mix) — never border-only rings
-- Navigation active state: left border accent + tinted background
-- Sections: alternate var(--bg) and var(--surface) for visual rhythm; add at least one coloured accent band
-- Avatars/thumbnails: gradient initials or emoji icon — never a blank grey placeholder
-- Hero/top area: radial-gradient ambient glow bleeding into the content
-- Inputs: visible styled background + subtle inset shadow + rounded corners
-
-CSS ANIMATIONS (make it feel alive — this is the LANDING PAGE / NORTH STAR):
-- Hero entrance: @keyframes fadeSlideUp — content fades in and slides up on page load (animation-delay stagger for headline, subtitle, CTA)
-- Gradient background: @keyframes gradientShift — subtle animated gradient that slowly shifts hues (background-size: 200% 200%)
-- CTA button glow: @keyframes pulseGlow — gentle pulsing box-shadow glow on the primary call-to-action
-- Cards/features: @keyframes fadeInUp — stagger children with animation-delay (0.1s increments)
-- Floating elements: @keyframes float — gentle vertical bobbing for decorative shapes or icons
-- Sticky navigation: backdrop-filter: blur(12px) + background that transitions to opaque on scroll-like effect
-- At least 3-4 distinct animations used across the page for a premium, modern feel
-
-FORBIDDEN — these produce wireframe output, never use them:
-- background: transparent on a card, panel, or button
-- background: none on any content element
-- Hollow outline-only buttons where the inside is see-through
-- Plain unstyled grey div placeholders
-
-CONTENT: All copy must be product-specific for "{product_name}" — no lorem ipsum.
-OUTPUT: Complete standalone <!DOCTYPE html> document with embedded CSS. Raw HTML only, no markdown fences.{revision_context}"""
-
-        else:
-            # Consistent screen — follow north-star style contract
-            direction_reminder = ""
-            if direction:
-                direction_reminder = f"""
-DESIGN DIRECTION (chosen by the user — this STILL applies to every screen):
-{direction}
-"""
-
-            # Build a truncated HTML reference so the LLM sees the actual
-            # component & layout patterns (nav, header, footer, card shapes)
-            # from the north-star screen — not just the CSS variables.
-            html_ref_block = ""
-            if north_star_html:
-                _html_ref = north_star_html[:6000]  # cap to ~6 KB
-                if len(north_star_html) > 6000:
-                    _html_ref += "\n<!-- … truncated — follow the patterns above -->"
-                html_ref_block = f"""
-
-NORTH STAR FULL HTML REFERENCE — study the layout structure, navigation, sidebar,
-header, footer, card shapes, button HTML, and section order. Replicate those HTML
-patterns for this screen (adapt content, keep the structure):
-
-```html
-{_html_ref}
-```"""
-
-            system = f"""You are an award-winning UI/UX designer building the NEXT SCREEN of an existing product.
-This screen MUST look like it belongs to the EXACT SAME application as every other screen — same brand, same feel, same visual DNA.
-
-═══════════════════════════════════════════════════════════════════════════════
-APP NAME: "{product_name}"
-Use "{product_name}" as the app/product name in ALL headers, navigation bars, logos, footers, and branding. NEVER invent a different name.
-═══════════════════════════════════════════════════════════════════════════════
-{direction_reminder}
-NORTH STAR STYLE CONTRACT — the COMPLETE stylesheet from the first generated screen.
-Paste this into your <style> tag and ONLY ADD new rules for screen-specific elements.
-Do NOT modify, override, or redefine ANY existing rule.
-
-```css
-{north_star_css}
-```
-{html_ref_block}
-
-STRICT CONSISTENCY RULES:
-- Paste the CSS above into your <style> tag VERBATIM — do NOT modify, omit, or reinterpret any values
-- Use ONLY the CSS variables defined there for ALL colours, backgrounds, text, and fonts
-- Do NOT introduce new hex colours, new font families, or new border-radius values
-- Match the same font family, font weights, and typographic scale as the north star
-- Match the same button class names and styles (gradient, glow, border-radius) as the north star
-- Match the same card/panel class names and styles (background, shadow, border) as the north star
-- Match the same navigation HTML structure and CSS (if sidebar, keep sidebar; if top-nav, keep top-nav)
-- If the north star uses a specific background colour, use the EXACT SAME background — never substitute
-- Reuse the same CSS class names from the north star for shared elements (nav, buttons, cards, badges)
-- Any @keyframes or animations defined in the north star should be preserved (don't strip them)
-
-Screen to design: {screen_desc}
-
-SCREEN TYPE — build layout specific to this screen:
-{_screen_specific_requirements(screen_desc)}
-
-CONSISTENT UX PATTERNS (same across ALL screens):
-- Navigation: identical HTML structure, links, and active-state styling as the north star
-- Buttons: same gradient/fill style, same border-radius, same hover glow — never flat if north star has gradient
-- Cards/panels: same surface colour, same shadow depth, same border-radius
-- Typography: same fonts, same heading sizes, same label styles
-- Status indicators: same colour coding and badge styles
-- Brand placement: "{product_name}" in the same position (nav bar / header) on every screen
-
-CONTENT: Realistic product-specific copy for "{product_name}" — no lorem ipsum, no placeholder text.
-OUTPUT: Complete standalone <!DOCTYPE html> document. Raw HTML only, no markdown fences.{revision_context}"""
-
-        try:
-            mc = _resolve_design_model(user_id)
-            call_kwargs = _build_litellm_kwargs(mc, [
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"Product context:\n{project_context}\n\nScreen:\n{screen_desc}"},
-            ], temperature=1.0, max_tokens=5000)
-            label = "[NORTH STAR]" if north_star_css is None else "[consistent]"
-            print(f"🎨✨ AI-Free {label} [{screen_desc[:40]}] using: {mc['model']}")
-            resp = await litellm.acompletion(**call_kwargs)
-
-            # Honour stop request that arrived while the LLM was running
-            if mockup_id in _cancelled_mockups:
-                _cancelled_mockups.discard(mockup_id)
-                return
-
-            raw_code = _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
-            candidate = _ensure_html_document(raw_code)
-
-            if not _is_renderable_ui_html(candidate):
-                print(f"🔧 AI-Free [{screen_desc[:40]}] Non-renderable — transform pass")
-                candidate = _ensure_html_document(await _transform_to_static_html(candidate, screen_desc, project_context, user_id=user_id))
-
-            if not (_is_renderable_ui_html(candidate) and _is_visually_complete_html(candidate)):
-                if _is_renderable_ui_html(candidate):
-                    print(f"🔄 AI-Free [{screen_desc[:40]}] Thin — repair pass")
-                    candidate = _ensure_html_document(await _self_repair_html(candidate, screen_desc, project_context, 1, user_id=user_id))
-                else:
-                    candidate = _fallback_mockup_html(product_name, screen_desc)
-
-            mockup.component_code = candidate
-            mockup.status = MockupStatus.complete
-        except Exception as e:
-            mockup.status = MockupStatus.error
-            mockup.component_code = f"<div style='padding:2rem;color:red'>Generation failed: {str(e)}</div>"
-
-        mockup.updated_at = datetime.utcnow()
-        db.commit()
-    finally:
-        db.close()
 
 
 async def _generate_all_mockups_ai_free(project_id: str, direction: str | None = None):
@@ -2253,7 +2474,7 @@ async def get_design_directions(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Generate 5 completely different design direction proposals with rendered HTML swatches."""
+    """Generate 10 completely different design direction proposals with rendered HTML swatches."""
     project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -2277,6 +2498,8 @@ async def get_design_directions(
 
     results = []
     for i, d in enumerate(directions):
+        if not isinstance(d, dict):
+            d = {}
         html = swatches[i] if not isinstance(swatches[i], Exception) else ""
         results.append({
             "id": str(uuid.uuid4()),
@@ -2487,12 +2710,11 @@ async def request_revision(
     mockup.status = MockupStatus.pending
     db.commit()
 
-    # Build project context
-    idea_context = ""
-    if project.idea and project.idea.content:
-        idea_context = json.dumps(project.idea.content, indent=2)
-
-    project_context = f"Product: {project.name}\nDescription: {project.description or 'N/A'}\nIdea: {idea_context}"
+    cdo_analysis = db.query(CSuiteAnalysis).filter(
+        CSuiteAnalysis.project_id == project_id,
+        CSuiteAnalysis.agent_role == CSuiteRole.cdo,
+    ).first()
+    project_context = _build_project_context(project, cdo_analysis, db=db)
     screen_desc = f"Screen: {mockup.screen_name}\nDescription: {mockup.description}\nPrevious feedback: {body.notes}"
 
     if use_inngest():

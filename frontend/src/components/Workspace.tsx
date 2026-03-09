@@ -117,9 +117,10 @@ export default function Workspace() {
     const startWidth = useRef(0);
 
     // Auto-save manual editor changes to the database; reload preview when save succeeds
+    const currentPreviewHref = previewUrl || (iframeSrc ? iframeSrc.split("?")[0] : null);
     const reloadPreview = useCallback(() => {
-        if (previewUrl) setIframeSrc(`${previewUrl}?ts=${Date.now()}`);
-    }, [previewUrl]);
+        if (currentPreviewHref) setIframeSrc(`${currentPreviewHref}?ts=${Date.now()}`);
+    }, [currentPreviewHref, setIframeSrc]);
     useAutoSave(projectId, files, 800, { onSaved: reloadPreview });
 
     // Drag resize handler
@@ -751,25 +752,25 @@ export default function Workspace() {
                         <div className="flex-1 bg-[#1A1A24] rounded h-6 px-2 flex items-center text-[11px] text-zinc-500 border border-zinc-700/50 font-mono overflow-hidden whitespace-nowrap">
                             {iframeSrc || "preview"}
                         </div>
-                        {previewUrl && (
-                            <>
-                                <button
-                                    onClick={() => setIframeSrc(`${previewUrl}?ts=${Date.now()}`)}
-                                    className="flex items-center gap-1.5 px-2 py-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-[11px] font-medium"
-                                    title="Refresh preview"
-                                >
-                                    <RefreshCw className="w-3.5 h-3.5" />
-                                    <span>Refresh</span>
-                                </button>
-                                <button
-                                    onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
-                                    className="p-1 hover:bg-zinc-700 rounded text-zinc-400"
-                                    title="Open in new tab"
-                                >
-                                    <ExternalLink className="w-3.5 h-3.5" />
-                                </button>
-                            </>
-                        )}
+                        <>
+                            <button
+                                onClick={reloadPreview}
+                                disabled={!currentPreviewHref}
+                                className="flex items-center gap-1.5 px-2 py-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-[11px] font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                title={currentPreviewHref ? "Refresh preview" : "Preview not available yet"}
+                            >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                <span>Refresh</span>
+                            </button>
+                            <button
+                                onClick={() => currentPreviewHref && window.open(currentPreviewHref, "_blank", "noopener,noreferrer")}
+                                disabled={!currentPreviewHref}
+                                className="p-1 rounded text-zinc-400 hover:bg-zinc-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                title={currentPreviewHref ? "Open in new tab" : "Preview not available yet"}
+                            >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                            </button>
+                        </>
                     </div>
 
                     <div className="flex-1 relative overflow-hidden">

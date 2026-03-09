@@ -140,14 +140,23 @@ async def process_user_request(prompt: str, project_id: int, model_id: str, db=N
         project_context = "\n(No existing files — this is a fresh project)\n"
     
     # 2b. Fetch design context (CDO design system + screen inventory)
+    # Use compact by default to keep prompt within model context limits.
+    # Only pull full HTML mockups when the prompt explicitly references
+    # design / visual / mockup work — those tokens easily exceed 10k chars.
     design_ref = ""
     try:
-        # Use full design context (includes approved mockup HTML) so the agent
-        # can faithfully replicate the approved visual designs.
-        design_ref = await asyncio.to_thread(get_design_context, project_id)
+        _design_keywords = ("design", "mockup", "visual", "style", "color", "layout",
+                            "theme", "ui", "ux", "brand", "font", "typography",
+                            "foundational", "foundation", "cdo")
+        _use_full = any(kw in prompt.lower() for kw in _design_keywords)
+        if _use_full:
+            design_ref = await asyncio.to_thread(get_design_context, project_id)
         if not design_ref:
-            # Fallback to compact if no approved designs yet
             design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
+        # Safety cap: if the combined prompt would be huge, fall back to compact
+        if design_ref and len(design_ref) > 12_000:
+            compact = await asyncio.to_thread(get_design_context_compact, project_id)
+            design_ref = compact or design_ref[:12_000]
     except Exception as e:
         print(f"Design context fetch skipped: {e}")
 

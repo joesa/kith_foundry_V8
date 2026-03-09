@@ -11,6 +11,13 @@ from models import (
     SessionLocal, Project, DesignMockup, CSuiteAnalysis,
     CSuiteRole, MockupStatus, Artifact, ArtifactType, AgentStatus,
 )
+from design_intelligence import (
+    compose_project_context,
+    build_design_brief,
+    build_compiled_design_spec,
+    format_design_brief,
+    format_compiled_design_spec,
+)
 
 
 def get_design_context(project_id: str) -> str:
@@ -30,6 +37,9 @@ def get_design_context(project_id: str) -> str:
 
         sections: list[str] = []
 
+        cdo_data = None
+        design_system_text = ""
+
         # ── CDO Design Foundation ────────────────────────────────────────
         cdo = db.query(CSuiteAnalysis).filter(
             CSuiteAnalysis.project_id == project_id,
@@ -38,6 +48,7 @@ def get_design_context(project_id: str) -> str:
 
         if cdo and cdo.analysis:
             analysis = cdo.analysis if isinstance(cdo.analysis, dict) else {}
+            cdo_data = analysis
             parts = []
             if analysis.get("recommendation"):
                 parts.append(f"Recommendation: {analysis['recommendation']}")
@@ -68,12 +79,13 @@ def get_design_context(project_id: str) -> str:
         if dsf and dsf.content:
             dsf_text = dsf.content.get("text") if isinstance(dsf.content, dict) else str(dsf.content)
             if dsf_text and dsf_text.strip():
+                design_system_text = dsf_text.strip()
                 sections.append(
                     "## Design System Foundation\n\n"
                     "The following design system was generated as a project artifact. "
                     "Use these exact tokens, colors, typography, spacing, and component "
                     "specifications when building or modifying any UI component.\n\n"
-                    + dsf_text.strip()
+                    + design_system_text
                 )
 
         # ── User-Approved Mockups only ─────────────────────────────────────
@@ -89,10 +101,16 @@ def get_design_context(project_id: str) -> str:
 
         if mockups:
             screen_blocks = []
+            brief_refs = []
             for m in mockups:
                 code = (m.component_code or "").strip()
                 if not code:
                     continue
+                brief_refs.append({
+                    "name": m.screen_name,
+                    "description": m.description or "N/A",
+                    "status": m.status.value,
+                })
                 screen_blocks.append(
                     f"### {m.screen_name}\n"
                     f"Description: {m.description or 'N/A'}\n"
@@ -110,6 +128,21 @@ def get_design_context(project_id: str) -> str:
                     "React/TSX + App.css, preserving the exact visual design.\n\n"
                     + "\n\n".join(screen_blocks)
                 )
+        else:
+            brief_refs = []
+
+        project_context = compose_project_context(
+            product_name=project.name,
+            description=project.description,
+            target_audience=project.target_audience,
+            idea=project.idea.content if project.idea else None,
+            cdo_analysis=cdo_data,
+            design_system_text=design_system_text,
+        )
+        brief = build_design_brief(project_context, approved_mockups=brief_refs)
+        compiled_spec = build_compiled_design_spec(project_context, approved_mockups=brief_refs)
+        sections.insert(0, format_design_brief(brief, compact=False))
+        sections.insert(0, format_compiled_design_spec(compiled_spec, compact=False))
 
         if not sections:
             return ""
@@ -138,6 +171,9 @@ def get_design_context_compact(project_id: str) -> str:
 
         sections: list[str] = []
 
+        cdo_data = None
+        design_system_text = ""
+
         # CDO Foundation
         cdo = db.query(CSuiteAnalysis).filter(
             CSuiteAnalysis.project_id == project_id,
@@ -146,6 +182,7 @@ def get_design_context_compact(project_id: str) -> str:
 
         if cdo and cdo.analysis:
             analysis = cdo.analysis if isinstance(cdo.analysis, dict) else {}
+            cdo_data = analysis
             parts = []
             if analysis.get("recommendation"):
                 parts.append(f"Recommendation: {analysis['recommendation']}")
@@ -165,11 +202,12 @@ def get_design_context_compact(project_id: str) -> str:
         if dsf and dsf.content:
             dsf_text = dsf.content.get("text") if isinstance(dsf.content, dict) else str(dsf.content)
             if dsf_text and dsf_text.strip():
+                design_system_text = dsf_text.strip()
                 # Include full design system — it's the authoritative style reference
                 sections.append(
                     "## Design System Foundation\n"
                     "Follow these tokens, colors, typography, and component specs for all UI work:\n\n"
-                    + dsf_text.strip()
+                    + design_system_text
                 )
 
         # Screen inventory — approved only (no full HTML)
@@ -183,6 +221,7 @@ def get_design_context_compact(project_id: str) -> str:
             .all()
         )
 
+        brief_refs = []
         if mockups:
             # Extract CSS custom properties from the first approved mockup
             # to give the agent the exact brand color palette.
@@ -200,10 +239,28 @@ def get_design_context_compact(project_id: str) -> str:
                 "User-approved screens from Design Studio (implement these screens with visual consistency):",
             ]
             for m in mockups:
+                brief_refs.append({
+                    "name": m.screen_name,
+                    "description": m.description or "N/A",
+                    "status": m.status.value,
+                })
                 lines.append(f"  - **{m.screen_name}** ({m.priority.value}): {m.description or 'N/A'}")
             if css_vars:
                 lines.append(css_vars)
             sections.append("\n".join(lines))
+
+        project_context = compose_project_context(
+            product_name=project.name,
+            description=project.description,
+            target_audience=project.target_audience,
+            idea=project.idea.content if project.idea else None,
+            cdo_analysis=cdo_data,
+            design_system_text=design_system_text,
+        )
+        brief = build_design_brief(project_context, approved_mockups=brief_refs)
+        compiled_spec = build_compiled_design_spec(project_context, approved_mockups=brief_refs)
+        sections.insert(0, format_design_brief(brief, compact=True))
+        sections.insert(0, format_compiled_design_spec(compiled_spec, compact=True))
 
         if not sections:
             return ""

@@ -13,8 +13,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import asyncio
+from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 import uuid
 import signal
 import atexit

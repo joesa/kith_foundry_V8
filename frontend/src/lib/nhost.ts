@@ -77,21 +77,30 @@ export const nhostAuth: AuthClient = nhost
 
               // Only proactively refresh if the access token expires within 60 seconds.
               // Avoids hammering /v1/token on every API call.
+              const readExpiry = (token: string | null): number => {
+                  if (!token) return 0;
+                  try {
+                      const payload = JSON.parse(atob(token.split(".")[1]));
+                      return (payload.exp ?? 0) * 1000;
+                  } catch {
+                      return 0;
+                  }
+              };
+
               try {
                   const token = nhost.auth.getAccessToken();
-                  if (token) {
-                      // Decode exp claim from JWT payload (no verification needed here)
-                      const payload = JSON.parse(atob(token.split(".")[1]));
-                      const expiresAt = (payload.exp ?? 0) * 1000;
-                      const needsRefresh = expiresAt - Date.now() < 60_000;
-                      if (!needsRefresh) return token;
-                  }
+                  const expiresAt = readExpiry(token);
+                  const needsRefresh = !token || expiresAt - Date.now() < 60_000;
+                  if (!needsRefresh) return token;
                   // Token missing or near expiry — attempt refresh
                   await nhost.auth.refreshSession();
               } catch {
-                  /* ignore — use current token, 401 will trigger signOut via useApiFetch */
+                  /* ignore — we'll validate the final token below */
               }
-              return nhost.auth.getAccessToken() ?? null;
+              const refreshed = nhost.auth.getAccessToken() ?? null;
+              const refreshedExpiry = readExpiry(refreshed);
+              if (!refreshed || refreshedExpiry <= Date.now()) return null;
+              return refreshed;
           },
       }
     : (null as unknown as AuthClient);

@@ -134,12 +134,12 @@ FORBIDDEN – do NOT include:
     "dashboard": """SCREEN TYPE: User Dashboard / Home
 
 REQUIRED LAYOUT:
-- Follow the MACRO LAYOUT ARCHETYPE from the DNA block exactly — it defines the structural skeleton
-- Do NOT substitute a generic KPI-card-grid if the archetype calls for something else
+- Use a layout that fits the product's workflow and density needs
+- Favor intentional hierarchy over a generic KPI-card-grid
 
 REQUIRED ELEMENTS:
-- Navigation (sidebar or top nav — match the archetype)
-- A data summary area structured per the archetype (bento tiles, a hero-stat strip with asymmetric sizing, or a split view — NOT a uniform row of 4 equal-sized cards)
+- Navigation (sidebar or top nav)
+- A data summary area with hierarchy and variation — NOT a uniform row of 4 equal-sized cards
 - At least one chart or data visualization (CSS-only bar/line chart using divs)
 - An activity feed, log, or secondary data pane
 - Quick-action buttons relevant to the product
@@ -193,7 +193,7 @@ REQUIRED ELEMENTS:
 - Search input + filter/sort controls
 - "Create New" / "Add" primary action button
 - Grid of 6+ cards with visual thumbnail placeholders, title, subtitle, and date
-- Each card should have a unique placeholder icon/emoji and distinct title
+- Each card should have a unique placeholder icon/monogram and distinct title
 - View-toggle control (Grid / List)
 - Pagination or "Load More" at bottom
 
@@ -204,12 +204,12 @@ FORBIDDEN – do NOT include:
     "analytics": """SCREEN TYPE: Analytics / Reports / Insights
 
 REQUIRED LAYOUT:
-- Follow the MACRO LAYOUT ARCHETYPE from the DNA block — let it define the skeleton
-- Favour asymmetric or editorial layouts over a top-row-of-equal-stat-cards pattern
+- Use a layout that supports analytical reading and comparison for this product
+- Favor hierarchy, grouping, and comparison over a top-row-of-equal-stat-cards pattern
 
 REQUIRED ELEMENTS:
 - Date-range selector / filter controls at top
-- Key metrics presented in a layout that matches the archetype (could be a big hero number + supporting stats, a horizontal strip, or bento tiles — NOT necessarily 4 equal cards)
+- Key metrics presented with clear hierarchy (could be a big hero number + supporting stats, a horizontal strip, or mixed-size tiles — NOT necessarily 4 equal cards)
 - Large chart (CSS-only bar or line using divs, with axis labels and legend)
 - Data table with 4+ columns and 5+ rows
 - Export / Download action
