@@ -40,6 +40,10 @@ _VENDOR_CONFIG = {
         "file": "ui-reasoning.csv",
         "search_cols": ["UI_Category", "Recommended_Pattern", "Style_Priority", "Color_Mood", "Typography_Mood", "Anti_Patterns"],
     },
+    "ux": {
+        "file": "ux-guidelines.csv",
+        "search_cols": ["Category", "Issue", "Description", "Platform"],
+    },
 }
 
 
@@ -316,6 +320,9 @@ def build_design_brief(
     landing_hits = _search_vendor("landing", query, limit=1)
     type_hits = _search_vendor("typography", query, limit=1)
     reasoning_hits = _search_vendor("reasoning", query, limit=1)
+    # UX guidelines: query with screen kind appended so we get interaction/a11y rules relevant to this screen type
+    ux_query = f"{query} {_infer_screen_kind(screen_desc)}"
+    ux_hits = _search_vendor("ux", ux_query, limit=3)
     fallback = _match_fallback_rule(query)
     reasoning = _parse_reasoning_rule(reasoning_hits[0]) if reasoning_hits else {}
 
@@ -324,6 +331,28 @@ def build_design_brief(
     color_hit = color_hits[0] if color_hits else {}
     type_hit = type_hits[0] if type_hits else {}
     landing_hit = landing_hits[0] if landing_hits else {}
+
+    # Harvest richer style data the vendor exposes but we were discarding
+    style_ai_prompt_kw = style_hit.get("AI Prompt Keywords", "").strip()
+    style_css_kw = style_hit.get("CSS/Technical Keywords", "").strip()
+    style_impl_checklist = style_hit.get("Implementation Checklist", "").strip()
+    style_effects = style_hit.get("Effects & Animation", "").strip()
+    style_do_not_use_for = style_hit.get("Do Not Use For", "").strip()
+
+    # Actionable decision rules from reasoning CSV (e.g. {"if_data_heavy": "add-glassmorphism"})
+    decision_rules: dict[str, str] = reasoning.get("decision_rules", {})
+    active_decision_rules: list[str] = []
+    query_lower = query.lower()
+    for condition, action in decision_rules.items():
+        keyword = condition.replace("if_", "").replace("must_have", "").replace("_", " ")
+        if keyword and keyword.lower() in query_lower:
+            active_decision_rules.append(f"{condition}: {action}")
+        elif condition.startswith("must_have"):
+            active_decision_rules.append(f"Required: {action}")
+
+    # UX guideline Do/Don't rules from matching entries
+    ux_dos: list[str] = [h.get("Do", "").strip() for h in ux_hits if h.get("Do", "").strip()]
+    ux_donts: list[str] = [h.get("Don't", "").strip() for h in ux_hits if h.get("Don't", "").strip()]
 
     approved_summaries = approved_mockups or []
     consistent_reference = "yes" if approved_summaries else "no"
@@ -365,6 +394,7 @@ def build_design_brief(
                 "cta": color_hit.get("CTA (Hex)", ""),
                 "background": color_hit.get("Background (Hex)", ""),
                 "text": color_hit.get("Text (Hex)", ""),
+                "border": color_hit.get("Border (Hex)", ""),
             },
             "typography_direction": {
                 "pairing": type_hit.get("Font Pairing Name") or f"{typography_heading} / {typography_body}",
@@ -372,7 +402,17 @@ def build_design_brief(
                 "body_font": typography_body,
                 "mood": type_hit.get("Mood/Style Keywords") or reasoning.get("typography_mood") or fallback["typography"],
             },
-            "interaction_tone": reasoning.get("key_effects") or "Motion should support comprehension and brand tone, not decorate for its own sake.",
+            "interaction_tone": style_effects or reasoning.get("key_effects") or "Motion should support comprehension and brand tone, not decorate for its own sake.",
+            # Vendor-sourced implementation guidance — fed directly into the LLM brief
+            "style_ai_prompt_keywords": style_ai_prompt_kw,
+            "style_css_keywords": style_css_kw,
+            "style_implementation_checklist": style_impl_checklist,
+            "style_do_not_use_for": style_do_not_use_for,
+            "active_decision_rules": active_decision_rules,
+        },
+        "ux_guidelines": {
+            "dos": ux_dos,
+            "donts": ux_donts,
         },
         "creative_freedom": [
             "Do not default to dark mode, glassmorphism, gradient-heavy UI, or AI-native tropes unless the product context genuinely supports them.",
@@ -495,6 +535,13 @@ def build_compiled_design_spec(
         "authoritative_inputs": brief.get("authoritative_inputs", {}),
         "approved_mockup_summaries": brief.get("approved_mockup_summaries", []),
         "direction": brief.get("direction", ""),
+        # Vendor-sourced guidance (pass-through from brief)
+        "style_ai_prompt_keywords": recommendation.get("style_ai_prompt_keywords", ""),
+        "style_css_keywords": recommendation.get("style_css_keywords", ""),
+        "style_implementation_checklist": recommendation.get("style_implementation_checklist", ""),
+        "style_do_not_use_for": recommendation.get("style_do_not_use_for", ""),
+        "active_decision_rules": recommendation.get("active_decision_rules", []),
+        "ux_guidelines": brief.get("ux_guidelines", {}),
     }
     return spec
 
@@ -519,6 +566,21 @@ def format_design_brief(brief: dict[str, Any], *, compact: bool = False) -> str:
             + ", ".join(f"{k}={v}" for k, v in palette.items() if v)
         )
 
+    rec = brief.get("reasoned_recommendation", {})
+
+    # Vendor-sourced implementation signals — always include regardless of compact flag
+    if rec.get("style_ai_prompt_keywords"):
+        lines.extend(["", f"Style prompt guidance: {rec['style_ai_prompt_keywords']}"])
+    if rec.get("style_css_keywords"):
+        lines.extend(["", f"CSS/Technical keywords for this style: {rec['style_css_keywords']}"])
+    if rec.get("active_decision_rules"):
+        lines.extend(["", "Active decision rules from reasoning:"] + [f"- {r}" for r in rec["active_decision_rules"]])
+    ux = brief.get("ux_guidelines", {})
+    if ux.get("dos"):
+        lines.extend(["", "Interaction/accessibility rules (DO):"] + [f"- {d}" for d in ux["dos"]])
+    if ux.get("donts"):
+        lines.extend(["", "Interaction/accessibility rules (DON'T):"] + [f"- {d}" for d in ux["donts"]])
+
     if not compact:
         lines.extend([
             "",
@@ -537,6 +599,10 @@ def format_design_brief(brief: dict[str, Any], *, compact: bool = False) -> str:
             "### Anti-Patterns To Avoid",
             *[f"- {item}" for item in brief.get("anti_patterns", [])],
         ])
+        if rec.get("style_implementation_checklist"):
+            lines.extend(["", f"Style implementation checklist: {rec['style_implementation_checklist']}"])
+        if rec.get("style_do_not_use_for"):
+            lines.extend(["", f"This style should NOT be used for: {rec['style_do_not_use_for']}"])
         approved = brief.get("approved_mockup_summaries") or []
         if approved:
             lines.extend([
@@ -572,6 +638,19 @@ def format_compiled_design_spec(spec: dict[str, Any], *, compact: bool = False) 
         lines.append(
             "Palette cues: " + ", ".join(f"{key}={value}" for key, value in palette_cues.items())
         )
+
+    # Vendor-sourced implementation signals — always include regardless of compact flag
+    if spec.get("style_ai_prompt_keywords"):
+        lines.extend(["", f"Style prompt guidance: {spec['style_ai_prompt_keywords']}"])
+    if spec.get("style_css_keywords"):
+        lines.extend(["", f"CSS/Technical keywords for this style: {spec['style_css_keywords']}"])
+    if spec.get("active_decision_rules"):
+        lines.extend(["", "Active decision rules:"] + [f"- {r}" for r in spec["active_decision_rules"]])
+    ux = spec.get("ux_guidelines", {})
+    if ux.get("dos"):
+        lines.extend(["", "Interaction/accessibility rules (DO):"] + [f"- {d}" for d in ux["dos"]])
+    if ux.get("donts"):
+        lines.extend(["", "Interaction/accessibility rules (DON'T):"] + [f"- {d}" for d in ux["donts"]])
 
     if compact:
         lines.extend([
@@ -614,6 +693,11 @@ def format_compiled_design_spec(spec: dict[str, Any], *, compact: bool = False) 
         "### Revision Guardrails",
         *[f"- {item}" for item in spec.get("revision_guardrails", [])],
     ])
+
+    if spec.get("style_implementation_checklist"):
+        lines.extend(["", f"Style implementation checklist: {spec['style_implementation_checklist']}"])
+    if spec.get("style_do_not_use_for"):
+        lines.extend(["", f"This style should NOT be used for: {spec['style_do_not_use_for']}"])
 
     approved = spec.get("approved_mockup_summaries") or []
     if approved:

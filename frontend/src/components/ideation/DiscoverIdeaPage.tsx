@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useApiFetch } from "../../hooks/useApiFetch";
+import { useAuth } from "../../contexts/AuthContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, ArrowRight, ArrowLeft, Star, Check, Bookmark, BookmarkCheck, Shield, Users } from "lucide-react";
 
@@ -35,9 +36,87 @@ const QUESTIONS: Question[] = [
 
 type Answers = Record<number, string | string[] | number>;
 
+type UniqueIdea = any;
+
+type UniqueIdeaCacheEntry = {
+    idea: UniqueIdea | null;
+    expiresAt: number;
+    promise: Promise<UniqueIdea> | null;
+};
+
+const UNIQUE_IDEA_CACHE_TTL_MS = 15000;
+const uniqueIdeaCache = new Map<string, UniqueIdeaCacheEntry>();
+
+async function requestUniqueIdea(apiFetch: ReturnType<typeof useApiFetch>, cacheKey: string): Promise<UniqueIdea> {
+    const now = Date.now();
+    const cached = uniqueIdeaCache.get(cacheKey);
+
+    if (cached?.idea && cached.expiresAt > now) {
+        return cached.idea;
+    }
+
+    if (cached?.promise) {
+        return cached.promise;
+    }
+
+    const request = (async () => {
+        const resp = await apiFetch("/api/v1/ideation/generate-unique", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+
+        if (!resp.ok) {
+            let msg = `Request failed (${resp.status}). Try again.`;
+            try {
+                const errBody = await resp.json();
+                if (errBody?.detail) msg = String(errBody.detail);
+            } catch {
+                /* ignore */
+            }
+            throw new Error(msg);
+        }
+
+        const data = await resp.json();
+        const idea = data.idea;
+        uniqueIdeaCache.set(cacheKey, {
+            idea,
+            expiresAt: Date.now() + UNIQUE_IDEA_CACHE_TTL_MS,
+            promise: null,
+        });
+        return idea;
+    })();
+
+    uniqueIdeaCache.set(cacheKey, {
+        idea: cached?.idea ?? null,
+        expiresAt: cached?.expiresAt ?? 0,
+        promise: request,
+    });
+
+    try {
+        return await request;
+    } catch (error) {
+        uniqueIdeaCache.delete(cacheKey);
+        throw error;
+    } finally {
+        const current = uniqueIdeaCache.get(cacheKey);
+        if (current?.promise === request) {
+            if (current.idea && current.expiresAt > Date.now()) {
+                uniqueIdeaCache.set(cacheKey, {
+                    idea: current.idea,
+                    expiresAt: current.expiresAt,
+                    promise: null,
+                });
+            } else {
+                uniqueIdeaCache.delete(cacheKey);
+            }
+        }
+    }
+}
+
 export default function DiscoverIdeaPage() {
     const navigate = useNavigate();
     const apiFetch = useApiFetch();
+    const { user } = useAuth();
     const [phase, setPhase] = useState<"unique" | "questionnaire" | "generating" | "results">("unique");
     const [step, setStep] = useState(0);
     const [answers, setAnswers] = useState<Answers>({});
@@ -48,41 +127,42 @@ export default function DiscoverIdeaPage() {
     const [error, setError] = useState<string | null>(null);
     const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
     const [savingId, setSavingId] = useState<string | null>(null);
-
-    // Fetch unique idea on mount
-    const fetchUniqueIdea = useCallback(async () => {
-        setUniqueLoading(true);
-        setError(null);
-        try {
-            const resp = await apiFetch("/api/v1/ideation/generate-unique", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-            });
-            if (resp.ok) {
-                const data = await resp.json();
-                setUniqueIdea(data.idea);
-            } else {
-                let msg = `Request failed (${resp.status}). Try again.`;
-                try {
-                    const errBody = await resp.json();
-                    if (errBody?.detail) msg = String(errBody.detail);
-                } catch {
-                    /* ignore */
-                }
-                setError(msg);
-            }
-        } catch (e) {
-            console.error("Failed to generate unique idea:", e);
-            setError(e instanceof Error ? e.message : "Failed to generate idea. Check your connection and try again.");
-        } finally {
-            setUniqueLoading(false);
-        }
-    }, [apiFetch]);
+    const uniqueIdeaCacheKey = user?.id ?? "anonymous";
 
     // Load unique idea when we enter that phase
     useEffect(() => {
-        fetchUniqueIdea();
-    }, [fetchUniqueIdea]);
+        let cancelled = false;
+
+        void (async () => {
+            setUniqueLoading(true);
+            setError(null);
+            try {
+                const idea = await requestUniqueIdea(apiFetch, uniqueIdeaCacheKey);
+                if (!cancelled) {
+                    setUniqueIdea(current => current ?? idea);
+                }
+            } catch (e) {
+                if (!cancelled) {
+                    console.error("Failed to generate unique idea:", e);
+                    setError(e instanceof Error ? e.message : "Failed to generate idea. Check your connection and try again.");
+                }
+            } finally {
+                if (!cancelled) {
+                    setUniqueLoading(false);
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [apiFetch, uniqueIdeaCacheKey]);
+
+    const handleFindSomethingElse = () => {
+        uniqueIdeaCache.delete(uniqueIdeaCacheKey);
+        setUniqueIdea(null);
+        setPhase("questionnaire");
+    };
 
     const handleAcceptIdea = async (idea: any) => {
         setLoading(true);
@@ -221,7 +301,7 @@ export default function DiscoverIdeaPage() {
                                     {savedIds.has(uniqueIdea.name) ? "Saved" : "Save for Later"}
                                 </button>
                                 <button
-                                    onClick={() => setPhase("questionnaire")}
+                                    onClick={handleFindSomethingElse}
                                     className="h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors"
                                 >
                                     Help me find something else
@@ -240,7 +320,7 @@ export default function DiscoverIdeaPage() {
                         <div className="bg-[#12121A] border border-zinc-800/50 rounded-2xl p-8 text-center">
                             <p className="text-zinc-400 mb-4">Couldn't generate a unique idea right now.</p>
                             <button
-                                onClick={() => setPhase("questionnaire")}
+                                onClick={handleFindSomethingElse}
                                 className="h-10 px-6 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors"
                             >
                                 Answer questions instead

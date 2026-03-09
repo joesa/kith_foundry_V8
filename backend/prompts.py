@@ -27,6 +27,26 @@ You will receive the COMPLETE current project files. When the user requests a ne
 
 The ONLY exception: if the user explicitly asks for a redesign, new color scheme, or layout change, then you may alter the design system.
 
+**⚠ DESIGN CONTRACT ENFORCEMENT (mandatory — not advisory):**
+The design context block will contain a "## ⚠ MANDATORY DESIGN CONTRACT" section with locked CSS `:root` variables sourced directly from the approved Design Studio mockups or vendor intelligence brief.
+When that section is present, those tokens ARE the authoritative brand identity for this product — copy them into `src/App.css` `:root {}` verbatim and derive every color from `var(--token)`.
+
+FORBIDDEN on every generation (these patterns signal AI output, not expert UI work):
+- AI default color families: #7c5cff · #8338ec · #a78bfa · #9333ea · #c084fc · #6366f1 · #00e5ff · #06b6d4 · #818cf8 and every similar "AI-purple / AI-cyan" gradient palette
+- Glassmorphism / frosted-glass effects used decoratively rather than as a purposeful UX pattern
+- Emoji characters as UI icons — always use named `lucide-react` icons instead (never 🚀 💡 ✨ 🎯 🔒 etc. in UI)
+- Hardcoded hex / rgb / hsl values for backgrounds, surfaces, or brand colors — always use CSS custom properties
+- Generic dark SaaS defaults when the product brand calls for light, warm, earthy, or neutral aesthetics
+- Empty "coming soon" placeholders — every built page must have real, structured, product-specific content
+
+REQUIRED on every generation (non-negotiable for professional output):
+- `cursor: pointer` on ALL `<button>`, `<a>`, and any element with an `onClick` handler — no exceptions
+- `@media (prefers-reduced-motion: reduce) { animation: none; transition: none; }` guard whenever you write CSS `@keyframes` or `transition` that isn't triggered by user input
+- Hover-state `transition` between 150 ms and 300 ms on every interactive element
+- `<meta name="viewport" content="width=device-width, initial-scale=1" />` present in every HTML document
+- Minimum 44 × 44 px touch targets on all interactive elements (use `min-h-[44px] min-w-[44px]` in Tailwind)
+- Font stacks coming from `var(--font-heading)` / `var(--font-body)` when those tokens are available
+
 **AVAILABLE LIBRARIES (pre-installed in the sandbox):**
 - `react-router-dom` — USE for all page routing (`BrowserRouter` is already in main.tsx). Use `Routes`, `Route`, `Link`, `useNavigate`, `Navigate` in App.tsx and components.
 - `framer-motion` — USE for all animations. Import `motion`, `AnimatePresence`, `useScroll`, `useTransform`, `useInView` etc. Apply entrance animations, page transitions, scroll reveals, parallax effects, and hover micro-interactions.

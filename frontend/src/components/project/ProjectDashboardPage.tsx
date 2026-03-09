@@ -112,6 +112,7 @@ export default function ProjectDashboardPage() {
 
     const handleGenerateArtifacts = async () => {
         setGenerating(true);
+        setError(null);
         try {
             const token = await getAccessToken();
             const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/artifacts/generate`, {
@@ -127,11 +128,27 @@ export default function ProjectDashboardPage() {
                 if (artsResp.ok) {
                     const artsData = await artsResp.json();
                     setArtifacts(artsData.artifacts || []);
-                    const done = artsData.artifacts?.every((a: ArtifactInfo) => a.status === "complete" || a.status === "pending");
+                    // Stop only when nothing is still pending or actively generating
+                    const stillRunning = artsData.artifacts?.some(
+                        (a: ArtifactInfo) => a.status === "pending" || a.status === "generating"
+                    );
                     const hasComplete = artsData.artifacts?.some((a: ArtifactInfo) => a.status === "complete");
-                    if (done && hasComplete) {
+                    if (!stillRunning && hasComplete) {
                         clearInterval(poll);
                         setGenerating(false);
+                        // Auto-build bootstrap prompt via POST (idempotent) so it's ready immediately
+                        try {
+                            const bsResp = await fetch(
+                                `${getApiBaseUrl()}/api/v1/projects/${projectId}/bootstrap-prompt`,
+                                { method: "POST", headers: { Authorization: `Bearer ${token}` } }
+                            );
+                            if (bsResp.ok) {
+                                const bsData = await bsResp.json();
+                                if (bsData?.prompt) setBootstrapData(bsData);
+                            }
+                        } catch {
+                            // Non-fatal; user can still click Generate manually
+                        }
                     }
                 }
             }, 3000);
@@ -206,13 +223,30 @@ export default function ProjectDashboardPage() {
                     </div>
                     <div className="flex items-center gap-3">
                         {canAccessBuildFlow ? (
-                            <Link
-                                to={`/project/${projectId}/design-studio`}
-                                className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors"
+                            <motion.div
+                                className="rounded-xl"
+                                animate={{
+                                    boxShadow: [
+                                        "0 0 0px 0px rgba(168,85,247,0)",
+                                        "0 0 0px 3px rgba(168,85,247,0.4), 0 0 22px rgba(168,85,247,0.25)",
+                                        "0 0 0px 0px rgba(168,85,247,0)",
+                                    ],
+                                }}
+                                transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut", delay: 0.4 }}
                             >
-                                <Palette className="w-4 h-4" />
-                                Design Studio
-                            </Link>
+                                <Link
+                                    to={`/project/${projectId}/design-studio`}
+                                    className="flex items-center gap-2 h-10 px-5 rounded-xl border border-purple-500/50 text-purple-300 text-sm font-medium hover:bg-purple-500/10 hover:border-purple-400 transition-colors"
+                                >
+                                    <motion.div
+                                        animate={{ rotate: [0, -14, 14, -8, 8, 0] }}
+                                        transition={{ duration: 1.8, repeat: Infinity, repeatDelay: 2.5, ease: "easeInOut" }}
+                                    >
+                                        <Palette className="w-4 h-4" />
+                                    </motion.div>
+                                    Design Studio
+                                </Link>
+                            </motion.div>
                         ) : (
                             <div className={`flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-800 bg-zinc-900/40 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
                                 <Palette className="w-4 h-4" />
@@ -220,13 +254,26 @@ export default function ProjectDashboardPage() {
                             </div>
                         )}
                         {canAccessBuildFlow ? (
-                            <Link
-                                to={`/project/${projectId}/editor?autobuild=1`}
-                                className="flex items-center gap-2 h-10 px-5 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 transition-all shadow-lg shadow-purple-500/20"
+                            <motion.div
+                                className="rounded-xl"
+                                animate={{
+                                    boxShadow: [
+                                        "0 4px 20px rgba(168,85,247,0.18)",
+                                        "0 4px 32px rgba(168,85,247,0.65), 0 0 56px rgba(168,85,247,0.22)",
+                                        "0 4px 20px rgba(168,85,247,0.18)",
+                                    ],
+                                    scale: [1, 1.025, 1],
+                                }}
+                                transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
                             >
-                                <Code2 className="w-4 h-4" />
-                                Open Editor
-                            </Link>
+                                <Link
+                                    to={`/project/${projectId}/editor?autobuild=1`}
+                                    className="flex items-center gap-2 h-10 px-5 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 transition-all"
+                                >
+                                    <Code2 className="w-4 h-4" />
+                                    Open Editor
+                                </Link>
+                            </motion.div>
                         ) : (
                             <div className={`flex items-center gap-2 h-10 px-5 rounded-xl bg-zinc-800/60 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
                                 <Code2 className="w-4 h-4" />
@@ -265,6 +312,45 @@ export default function ProjectDashboardPage() {
                         )}
                     </div>
                 )}
+
+                {/* "Ready to design" nudge banner — slides in when bootstrap is ready */}
+                {bootstrapReady && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -8, height: 0 }}
+                        animate={{ opacity: 1, y: 0, height: "auto" }}
+                        transition={{ duration: 0.4, ease: "easeOut", delay: 0.2 }}
+                        className="mt-4 overflow-hidden"
+                    >
+                        <motion.div
+                            animate={{
+                                boxShadow: [
+                                    "0 0 0px rgba(168,85,247,0)",
+                                    "0 0 18px rgba(168,85,247,0.3)",
+                                    "0 0 0px rgba(168,85,247,0)",
+                                ],
+                            }}
+                            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+                            className="flex items-center gap-3 px-4 py-3 rounded-xl bg-purple-500/8 border border-purple-500/25"
+                        >
+                            <motion.div
+                                animate={{ scale: [1, 1.3, 1], rotate: [0, 12, -12, 0] }}
+                                transition={{ duration: 2.2, repeat: Infinity, repeatDelay: 1.5, ease: "easeInOut" }}
+                            >
+                                <Sparkles className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                            </motion.div>
+                            <span className="text-sm text-purple-300 font-medium">
+                                Your project is ready — click <strong className="text-purple-200">Design Studio</strong> to generate screens or <strong className="text-purple-200">Open Editor</strong> to build with AI.
+                            </span>
+                            <motion.div
+                                animate={{ x: [0, 5, 0] }}
+                                transition={{ duration: 1, repeat: Infinity, ease: "easeInOut" }}
+                                className="ml-auto text-purple-400 text-sm font-bold flex-shrink-0"
+                            >
+                                →
+                            </motion.div>
+                        </motion.div>
+                    </motion.div>
+                )}
             </motion.div>
 
             {/* Bootstrap prompt section */}
@@ -274,8 +360,10 @@ export default function ProjectDashboardPage() {
                         <div>
                             <h2 className="text-lg font-bold text-white">AI Bootstrap Prompt</h2>
                             <p className="text-xs text-zinc-400 mt-1">
-                                {allArtifactsComplete
-                                    ? "Generate the AI bootstrap prompt to unlock Design Studio, Build with Kith, and Open Editor."
+                                {bootstrapReady
+                                    ? "The AI bootstrap prompt is ready. You can copy it, open Design Studio, or jump into the editor."
+                                    : allArtifactsComplete
+                                    ? "This prompt is generated automatically as soon as the full artifact set completes."
                                     : "Locked until all project artifacts have been generated."}
                             </p>
                         </div>
@@ -288,7 +376,7 @@ export default function ProjectDashboardPage() {
                                 transition={nextStep === "bootstrap" && !bootstrapLoading ? pulseTransition : undefined}
                                 className="h-9 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {bootstrapLoading ? "Generating..." : "Generate AI Bootstrap Prompt"}
+                                {bootstrapLoading ? "Generating..." : bootstrapReady ? "Regenerate AI Bootstrap Prompt" : "Generate AI Bootstrap Prompt"}
                             </motion.button>
                             <button
                                 onClick={handleCopyPrompt}

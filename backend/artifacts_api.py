@@ -290,6 +290,157 @@ def _bootstrap_payload_from_artifact(project_id: str, artifact: Artifact) -> dic
     }
 
 
+def _build_bootstrap_prompt_artifact(db: Session, project: Project) -> Artifact:
+    artifacts = db.query(Artifact).filter(
+        Artifact.project_id == project.id,
+        Artifact.status == AgentStatus.complete,
+        Artifact.artifact_type != ArtifactType.bootstrap_prompt,
+    ).all()
+
+    ordered_sections = []
+    for key, defn in ARTIFACT_DEFS.items():
+        art = next((a for a in artifacts if a.title == defn["title"]), None)
+        if not art or not art.content:
+            continue
+        content_text = art.content.get("text") if isinstance(art.content, dict) else str(art.content)
+        if not content_text:
+            continue
+        ordered_sections.append(f"## {defn['title']}\n\n{content_text}")
+
+    if not ordered_sections:
+        raise HTTPException(status_code=400, detail="No completed artifacts available")
+
+    design_block = get_design_context(project.id)
+
+    prompt = f"""You are an expert senior full-stack engineer.
+Build the product described below as a production-quality MVP.
+
+Project: {project.name}
+Description: {project.description or 'N/A'}
+Target Audience: {project.target_audience or 'N/A'}
+Problem Statement: {project.problem_statement or 'N/A'}
+
+Requirements package:
+
+{chr(10).join(ordered_sections)}
+{design_block}
+
+Available libraries (pre-installed, ready to import):
+- react-router-dom (BrowserRouter already wraps App in main.tsx)
+- framer-motion (motion, AnimatePresence, useScroll, useTransform, useInView)
+- lucide-react (named icon imports — use for ALL icons, never emoji)
+- tailwindcss v3 (via PostCSS — App.css must start with @tailwind base; @tailwind components; @tailwind utilities;)
+
+Implementation requirements:
+- Build the COMPLETE application in a single generation — every page fully built
+- Use react-router-dom for all navigation between pages
+- Use Tailwind CSS utility classes with CSS custom properties for theming
+- Use framer-motion for all animations, transitions, and scroll effects
+- Use lucide-react for all icons throughout the application
+
+BUILD PHASES (all in one output):
+
+Phase 1 — STUNNING LANDING PAGE:
+- Hero with framer-motion entrance animations (fade-up stagger), parallax scroll via useScroll/useTransform
+- Floating animated decorative elements (gradient orbs, glowing accents)
+- Feature grid with useInView scroll-triggered staggered reveal animations
+- Social proof / testimonials section with animated cards
+- Pricing or value proposition section
+- Strong CTA sections with animated gradient backgrounds
+- Professional footer with nav links and copyright
+- ALL copy must be compelling and specific to the product — NEVER lorem ipsum
+
+Phase 2 — AUTH FLOW (Login + Register):
+- Beautiful full-screen auth layouts with animated form transitions
+- Mock authentication — accept ANY email/password, store in localStorage, redirect to dashboard
+- NO real backend — simulate a brief loading animation then redirect
+- Animated transitions between Login and Register pages
+- Social login buttons (Google, GitHub) as beautiful non-functional UI
+- "Forgot password" link (can show a simple message)
+
+Phase 3 — DASHBOARD:
+- Full layout with collapsible sidebar (lucide-react icons, active states, animated collapse)
+- Top header with user avatar, notification bell, search
+- Metrics/KPI cards (4-6) with animated number counters and trend indicators
+- Recent activity list with staggered entrance animations
+- Quick action buttons
+- Data table or content grid with proper structure
+- All sidebar links navigate to real routes
+- Responsive: sidebar collapses to hamburger on mobile
+
+Phase 4 — ALL REMAINING SCREENS:
+- Build every screen referenced in the design mockups and requirements as a full route
+- Each page has real structured content, not placeholder text
+- Wrap authenticated pages in the dashboard layout
+
+Design standards:
+- Dark mode by default with premium SaaS aesthetic
+- CSS custom properties for theme colors, Tailwind utilities for layout/spacing
+- Glass-morphism effects (backdrop-blur, semi-transparent surfaces)
+- Smooth transitions on ALL interactive elements
+- Consistent border-radius, shadows, and spacing throughout
+- Professional typography hierarchy
+- If Design Mockups are provided above, use them as the PRIMARY visual reference.
+  Translate the HTML/CSS layout, colors, typography, and component structure
+  into React/TSX components + Tailwind + App.css variables. Preserve the exact look and feel.
+- Follow any CDO Design Foundation guidelines (color palette, spacing, UX patterns).
+"""
+
+    payload = {
+        "text": prompt,
+        "word_count": len(prompt.split()),
+        "token_estimate": max(1, len(prompt) // 4),
+    }
+
+    existing_bootstrap = db.query(Artifact).filter(
+        Artifact.project_id == project.id,
+        Artifact.artifact_type == ArtifactType.bootstrap_prompt,
+    ).first()
+
+    if existing_bootstrap:
+        existing_bootstrap.title = "AI Bootstrap Prompt"
+        existing_bootstrap.content = payload
+        existing_bootstrap.status = AgentStatus.complete
+        existing_bootstrap.updated_at = datetime.utcnow()
+        artifact = existing_bootstrap
+    else:
+        artifact = Artifact(
+            id=str(uuid.uuid4()),
+            project_id=project.id,
+            artifact_type=ArtifactType.bootstrap_prompt,
+            title="AI Bootstrap Prompt",
+            content=payload,
+            status=AgentStatus.complete,
+        )
+        db.add(artifact)
+
+    db.commit()
+    db.refresh(artifact)
+    return artifact
+
+
+def _all_primary_artifacts_complete(db: Session, project_id: str) -> bool:
+    completed_titles = {
+        title for (title,) in db.query(Artifact.title).filter(
+            Artifact.project_id == project_id,
+            Artifact.status == AgentStatus.complete,
+            Artifact.artifact_type != ArtifactType.bootstrap_prompt,
+        ).all()
+    }
+    return all(defn["title"] in completed_titles for defn in ARTIFACT_DEFS.values())
+
+
+def _maybe_refresh_bootstrap_prompt(db: Session, project_id: str) -> None:
+    if not _all_primary_artifacts_complete(db, project_id):
+        return
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return
+
+    _build_bootstrap_prompt_artifact(db, project)
+
+
 # ── Background generation ────────────────────────────────────────────────────
 
 def _resolve_artifact_model(user_id: str | None, db=None) -> dict:
@@ -349,6 +500,9 @@ async def _generate_single_artifact(project_id: str, artifact_key: str, artifact
 
         artifact.updated_at = datetime.utcnow()
         db.commit()
+
+        if artifact.status == AgentStatus.complete:
+            _maybe_refresh_bootstrap_prompt(db, project_id)
     finally:
         db.close()
 
@@ -386,6 +540,8 @@ async def _generate_all_artifacts(project_id: str, user_id: str | None = None):
 
         if tasks:
             await asyncio.gather(*tasks)
+
+        _maybe_refresh_bootstrap_prompt(db, project_id)
     finally:
         db.close()
 
@@ -633,134 +789,7 @@ async def build_bootstrap_prompt(
     project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-
-    artifacts = db.query(Artifact).filter(
-        Artifact.project_id == project_id,
-        Artifact.status == AgentStatus.complete,
-        Artifact.artifact_type != ArtifactType.bootstrap_prompt,
-    ).all()
-
-    ordered_sections = []
-    for key, defn in ARTIFACT_DEFS.items():
-        art = next((a for a in artifacts if a.title == defn["title"]), None)
-        if not art or not art.content:
-            continue
-        content_text = art.content.get("text") if isinstance(art.content, dict) else str(art.content)
-        if not content_text:
-            continue
-        ordered_sections.append(f"## {defn['title']}\n\n{content_text}")
-
-    if not ordered_sections:
-        raise HTTPException(status_code=400, detail="No completed artifacts available")
-
-    # Fetch design references (CDO design foundation + mockup component codes)
-    design_block = get_design_context(project_id)
-
-    prompt = f"""You are an expert senior full-stack engineer.
-Build the product described below as a production-quality MVP.
-
-Project: {project.name}
-Description: {project.description or 'N/A'}
-Target Audience: {project.target_audience or 'N/A'}
-Problem Statement: {project.problem_statement or 'N/A'}
-
-Requirements package:
-
-{chr(10).join(ordered_sections)}
-{design_block}
-
-Available libraries (pre-installed, ready to import):
-- react-router-dom (BrowserRouter already wraps App in main.tsx)
-- framer-motion (motion, AnimatePresence, useScroll, useTransform, useInView)
-- lucide-react (named icon imports — use for ALL icons, never emoji)
-- tailwindcss v3 (via PostCSS — App.css must start with @tailwind base; @tailwind components; @tailwind utilities;)
-
-Implementation requirements:
-- Build the COMPLETE application in a single generation — every page fully built
-- Use react-router-dom for all navigation between pages
-- Use Tailwind CSS utility classes with CSS custom properties for theming
-- Use framer-motion for all animations, transitions, and scroll effects
-- Use lucide-react for all icons throughout the application
-
-BUILD PHASES (all in one output):
-
-Phase 1 — STUNNING LANDING PAGE:
-- Hero with framer-motion entrance animations (fade-up stagger), parallax scroll via useScroll/useTransform
-- Floating animated decorative elements (gradient orbs, glowing accents)
-- Feature grid with useInView scroll-triggered staggered reveal animations
-- Social proof / testimonials section with animated cards
-- Pricing or value proposition section
-- Strong CTA sections with animated gradient backgrounds
-- Professional footer with nav links and copyright
-- ALL copy must be compelling and specific to the product — NEVER lorem ipsum
-
-Phase 2 — AUTH FLOW (Login + Register):
-- Beautiful full-screen auth layouts with animated form transitions
-- Mock authentication — accept ANY email/password, store in localStorage, redirect to dashboard
-- NO real backend — simulate a brief loading animation then redirect
-- Animated transitions between Login and Register pages
-- Social login buttons (Google, GitHub) as beautiful non-functional UI
-- "Forgot password" link (can show a simple message)
-
-Phase 3 — DASHBOARD:
-- Full layout with collapsible sidebar (lucide-react icons, active states, animated collapse)
-- Top header with user avatar, notification bell, search
-- Metrics/KPI cards (4-6) with animated number counters and trend indicators
-- Recent activity list with staggered entrance animations
-- Quick action buttons
-- Data table or content grid with proper structure
-- All sidebar links navigate to real routes
-- Responsive: sidebar collapses to hamburger on mobile
-
-Phase 4 — ALL REMAINING SCREENS:
-- Build every screen referenced in the design mockups and requirements as a full route
-- Each page has real structured content, not placeholder text
-- Wrap authenticated pages in the dashboard layout
-
-Design standards:
-- Dark mode by default with premium SaaS aesthetic
-- CSS custom properties for theme colors, Tailwind utilities for layout/spacing
-- Glass-morphism effects (backdrop-blur, semi-transparent surfaces)
-- Smooth transitions on ALL interactive elements
-- Consistent border-radius, shadows, and spacing throughout
-- Professional typography hierarchy
-- If Design Mockups are provided above, use them as the PRIMARY visual reference.
-  Translate the HTML/CSS layout, colors, typography, and component structure
-  into React/TSX components + Tailwind + App.css variables. Preserve the exact look and feel.
-- Follow any CDO Design Foundation guidelines (color palette, spacing, UX patterns).
-"""
-
-    payload = {
-        "text": prompt,
-        "word_count": len(prompt.split()),
-        "token_estimate": max(1, len(prompt) // 4),
-    }
-
-    existing_bootstrap = db.query(Artifact).filter(
-        Artifact.project_id == project_id,
-        Artifact.artifact_type == ArtifactType.bootstrap_prompt,
-    ).first()
-
-    if existing_bootstrap:
-        existing_bootstrap.title = "AI Bootstrap Prompt"
-        existing_bootstrap.content = payload
-        existing_bootstrap.status = AgentStatus.complete
-        existing_bootstrap.updated_at = datetime.utcnow()
-    else:
-        db.add(Artifact(
-            id=str(uuid.uuid4()),
-            project_id=project_id,
-            artifact_type=ArtifactType.bootstrap_prompt,
-            title="AI Bootstrap Prompt",
-            content=payload,
-            status=AgentStatus.complete,
-        ))
-
-    db.commit()
-    artifact = db.query(Artifact).filter(
-        Artifact.project_id == project_id,
-        Artifact.artifact_type == ArtifactType.bootstrap_prompt,
-    ).first()
+    artifact = _build_bootstrap_prompt_artifact(db, project)
     return _bootstrap_payload_from_artifact(project_id, artifact)
 
 

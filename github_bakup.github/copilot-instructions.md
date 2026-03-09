@@ -3,10 +3,14 @@
 ## Environment
 
 - **OS:** Windows
-- **Project root:** `c:\Users\treas\projects\kith_foundry`
+- **Project root:** `c:\Users\treas\projects\kith_foundry_V8`
 - **Backend:** Python/FastAPI, uvicorn port 8000
-  - Python executable: `backend/venv/Scripts/python.exe`
-  - Start: `cd backend && set PYTHONPATH=. && venv/Scripts/python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000`
+  - **Runtime:** conda environment `kith_venv`
+  - **conda executable:** `C:\Users\treas\miniconda3\Scripts\conda.exe`
+  - **Python executable:** `C:\Users\treas\miniconda3\envs\kith_venv\python.exe`
+  - **alembic executable:** `C:\Users\treas\miniconda3\envs\kith_venv\Scripts\alembic.exe`
+  - **No `venv/` folder in backend** — always use the conda env paths above
+  - Start: `cd backend && set PYTHONPATH=. && "C:\Users\treas\miniconda3\envs\kith_venv\python.exe" -m uvicorn main:app --host 0.0.0.0 --port 8000`
 - **Frontend:** React/TypeScript, Vite port 5173
   - Start: `cd frontend && npm run dev`
 
@@ -37,11 +41,21 @@ fly apps list | grep kith-sandbox
 
 ### Clean up stale sandbox apps
 ```bash
-cd backend && venv/Scripts/python.exe cleanup_sandboxes.py
+cd backend && "C:\Users\treas\miniconda3\envs\kith_venv\python.exe" cleanup_sandboxes.py
 ```
 
 ### Restart backend
 ```bash
 taskkill /F /IM python.exe 2>nul
-cd backend && set PYTHONPATH=. && venv/Scripts/python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000
+cd backend && set PYTHONPATH=. && "C:\Users\treas\miniconda3\envs\kith_venv\python.exe" -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+### Run alembic migrations
+```bash
+cd backend && "C:\Users\treas\miniconda3\envs\kith_venv\Scripts\alembic.exe" upgrade head
+```
+
+### Check migration state
+```bash
+cd backend && "C:\Users\treas\miniconda3\envs\kith_venv\Scripts\alembic.exe" current
 ```

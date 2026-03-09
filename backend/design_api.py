@@ -635,7 +635,10 @@ def _build_project_context(project: Project, cdo_analysis: CSuiteAnalysis | None
             Artifact.status == AgentStatus.complete,
         ).first()
         if dsf and dsf.content:
-            raw = dsf.content.get("text") if isinstance(dsf.content, dict) else str(dsf.content)
+            if isinstance(dsf.content, dict):
+                raw = dsf.content.get("master") or dsf.content.get("text") or ""
+            else:
+                raw = str(dsf.content)
             if raw and raw.strip():
                 design_system_text = raw.strip()
     return compose_project_context(
@@ -950,12 +953,45 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
         html = html.replace("</head>", f"<style>{override}</style>\n</head>", 1)
 
     if is_dark:
-        # Replace hardcoded white/near-white backgrounds that override our dark theme
-        # Only replace standalone #fff/#ffffff/white outside of the :root block
+        # Luminance-based: replace any hardcoded background with luminance > 180 (clearly light)
+        # This catches the full range of light greys / whites that the LLM might inject,
+        # not just the small list of exact hex values we knew about before.
+        def _replace_light_bg_in_dark(m: re.Match) -> str:
+            hex_val = m.group(1).lstrip("#")
+            try:
+                expanded = hex_val if len(hex_val) == 6 else "".join(c * 2 for c in hex_val)
+                rv, gv, bv = int(expanded[0:2], 16), int(expanded[2:4], 16), int(expanded[4:6], 16)
+                if 0.299 * rv + 0.587 * gv + 0.114 * bv > 180:
+                    return "background-color: var(--surface)"
+            except Exception:
+                pass
+            return m.group(0)
+
         html = re.sub(
-            r"background(?:-color)?\s*:\s*(?:#fff(?:fff)?|white|#fafafa|#f9fafb|#f8fafc|#f5f5f5|#f0f0f0)\b",
+            r"background(?:-color)?\s*:\s*(#[0-9a-fA-F]{3,6})\b",
+            _replace_light_bg_in_dark, html, flags=re.I
+        )
+        # Named light colors not caught by the hex regex
+        html = re.sub(
+            r"background(?:-color)?\s*:\s*(?:white|#fafafa|#f9fafb|#f8fafc|#f5f5f5|#f0f0f0)\b",
             "background-color: var(--surface)",
             html, flags=re.I
+        )
+        # Light gradients in dark mode
+        def _collapse_light_gradient_dark(m: re.Match) -> str:
+            for hx in re.findall(r'#[0-9a-fA-F]{3,6}', m.group(0)):
+                h = hx.lstrip('#')
+                exp = h if len(h) == 6 else ''.join(c * 2 for c in h)
+                try:
+                    rv2, gv2, bv2 = int(exp[0:2], 16), int(exp[2:4], 16), int(exp[4:6], 16)
+                    if 0.299 * rv2 + 0.587 * gv2 + 0.114 * bv2 > 180:
+                        return "background-color: var(--surface)"
+                except Exception:
+                    pass
+            return m.group(0)
+        html = re.sub(
+            r"background(?:-color)?\s*:\s*(?:linear|radial)-gradient\s*\([^;)]{0,400}\)",
+            _collapse_light_gradient_dark, html, flags=re.I
         )
         # Replace color: #000 / black on body-level text that would be invisible on dark bg
         html = re.sub(
@@ -963,8 +999,338 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
             "color: var(--text)",
             html, flags=re.I
         )
+    else:
+        # Luminance-based: replace any hardcoded dark background.
+        # Threshold raised from 60 → 80 to catch medium purples/blues whose blue channel
+        # inflates their computed luminance above 60 even though they look dark on screen
+        # (e.g. #5c3fab has luminance ~80 and would have slipped through the old threshold).
+        def _replace_dark_bg_in_light(m: re.Match) -> str:
+            hex_val = m.group(1).lstrip("#")
+            try:
+                expanded = hex_val if len(hex_val) == 6 else "".join(c * 2 for c in hex_val)
+                rv, gv, bv = int(expanded[0:2], 16), int(expanded[2:4], 16), int(expanded[4:6], 16)
+                if 0.299 * rv + 0.587 * gv + 0.114 * bv < 80:
+                    return "background-color: var(--surface)"
+            except Exception:
+                pass
+            return m.group(0)
+
+        html = re.sub(
+            r"background(?:-color)?\s*:\s*(#[0-9a-fA-F]{3,6})\b",
+            _replace_dark_bg_in_light, html, flags=re.I
+        )
+        # Named very-dark colors not caught by the hex regex
+        html = re.sub(
+            r"background(?:-color)?\s*:\s*(?:#000(?:000)?|black|#0a0a0a|#0b0b0b|#0c0c0c|#0f172a|#111(?:111)?|#121212|#171717|#1f2937|#020617)\b",
+            "background-color: var(--surface)",
+            html, flags=re.I
+        )
+        # Dark gradients containing any stop with luminance < 80
+        def _collapse_dark_gradient_light(m: re.Match) -> str:
+            for hx in re.findall(r'#[0-9a-fA-F]{3,6}', m.group(0)):
+                h = hx.lstrip('#')
+                exp = h if len(h) == 6 else ''.join(c * 2 for c in h)
+                try:
+                    rv2, gv2, bv2 = int(exp[0:2], 16), int(exp[2:4], 16), int(exp[4:6], 16)
+                    if 0.299 * rv2 + 0.587 * gv2 + 0.114 * bv2 < 80:
+                        return "background-color: var(--surface)"
+                except Exception:
+                    pass
+            return m.group(0)
+        html = re.sub(
+            r"background(?:-color)?\s*:\s*(?:linear|radial)-gradient\s*\([^;)]{0,400}\)",
+            _collapse_dark_gradient_light, html, flags=re.I
+        )
+        # Dark rgba() backgrounds
+        html = re.sub(
+            r"background(?:-color)?\s*:\s*rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[^)]*\)",
+            lambda m: "background-color: var(--surface)"
+                if 0.299 * int(m.group(1)) + 0.587 * int(m.group(2)) + 0.114 * int(m.group(3)) < 80
+                else m.group(0),
+            html, flags=re.I
+        )
+        html = re.sub(
+            r"(?<=\s)color\s*:\s*(?:#fff(?:fff)?|white|#f8fafc|#f9fafb|#fafafa)\b",
+            "color: var(--text)",
+            html, flags=re.I
+        )
 
     return html
+
+
+def _transplant_root_vars(html: str, north_star_css: str | None) -> str:
+    """Overwrite only the brand-palette and font variables in the generated HTML's :root.
+
+    The vendor Master+Overrides pattern keeps global tokens shared but allows page-level
+    layout/spacing overrides. We therefore only lock in:
+      - Tone/surface variables: --bg, --background, --surface
+      - Brand colors: --primary, --accent, --cta, --secondary
+      - Text contrast: --text, --text-*
+      - Muted / border: --muted, --border
+
+    Spacing tokens (--space-*), animation durations, border-radius, and other non-color
+    variables are intentionally left for each screen to define — those are valid
+    per-screen adaptations per the vendor page-override pattern.
+
+    This ensures all screens share the same color family (no drift from dark navy to light
+    grey) while still allowing genuine layout variation between screens.
+    """
+    if not html or not north_star_css:
+        return html
+
+    ns_root_match = re.search(r':root\s*\{([^}]+)\}', north_star_css, re.DOTALL)
+    if not ns_root_match:
+        return html
+
+    # Extract palette, font-family, and typography-scale token lines from the northstar :root
+    _PALETTE_VAR_PAT = re.compile(
+        r'^\s*--(bg|background|surface|primary|secondary|accent|cta|text|muted|border|color'
+        r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height|letter-spacing)[^:]*:.*$',
+        re.IGNORECASE | re.MULTILINE
+    )
+    ns_root_lines = ns_root_match.group(1)
+    brand_lines = [m.group(0) for m in _PALETTE_VAR_PAT.finditer(ns_root_lines)]
+    if not brand_lines:
+        return html
+
+    # Build {css-var-name → full-declaration} dict for clean deduplication.
+    # Deduplication is essential: if the same property appears in both the LLM's
+    # generated :root AND our injection, we must only keep one copy.
+    brand_dict: dict[str, str] = {}
+    for line in brand_lines:
+        prop_m = re.match(r'\s*(--[^\s:]+)', line)
+        if prop_m:
+            brand_dict[prop_m.group(1).strip()] = line.strip()
+
+    injection = (
+        "\n  /* ═══ BRAND TOKEN LOCK (northstar — appended last so they always win) ═══ */\n  "
+        + "\n  ".join(brand_dict.values())
+        + "\n"
+    )
+
+    style_match = re.search(r'(<style[^>]*>)(.*?)(</style>)', html, re.DOTALL | re.IGNORECASE)
+    if not style_match:
+        return html.replace('</head>', f'<style>:root {{{injection}}}</style>\n</head>', 1)
+
+    style_open = style_match.group(1)
+    style_content = style_match.group(2)
+    style_close = style_match.group(3)
+
+    if re.search(r':root\s*\{', style_content, re.DOTALL):
+        # Inject brand tokens at the END of the :root block, after removing any
+        # existing declarations for the same property names.
+        # CSS last-write-wins: by appending we guarantee the northstar values are
+        # never overridden by the LLM's original dark/purple defaults that appear
+        # earlier in the same :root block — which was the previous bug.
+        def _merge_root(m: re.Match) -> str:
+            inner = m.group(1)
+            kept: list[str] = []
+            for ln in inner.split('\n'):
+                prop_m2 = re.match(r'\s*(--[^\s:]+)', ln)
+                if prop_m2 and prop_m2.group(1).strip() in brand_dict:
+                    continue  # Remove duplicate — brand token will be appended at end
+                kept.append(ln)
+            merged = '\n'.join(kept).rstrip()
+            return f':root {{\n{merged}\n{injection}}}'
+
+        new_style_content = re.sub(
+            r':root\s*\{([^}]*)\}',
+            _merge_root,
+            style_content, count=1, flags=re.DOTALL
+        )
+    else:
+        new_style_content = f":root {{{injection}}}\n" + style_content
+
+    return (
+        html[:style_match.start()]
+        + style_open + new_style_content + style_close
+        + html[style_match.end():]
+    )
+
+
+# Selectors that represent reusable components (button, input, nav, card…)
+_COMPONENT_SELECTOR_PAT = re.compile(
+    r'(?:^|[\s,>+~])(button|input|select|textarea'
+    r'|\.(?:btn|button|cta|action'
+    r'|nav(?:-link|-item|-bar|-menu)?|sidebar|header|topbar'
+    r'|card|panel|tile|widget|surface'
+    r'|badge|tag|chip|pill'
+    r'|form(?:-control|-field|-input|-group)?'
+    r'|table|data-table'
+    r'|link|icon-btn|icon-button))(?=[\s,{:>+~[)]|$)',
+    re.IGNORECASE,
+)
+
+
+def _extract_shared_component_css(north_star_html: str | None) -> str:
+    """Return reusable component CSS rules from the northstar <style> block.
+
+    Extracts all rules whose selector matches a component pattern (button, .btn,
+    .card, .nav-link, etc.) so they can be injected verbatim into every follower
+    screen, guaranteeing identical component rendering across the product.
+    Rules reference brand vars (var(--primary) …) so they stay theme-correct after
+    _transplant_root_vars has locked the palette tokens.
+    """
+    if not north_star_html:
+        return ""
+    style_m = re.search(r'<style[^>]*>(.*?)</style>', north_star_html, re.DOTALL | re.IGNORECASE)
+    if not style_m:
+        return ""
+    css = style_m.group(1)
+
+    component_rules: list[str] = []
+    # Match simple (non-nested) rule blocks; skip @-rules and :root
+    for rule_m in re.finditer(r'([^{}@][^{}]*?)\{([^{}]+)\}', css, re.DOTALL):
+        selector = rule_m.group(1).strip()
+        body = rule_m.group(2).strip()
+        if not selector or not body:
+            continue
+        if selector.startswith(':root') or re.match(r'^(?:html|body|\*)(\s|,|$)', selector):
+            continue
+        if _COMPONENT_SELECTOR_PAT.search(selector):
+            # Normalise whitespace in body for compactness
+            clean_body = re.sub(r'\s+', ' ', body).strip()
+            component_rules.append(f"{selector} {{\n  {clean_body}\n}}")
+
+    if not component_rules:
+        return ""
+
+    result = "\n\n".join(component_rules)
+    # Cap to avoid excessive prompt/style bloat
+    if len(result) > 6000:
+        result = result[:6000] + "\n/* … truncated */"
+    return result
+
+
+def _extract_component_class_names(north_star_html: str | None) -> list[str]:
+    """Return a deduplicated list of component CSS class names from the northstar."""
+    if not north_star_html:
+        return []
+    style_m = re.search(r'<style[^>]*>(.*?)</style>', north_star_html, re.DOTALL | re.IGNORECASE)
+    if not style_m:
+        return []
+    css = style_m.group(1)
+    seen: list[str] = []
+    for m in re.finditer(r'\.([-\w]+)', css):
+        name = m.group(1)
+        if name not in seen and any(
+            kw in name.lower()
+            for kw in ('btn', 'button', 'cta', 'card', 'panel', 'nav', 'input',
+                       'form', 'badge', 'tag', 'chip', 'pill', 'sidebar',
+                       'header', 'table', 'link', 'icon')
+        ):
+            seen.append(name)
+    return seen[:20]
+
+
+def _transplant_component_styles(html: str, north_star_html: str | None) -> str:
+    """Inject northstar component CSS rules into a generated screen's <style> block.
+
+    Inserted immediately AFTER the :root block (so component rules can consume brand
+    vars) but BEFORE the page-specific rules (so the page can still override
+    spacing/layout for its composition needs).
+    """
+    if not html or not north_star_html:
+        return html
+
+    component_css = _extract_shared_component_css(north_star_html)
+    if not component_css:
+        return html
+
+    injection = (
+        "\n/* === SHARED COMPONENT STYLES (from northstar) === */\n"
+        + component_css
+        + "\n/* === END SHARED COMPONENT STYLES === */\n"
+    )
+
+    style_m = re.search(r'(<style[^>]*>)(.*?)(</style>)', html, re.DOTALL | re.IGNORECASE)
+    if not style_m:
+        return html
+
+    style_open = style_m.group(1)
+    style_content = style_m.group(2)
+    style_close = style_m.group(3)
+
+    # Insert after the :root block so component rules can reference brand vars
+    root_end_m = re.search(r':root\s*\{[^}]*\}', style_content, re.DOTALL)
+    if root_end_m:
+        insert_pos = root_end_m.end()
+        new_content = style_content[:insert_pos] + injection + style_content[insert_pos:]
+    else:
+        new_content = injection + style_content
+
+    return (
+        html[:style_m.start()]
+        + style_open + new_content + style_close
+        + html[style_m.end():]
+    )
+
+
+def _strip_review_metadata(html: str) -> str:
+    if not html:
+        return html
+    return re.sub(r"^\s*<!--\s*KITH_REVIEW:[\s\S]*?-->\s*", "", html, count=1, flags=re.I)
+
+
+def _attach_review_metadata(html: str, payload: dict) -> str:
+    clean_html = _strip_review_metadata(html or "")
+    try:
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    except Exception:
+        encoded = json.dumps({"pass": False, "notes": ["Review metadata serialization failed."]}, separators=(",", ":"), ensure_ascii=True)
+    return f"<!-- KITH_REVIEW:{encoded} -->\n{clean_html}"
+
+
+def _extract_review_metadata(html: str | None) -> dict | None:
+    if not html:
+        return None
+    match = re.match(r"\s*<!--\s*KITH_REVIEW:(\{[\s\S]*?\})\s*-->", html, flags=re.I)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except Exception:
+        return None
+
+
+def _extract_reference_palette(north_star_css: str | None, north_star_html: str | None) -> dict | None:
+    css = (north_star_css or "").strip()
+    if not css and north_star_html:
+        css = _extract_north_star_css(north_star_html)
+    if not css:
+        return None
+
+    def _find_var(name: str) -> str:
+        match = re.search(rf"--{name}\s*:\s*([^;}}]+)", css, flags=re.I)
+        return match.group(1).strip() if match else ""
+
+    def _find_property(prop: str) -> str:
+        match = re.search(rf"{prop}\s*:\s*([^;}}]+)", css, flags=re.I)
+        return match.group(1).strip() if match else ""
+
+    palette = {
+        "bg": _find_var("bg") or _find_var("background") or _find_property("background-color") or _find_property("background"),
+        "surface": _find_var("surface"),
+        "border": _find_var("border"),
+        "primary": _find_var("primary"),
+        "accent": _find_var("accent"),
+        "text": _find_var("text") or _find_property("color"),
+        "muted": _find_var("muted"),
+    }
+
+    if not palette["bg"] or not palette["text"]:
+        return None
+
+    palette["surface"] = palette["surface"] or palette["bg"]
+    palette["border"] = palette["border"] or palette["primary"] or palette["text"]
+    palette["primary"] = palette["primary"] or palette["text"]
+    palette["accent"] = palette["accent"] or palette["primary"]
+    palette["muted"] = palette["muted"] or palette["text"]
+    return {"palette": palette}
+
+
+def _resolve_theme_lock_dna(project_context: str, north_star_css: str | None, north_star_html: str | None) -> dict:
+    return _extract_reference_palette(north_star_css, north_star_html) or _derive_design_dna(project_context)
 
 
 def _project_name_from_context(project_context: str) -> str:
@@ -1007,7 +1373,14 @@ def _looks_like_ai_cliche_html(code: str) -> list[str]:
     lower = (code or "").lower()
     issues: list[str] = []
 
-    if any(token in lower for token in ("#7c5cff", "#8338ec", "#a78bfa", "#ff00", "#00e5ff")) and "gradient" in lower:
+    # --- AI Cliché palette detection (expanded from vendor reasoning CSV anti-patterns) ---
+    _AI_CLICHE_COLORS = (
+        "#7c5cff", "#8338ec", "#a78bfa", "#9333ea", "#a855f7",
+        "#c084fc", "#7c3aed", "#6d28d9", "#5b21b6",  # AI purple family
+        "#00e5ff", "#00b4d8", "#06b6d4",              # AI cyan family
+        "#ff00ff", "#e879f9", "#f0abfc",               # AI pink/magenta
+    )
+    if any(t in lower for t in _AI_CLICHE_COLORS) and "gradient" in lower:
         issues.append("Palette leans toward default AI purple/cyan gradient clichés.")
     if lower.count("box-shadow") >= 8 and lower.count("linear-gradient") >= 6:
         issues.append("Visual treatment may be over-stylized instead of product-authentic.")
@@ -1015,6 +1388,32 @@ def _looks_like_ai_cliche_html(code: str) -> list[str]:
         issues.append("Layout appears too close to a generic dashboard template.")
     if "lorem ipsum" in lower or "placeholder" in lower:
         issues.append("Output still contains placeholder content.")
+
+    # --- Vendor pre-delivery checklist (CRITICAL items from quick-reference.md) ---
+
+    # cursor-pointer: all interactive elements must declare it
+    clickable_count = lower.count("<a ") + lower.count("<a\n") + lower.count("<button")
+    if clickable_count > 2 and "cursor: pointer" not in lower and "cursor:pointer" not in lower:
+        issues.append("Missing cursor:pointer on interactive elements (vendor CRITICAL checklist).")
+
+    # prefers-reduced-motion: required whenever CSS animations/transitions are present
+    has_animation = "animation" in lower or "@keyframes" in lower
+    if has_animation and "prefers-reduced-motion" not in lower:
+        issues.append("Animations present without prefers-reduced-motion media query (vendor CRITICAL).")
+
+    # Emoji as icons: use SVG instead
+    if re.search(r"[\U0001F300-\U0001FFFF\U00002600-\U000027BF]", code):
+        issues.append("Emoji used as icon — replace with SVG icons (vendor checklist).")
+
+    # Hover transitions: required for hover states (150-300ms per vendor guidelines)
+    has_hover = ":hover" in lower
+    has_transition = "transition" in lower
+    if has_hover and not has_transition:
+        issues.append("Hover states present without transition declarations (vendor: 150-300ms required).")
+
+    # viewport meta: every HTML document must include it
+    if "<html" in lower and 'name="viewport"' not in lower and "name='viewport'" not in lower:
+        issues.append("Missing viewport meta tag (vendor CRITICAL checklist).")
 
     return issues
 
@@ -1431,7 +1830,13 @@ def _build_mockup_system_prompt(
     direction: str | None = None,
     north_star_css: str | None = None,
     north_star_html: str | None = None,
+    master_design_reference: str = "",
+    page_override_reference: str = "",
     creative_mode: str = "guided",
+    # Gap 2: canonical component class names from the northstar
+    component_class_names: list[str] | None = None,
+    # Gap 3: token audit across all approved sibling screens
+    sibling_token_audit: str = "",
 ) -> str:
     direction_block = ""
     if direction:
@@ -1455,10 +1860,57 @@ North-star HTML reference:
 {truncated}
 ```"""
 
+        hierarchy_block = ""
+        if master_design_reference:
+            hierarchy_block += f"\n\nPersisted master design reference:\n{master_design_reference}"
+        if page_override_reference:
+            hierarchy_block += f"\n\nPersisted page override:\n{page_override_reference}"
+
+        # Extract only brand-palette tokens from the northstar :root for the mandatory block.
+        # Per the vendor Master+Overrides pattern, screens share brand tokens (colors, fonts)
+        # but may define their own spacing/animation/layout tokens as page overrides.
+        _ns_root_m = re.search(r':root\s*\{([^}]+)\}', north_star_css, re.DOTALL)
+        _PALETTE_PAT = re.compile(
+            r'^\s*--(bg|background|surface|primary|secondary|accent|cta|text|muted|border|color|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height|letter-spacing)[^:]*:.*$',
+            re.IGNORECASE | re.MULTILINE
+        )
+        mandatory_root_block = ""
+        if _ns_root_m:
+            brand_var_lines = [m.group(0).strip() for m in _PALETTE_PAT.finditer(_ns_root_m.group(1))]
+            if brand_var_lines:
+                brand_vars_text = "\n  ".join(brand_var_lines)
+                mandatory_root_block = (
+                    "\n\n\u26a0\u26a0 MANDATORY BRAND CONTRACT \u2014 STRICTLY ENFORCED \u26a0\u26a0\n"
+                    "These CSS variables ARE the locked brand identity for this product. You MUST:\n"
+                    "  1. Copy these exact tokens into your :root block verbatim (do not alter values)\n"
+                    "  2. Use var(--token) for EVERY background, background-color, color, and border-color in your CSS \u2014 NO hardcoded hex values anywhere outside :root\n"
+                    "  3. Do NOT add dark surfaces, dark gradients, or dark navigation bars when --bg is a light color\n"
+                    "  4. Every structural element (body, sidebar, nav, header, main, section, .card) MUST derive its background from var(--bg) or var(--surface)\n\n"
+                    f"```css\n:root {{\n  {brand_vars_text}\n}}\n```\n\n"
+                    "FORBIDDEN: Hardcoded dark hex values for backgrounds \u00b7 dark gradients when bg is light \u00b7 purple/navy/black surfaces when tokens define a light palette."
+                )
+                # Gap 2: append shared component class names so the LLM reuses them
+                if component_class_names:
+                    class_list = ", ".join(f".{c}" for c in component_class_names)
+                    mandatory_root_block += (
+                        f"\n\n\u26a0 SHARED COMPONENT CLASSES \u2014 The following CSS classes are defined in the "
+                        f"northstar and will be injected into your output automatically. Use them by class name "
+                        f"for all interactive/structural elements rather than creating parallel alternatives:\n"
+                        f"{class_list}"
+                    )
+                # Gap 3: sibling screen token audit
+                if sibling_token_audit:
+                    mandatory_root_block += (
+                        f"\n\n\u26a0 CROSS-SCREEN TOKEN AUDIT (all approved screens in this product):\n"
+                        f"{sibling_token_audit}"
+                    )
+
+
         return f"""You are a principal product designer building the NEXT SCREEN of an existing application.
 This screen must feel like it belongs to the same product family as the approved/generated north-star, while still being fit for its own job.
 
 Product name: "{product_name}"
+{mandatory_root_block}
 
 {brief_text}
 {direction_block}
@@ -1467,6 +1919,7 @@ North-star style contract:
 {north_star_css}
 ```
 {html_ref_block}
+{hierarchy_block}
 
 Consistency requirements:
 - Preserve the same product identity, visual language, tone, and navigation conventions as the north-star
@@ -1496,6 +1949,12 @@ Output requirements:
         else "Use creative judgement, but root the screen in the product reality, CDO guidance, and Design System Foundation."
     )
 
+    hierarchy_block = ""
+    if master_design_reference:
+        hierarchy_block += f"\n\nPersisted master design reference:\n{master_design_reference}"
+    if page_override_reference:
+        hierarchy_block += f"\n\nPersisted page override:\n{page_override_reference}"
+
     return f"""You are an award-winning product designer with strong human craft judgement.
 Your job is to create a screen that looks like an experienced designer made it, not like an AI app template.
 
@@ -1504,6 +1963,7 @@ Product name: "{product_name}"
 {brief_text}
 {direction_block}
 {freedom_line}
+{hierarchy_block}
 
 Treat the compiled design spec above as a hard contract for non-negotiables, forbidden moves, and screen obligations.
 
@@ -1664,6 +2124,68 @@ Review criteria:
         return {"pass": not heuristic_notes, "notes": heuristic_notes}
 
 
+async def _run_review_cycle(
+    candidate: str,
+    *,
+    screen_desc: str,
+    project_context: str,
+    brief_text: str,
+    user_id: str | None = None,
+    direction: str | None = None,
+    north_star_css: str | None = None,
+    north_star_html: str | None = None,
+) -> tuple[str, dict]:
+    initial_review = await _review_mockup_authenticity(
+        candidate, screen_desc, brief_text, user_id=user_id
+    )
+    review_notes = list(initial_review.get("notes") or [])
+    review_notes.extend(_screen_specific_quality_notes(candidate, screen_desc))
+
+    deduped_review_notes: list[str] = []
+    for note in review_notes:
+        if note and note not in deduped_review_notes:
+            deduped_review_notes.append(note)
+
+    reviewed_candidate = candidate
+    review_result = {
+        "pass": bool(initial_review.get("pass", False)) and not deduped_review_notes,
+        "notes": deduped_review_notes,
+        "revised": False,
+    }
+
+    if deduped_review_notes and _is_renderable_ui_html(candidate):
+        print(f"🧠 [{screen_desc[:40]}] Revising after authenticity review")
+        revised = await _revise_mockup_from_review(
+            candidate,
+            screen_desc,
+            project_context,
+            brief_text,
+            deduped_review_notes,
+            user_id=user_id,
+            direction=direction,
+            north_star_css=north_star_css,
+            north_star_html=north_star_html,
+        )
+        reviewed_candidate = _ensure_html_document(_strip_script_tags(revised))
+        final_review = await _review_mockup_authenticity(
+            reviewed_candidate, screen_desc, brief_text, user_id=user_id
+        )
+        final_notes = list(final_review.get("notes") or [])
+        final_notes.extend(_screen_specific_quality_notes(reviewed_candidate, screen_desc))
+        deduped_final_notes: list[str] = []
+        for note in final_notes:
+            if note and note not in deduped_final_notes:
+                deduped_final_notes.append(note)
+
+        review_result = {
+            "pass": bool(final_review.get("pass", False)) and not deduped_final_notes,
+            "notes": deduped_final_notes,
+            "revised": True,
+        }
+
+    return reviewed_candidate, review_result
+
+
 async def _revise_mockup_from_review(
     candidate: str,
     screen_desc: str,
@@ -1734,6 +2256,339 @@ def _load_consistency_contract(
     return _extract_north_star_css(html) or None, html
 
 
+def _build_cross_screen_consensus_css(
+    db: Session,
+    project_id: str,
+    *,
+    exclude_mockup_id: str | None = None,
+) -> str | None:
+    """Return a CSS string of palette+typography tokens that the MAJORITY of approved
+    screens agree on (threshold: >60%).  Used as a second transplant pass after the
+    northstar transplant to catch any screens that drifted away from the northstar.
+
+    Returns None when there are fewer than 2 sibling screens (no consensus possible).
+    """
+    from collections import Counter
+
+    _TOK_PAT = re.compile(
+        r'^\s*(--(bg|background|surface|primary|secondary|accent|cta|text|muted|border|color'
+        r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height|letter-spacing)[\w-]*)'
+        r'\s*:\s*([^;]+);',
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    query = (
+        db.query(DesignMockup)
+        .filter(
+            DesignMockup.project_id == project_id,
+            DesignMockup.status.in_([MockupStatus.complete, MockupStatus.approved]),
+            DesignMockup.component_code.isnot(None),
+        )
+        .order_by(DesignMockup.sort_order.asc())
+    )
+    if exclude_mockup_id:
+        query = query.filter(DesignMockup.id != exclude_mockup_id)
+
+    screens = query.limit(8).all()
+    if len(screens) < 2:
+        return None
+
+    token_votes: dict[str, Counter] = {}
+    for screen in screens:
+        css = _extract_north_star_css(screen.component_code) or ""
+        root_m = re.search(r':root\s*\{([^}]+)\}', css, re.DOTALL)
+        if not root_m:
+            continue
+        for m in _TOK_PAT.finditer(root_m.group(1)):
+            token_name = m.group(1).strip()
+            value = m.group(3).strip()
+            if token_name not in token_votes:
+                token_votes[token_name] = Counter()
+            token_votes[token_name][value] += 1
+
+    if not token_votes:
+        return None
+
+    threshold = len(screens) * 0.6
+    consensus_lines: list[str] = []
+    for token_name, counts in sorted(token_votes.items()):
+        most_common_value, most_common_count = counts.most_common(1)[0]
+        if most_common_count >= threshold:
+            consensus_lines.append(f"  {token_name}: {most_common_value};")
+
+    if not consensus_lines:
+        return None
+
+    return ":root {\n" + "\n".join(consensus_lines) + "\n}"
+
+
+def _build_sibling_screen_token_audit(
+    db: Session,
+    project_id: str,
+    *,
+    exclude_mockup_id: str | None = None,
+) -> str:
+    """Compact text summary of CSS palette tokens across all approved screens.
+    Injected into the system prompt so the LLM can see what tokens sibling screens
+    use and match them — the primary Gap 3 awareness mechanism.
+    """
+    from collections import Counter
+
+    _TOK_PAT = re.compile(
+        r'^\s*(--(bg|background|surface|primary|secondary|accent|cta|text|muted|border'
+        r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height)[\w-]*)\s*:\s*([^;]+);',
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    query = (
+        db.query(DesignMockup)
+        .filter(
+            DesignMockup.project_id == project_id,
+            DesignMockup.status.in_([MockupStatus.complete, MockupStatus.approved]),
+            DesignMockup.component_code.isnot(None),
+        )
+        .order_by(DesignMockup.sort_order.asc())
+    )
+    if exclude_mockup_id:
+        query = query.filter(DesignMockup.id != exclude_mockup_id)
+
+    screens = query.limit(8).all()
+    if not screens:
+        return ""
+
+    token_votes: dict[str, Counter] = {}
+    for screen in screens:
+        css = _extract_north_star_css(screen.component_code) or ""
+        root_m = re.search(r':root\s*\{([^}]+)\}', css, re.DOTALL)
+        if not root_m:
+            continue
+        for m in _TOK_PAT.finditer(root_m.group(1)):
+            token_name = m.group(1).strip()
+            value = m.group(3).strip()
+            if token_name not in token_votes:
+                token_votes[token_name] = Counter()
+            token_votes[token_name][value] += 1
+
+    if not token_votes:
+        return ""
+
+    total_screens = len(screens)
+    locked: list[str] = []
+    drifted: list[str] = []
+    for token_name, counts in sorted(token_votes.items()):
+        best_value, best_count = counts.most_common(1)[0]
+        if best_count == total_screens:
+            locked.append(f"  {token_name}: {best_value};")
+        else:
+            drifted.append(f"  {token_name}: {best_value};  /* use this — {best_count}/{total_screens} screens */")
+
+    parts: list[str] = []
+    if locked:
+        parts.append(":root {  /* locked — all screens agree */\n" + "\n".join(locked) + "\n}")
+    if drifted:
+        parts.append(":root {  /* enforce these to close drift */\n" + "\n".join(drifted) + "\n}")
+    return "\n\n".join(parts)
+
+
+def _slugify_screen_name(name: str | None) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return base or "screen"
+
+
+def _extract_screen_name(screen_desc: str | None) -> str:
+    text = screen_desc or ""
+    match = re.search(r"Screen:\s*(.+)", text)
+    return (match.group(1).strip() if match else text.strip()) or "Screen"
+
+
+def _build_master_design_reference(design_system_text: str, north_star_name: str | None, north_star_html: str | None) -> str:
+    sections: list[str] = []
+    if design_system_text:
+        sections.append(
+            "## Master Design System\n\n"
+            "Global source of truth for tokens, typography, spacing, motion, and component behavior.\n\n"
+            + design_system_text.strip()
+        )
+
+    if north_star_html:
+        css = _extract_north_star_css(north_star_html)
+        truncated_html = north_star_html[:4000]
+        if len(north_star_html) > 4000:
+            truncated_html += "\n<!-- … truncated -->"
+        sections.append(
+            f"## Approved Northstar\n\nApproved reference screen: {north_star_name or 'Northstar'}\n\n"
+            "Use this as the highest-fidelity reference for product shell, spacing rhythm, material treatment, and brand language.\n\n"
+            f"```css\n{css[:8000]}\n```\n\n"
+            f"```html\n{truncated_html}\n```"
+        )
+
+    return "\n\n".join(section for section in sections if section).strip()
+
+
+def _build_page_override(mockup: DesignMockup) -> str:
+    code = (mockup.component_code or "").strip()
+    css = _extract_north_star_css(code) if code else ""
+    html_excerpt = code[:2500]
+    if len(code) > 2500:
+        html_excerpt += "\n<!-- … truncated -->"
+    return (
+        f"## Page Override: {mockup.screen_name}\n\n"
+        f"Description: {mockup.description or 'N/A'}\n\n"
+        "Keep this page's approved functional composition while still obeying the master design system.\n\n"
+        f"```css\n{css[:5000]}\n```\n\n"
+        f"```html\n{html_excerpt}\n```"
+    )
+
+
+def _persist_design_system_hierarchy(db: Session, project_id: str) -> None:
+    artifact = db.query(Artifact).filter(
+        Artifact.project_id == project_id,
+        Artifact.artifact_type == ArtifactType.design_system,
+    ).first()
+    if not artifact:
+        return
+
+    existing_content = artifact.content if isinstance(artifact.content, dict) else {"text": str(artifact.content or "")}
+    design_system_text = str(existing_content.get("text") or "").strip()
+    north_star_css, north_star_html, north_star_id = _select_north_star_reference(db, project_id)
+
+    approved = (
+        db.query(DesignMockup)
+        .filter(
+            DesignMockup.project_id == project_id,
+            DesignMockup.status == MockupStatus.approved,
+            DesignMockup.component_code.isnot(None),
+        )
+        .order_by(DesignMockup.sort_order.asc())
+        .all()
+    )
+
+    north_star_name = None
+    if north_star_id:
+        north_star = next((m for m in approved if m.id == north_star_id), None)
+        north_star_name = north_star.screen_name if north_star else None
+
+    pages: dict[str, dict[str, str]] = {}
+    for mockup in approved:
+        pages[_slugify_screen_name(mockup.screen_name)] = {
+            "screen_name": mockup.screen_name,
+            "description": mockup.description or "",
+            "override": _build_page_override(mockup),
+        }
+
+    artifact.content = {
+        **existing_content,
+        "text": design_system_text,
+        "master": _build_master_design_reference(design_system_text, north_star_name, north_star_html),
+        "pages": pages,
+        "north_star": {
+            "screen_name": north_star_name or "",
+            "css": north_star_css or "",
+        },
+    }
+    artifact.updated_at = datetime.utcnow()
+    db.commit()
+
+
+def _load_design_system_hierarchy(db: Session, project_id: str, screen_desc: str) -> tuple[str, str]:
+    artifact = db.query(Artifact).filter(
+        Artifact.project_id == project_id,
+        Artifact.artifact_type == ArtifactType.design_system,
+        Artifact.status == AgentStatus.complete,
+    ).first()
+    if not artifact or not isinstance(artifact.content, dict):
+        return "", ""
+
+    master = str(artifact.content.get("master") or "").strip()
+    pages = artifact.content.get("pages") or {}
+    if not isinstance(pages, dict):
+        return master, ""
+
+    target_slug = _slugify_screen_name(_extract_screen_name(screen_desc))
+    page = pages.get(target_slug)
+    if not isinstance(page, dict):
+        generic_tokens = {"screen", "page", "view"}
+        target_tokens = {token for token in target_slug.split("-") if token and token not in generic_tokens}
+        best_match: dict | None = None
+        best_score = 0.0
+
+        for key, candidate in pages.items():
+            if not isinstance(candidate, dict):
+                continue
+            if key == target_slug or key in target_slug or target_slug in key:
+                best_match = candidate
+                best_score = 1.0
+                break
+
+            candidate_tokens = {token for token in key.split("-") if token and token not in generic_tokens}
+            if not target_tokens or not candidate_tokens:
+                continue
+            overlap = len(target_tokens & candidate_tokens)
+            if overlap == 0:
+                continue
+            score = overlap / max(len(target_tokens), len(candidate_tokens))
+            if score > best_score:
+                best_match = candidate
+                best_score = score
+
+        if best_score >= 0.5:
+            page = best_match
+
+    if not isinstance(page, dict):
+        return master, ""
+    return master, str(page.get("override") or "").strip()
+
+
+def _select_north_star_reference(
+    db: Session,
+    project_id: str,
+) -> tuple[str | None, str | None, str | None]:
+    refs = (
+        db.query(DesignMockup)
+        .filter(
+            DesignMockup.project_id == project_id,
+            DesignMockup.status.in_([MockupStatus.complete, MockupStatus.approved]),
+            DesignMockup.component_code.isnot(None),
+        )
+        .order_by(DesignMockup.sort_order.asc())
+        .all()
+    )
+    if not refs:
+        return None, None, None
+
+    def priority(mockup: DesignMockup) -> tuple[int, int, int]:
+        text = f"{mockup.screen_name or ''} {mockup.description or ''}".lower()
+        approved_rank = 0 if mockup.status == MockupStatus.approved else 1
+        landing_rank = 0 if any(word in text for word in ("landing", "hero", "home", "dashboard", "main", "overview")) else 1
+        return (approved_rank, landing_rank, mockup.sort_order or 0)
+
+    ref = sorted(refs, key=priority)[0]
+    html = ref.component_code or None
+    css = _extract_north_star_css(html) if html else None
+    return css or None, html, ref.id
+
+
+def _auto_approve_north_star(db: Session, project_id: str, mockup_id: str | None) -> None:
+    if not mockup_id:
+        return
+
+    mockup = db.query(DesignMockup).filter(
+        DesignMockup.id == mockup_id,
+        DesignMockup.project_id == project_id,
+    ).first()
+    if not mockup or not mockup.component_code:
+        return
+    if mockup.status not in (MockupStatus.complete, MockupStatus.approved):
+        return
+
+    if mockup.status != MockupStatus.approved:
+        mockup.status = MockupStatus.approved
+        mockup.updated_at = datetime.utcnow()
+        db.commit()
+
+    _persist_design_system_hierarchy(db, project_id)
+
+
 async def _generate_mockup_with_design_brief(
     mockup_id: str,
     project_context: str,
@@ -1757,6 +2612,8 @@ async def _generate_mockup_with_design_brief(
         if not mockup:
             return
 
+        theme_lock_dna = _resolve_theme_lock_dna(project_context, north_star_css, north_star_html)
+
         mockup.status = MockupStatus.generating
         db.commit()
 
@@ -1766,9 +2623,13 @@ async def _generate_mockup_with_design_brief(
             )
             north_star_css = north_star_css or auto_css
             north_star_html = north_star_html or auto_html
+            theme_lock_dna = _resolve_theme_lock_dna(project_context, north_star_css, north_star_html)
 
         references = _get_mockup_reference_summaries(
             db, mockup.project_id, exclude_mockup_id=mockup_id
+        )
+        master_design_reference, page_override_reference = _load_design_system_hierarchy(
+            db, mockup.project_id, screen_desc
         )
         brief, _, brief_text = _build_design_brief_text(
             project_context,
@@ -1779,6 +2640,15 @@ async def _generate_mockup_with_design_brief(
         )
         revision_context = f"\n\nRevision notes from user: {mockup.prompt}" if mockup.prompt else ""
         product_name = _project_name_from_context(project_context)
+
+        # Gap 2: extract component class names from northstar for prompt guidance
+        component_class_names = _extract_component_class_names(north_star_html)
+
+        # Gap 3: build cross-screen token audit to inform the LLM about sibling screens
+        sibling_token_audit = _build_sibling_screen_token_audit(
+            db, mockup.project_id, exclude_mockup_id=mockup_id
+        )
+
         system = _build_mockup_system_prompt(
             product_name=product_name,
             screen_desc=screen_desc,
@@ -1787,7 +2657,11 @@ async def _generate_mockup_with_design_brief(
             direction=direction,
             north_star_css=north_star_css,
             north_star_html=north_star_html,
+            master_design_reference=master_design_reference,
+            page_override_reference=page_override_reference,
             creative_mode=creative_mode,
+            component_class_names=component_class_names,
+            sibling_token_audit=sibling_token_audit,
         )
 
         mc = _resolve_design_model(user_id)
@@ -1825,34 +2699,43 @@ async def _generate_mockup_with_design_brief(
                 print(f"⚠️ [{screen_desc[:40]}] Falling back after non-renderable output")
                 candidate = _fallback_mockup_html(product_name, screen_desc, project_context)
 
-        review = await _review_mockup_authenticity(
-            candidate, screen_desc, brief_text, user_id=user_id
+        candidate, review_result = await _run_review_cycle(
+            candidate,
+            screen_desc=screen_desc,
+            project_context=project_context,
+            brief_text=brief_text,
+            user_id=user_id,
+            direction=direction,
+            north_star_css=north_star_css,
+            north_star_html=north_star_html,
         )
-        review_notes = list(review.get("notes") or [])
-        review_notes.extend(_screen_specific_quality_notes(candidate, screen_desc))
 
-        deduped_review_notes: list[str] = []
-        for note in review_notes:
-            if note and note not in deduped_review_notes:
-                deduped_review_notes.append(note)
-
-        if deduped_review_notes and _is_renderable_ui_html(candidate):
-            print(f"🧠 [{screen_desc[:40]}] Revising after authenticity review")
-            revised = await _revise_mockup_from_review(
-                candidate,
-                screen_desc,
-                project_context,
-                brief_text,
-                deduped_review_notes,
-                user_id=user_id,
-                direction=direction,
-                north_star_css=north_star_css,
-                north_star_html=north_star_html
-            )
-            candidate = _ensure_html_document(_strip_script_tags(revised))
+        candidate = _transplant_root_vars(candidate, north_star_css)
+        # Gap 3: second pass — enforce any tokens that all sibling screens agree on
+        consensus_css = _build_cross_screen_consensus_css(
+            db, mockup.project_id, exclude_mockup_id=mockup_id
+        )
+        if consensus_css:
+            candidate = _transplant_root_vars(candidate, consensus_css)
+        # Gap 2: inject shared component CSS from northstar (post-generation, deterministic)
+        candidate = _transplant_component_styles(candidate, north_star_html)
+        candidate = _enforce_theme_css(candidate, theme_lock_dna)
 
         if not _is_renderable_ui_html(candidate):
             candidate = _fallback_mockup_html(product_name, screen_desc, project_context)
+            candidate = _transplant_root_vars(candidate, north_star_css)
+            if consensus_css:
+                candidate = _transplant_root_vars(candidate, consensus_css)
+            candidate = _transplant_component_styles(candidate, north_star_html)
+            candidate = _enforce_theme_css(candidate, theme_lock_dna)
+
+        review_payload = {
+            "pass": bool(review_result.get("pass", False)),
+            "notes": list(review_result.get("notes") or []),
+            "revised": bool(review_result.get("revised", False)),
+            "reviewed_at": datetime.utcnow().isoformat(),
+        }
+        candidate = _attach_review_metadata(candidate, review_payload)
 
         mockup.component_code = candidate
         mockup.status = MockupStatus.complete
@@ -2052,6 +2935,8 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
     project_context: str = ""
     user_id: str | None = None
     mockup_ids: list[tuple[str, dict]] = []
+    preserved_north_star_css: str | None = None
+    preserved_north_star_html: str | None = None
 
     db = SessionLocal()
     try:
@@ -2065,6 +2950,8 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
         ).first()
         project_context = _build_project_context(project, cdo_analysis, db=db)
         user_id = project.user_id
+        _persist_design_system_hierarchy(db, project_id)
+        preserved_north_star_css, preserved_north_star_html, _ = _select_north_star_reference(db, project_id)
 
         screens = await _discover_screens_from_context(project_context, user_id=user_id)
 
@@ -2126,12 +3013,21 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
         first_id, first_screen = mockup_ids[0]
         first_desc = f"Screen: {first_screen['name']}\nDescription: {first_screen.get('description', '')}"
         print(f"🌟 AI-Free: generating north-star screen '{first_screen['name']}'" + (f" [direction: {direction[:50]}]" if direction else ""))
-        await _generate_mockup_ai_free(first_id, project_context, first_desc, north_star_css=None, user_id=user_id, direction=direction)
+        await _generate_mockup_ai_free(
+            first_id,
+            project_context,
+            first_desc,
+            north_star_css=preserved_north_star_css,
+            user_id=user_id,
+            direction=direction,
+            north_star_html=preserved_north_star_html,
+        )
 
         # Step 2 — extract north-star CSS and full HTML from generated screen
         db2 = SessionLocal()
         north_star_html = ""
         try:
+            _auto_approve_north_star(db2, project_id, first_id)
             first_mockup = db2.query(DesignMockup).filter(DesignMockup.id == first_id).first()
             north_star_html = first_mockup.component_code or "" if first_mockup else ""
             north_star_css = _extract_north_star_css(north_star_html) if north_star_html else ""
@@ -2183,6 +3079,8 @@ async def _generate_all_mockups(project_id: str):
     from models import SessionLocal
 
     db = SessionLocal()
+    preserved_north_star_css: str | None = None
+    preserved_north_star_html: str | None = None
     try:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
@@ -2194,6 +3092,8 @@ async def _generate_all_mockups(project_id: str):
         ).first()
         project_context = _build_project_context(project, cdo_analysis, db=db)
         user_id = project.user_id
+        _persist_design_system_hierarchy(db, project_id)
+        preserved_north_star_css, preserved_north_star_html, _ = _select_north_star_reference(db, project_id)
         screens = await _discover_screens_from_context(project_context, user_id=user_id)
 
         # Clear existing mockups for regeneration
@@ -2235,13 +3135,21 @@ async def _generate_all_mockups(project_id: str):
     first_id, first_screen = mockup_ids[0]
     first_desc = f"Screen: {first_screen['name']}\nDescription: {first_screen.get('description', '')}"
     print(f"🌟 DNA: generating north-star screen '{first_screen['name']}'")
-    await _generate_mockup_component(first_id, project_context, first_desc, user_id=user_id)
+    await _generate_mockup_component(
+        first_id,
+        project_context,
+        first_desc,
+        user_id=user_id,
+        north_star_css=preserved_north_star_css,
+        north_star_html=preserved_north_star_html,
+    )
 
     # Extract north-star CSS + HTML
     db2 = SessionLocal()
     north_star_html = ""
     north_star_css = ""
     try:
+        _auto_approve_north_star(db2, project_id, first_id)
         first_mockup = db2.query(DesignMockup).filter(DesignMockup.id == first_id).first()
         north_star_html = first_mockup.component_code or "" if first_mockup else ""
         north_star_css = _extract_north_star_css(north_star_html) if north_star_html else ""
@@ -2273,6 +3181,9 @@ async def _generate_existing_mockups(project_id: str):
     from models import SessionLocal
 
     db = SessionLocal()
+    preserved_north_star_css: str | None = None
+    preserved_north_star_html: str | None = None
+    preserved_north_star_id: str | None = None
     try:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
@@ -2283,6 +3194,8 @@ async def _generate_existing_mockups(project_id: str):
             CSuiteAnalysis.agent_role == CSuiteRole.cdo,
         ).first()
         project_context = _build_project_context(project, cdo_analysis, db=db)
+        _persist_design_system_hierarchy(db, project_id)
+        preserved_north_star_css, preserved_north_star_html, preserved_north_star_id = _select_north_star_reference(db, project_id)
 
         mockups = db.query(DesignMockup).filter(
             DesignMockup.project_id == project_id
@@ -2298,20 +3211,34 @@ async def _generate_existing_mockups(project_id: str):
     # Phase 1: generate north-star (first by sort_order)
     first = mockups[0]
     first_desc = f"Screen: {first.screen_name}\nDescription: {first.description or ''}"
-    print(f"🌟 Existing: generating north-star screen '{first.screen_name}'")
-    await _generate_mockup_component(first.id, project_context, first_desc, user_id=user_id)
+    if preserved_north_star_id and first.id == preserved_north_star_id and preserved_north_star_html:
+        print(f"🌟 Existing: reusing approved north-star screen '{first.screen_name}'")
+        north_star_html = preserved_north_star_html
+        north_star_css = preserved_north_star_css or ""
+    else:
+        print(f"🌟 Existing: generating north-star screen '{first.screen_name}'")
+        await _generate_mockup_component(
+            first.id,
+            project_context,
+            first_desc,
+            user_id=user_id,
+            north_star_css=preserved_north_star_css,
+            north_star_html=preserved_north_star_html,
+        )
 
-    # Extract CSS + HTML
-    db2 = SessionLocal()
-    north_star_html = ""
-    north_star_css = ""
-    try:
-        first_m = db2.query(DesignMockup).filter(DesignMockup.id == first.id).first()
-        north_star_html = first_m.component_code or "" if first_m else ""
-        north_star_css = _extract_north_star_css(north_star_html) if north_star_html else ""
-        print(f"🌟 North star CSS extracted ({len(north_star_css)} chars)")
-    finally:
-        db2.close()
+    if not (preserved_north_star_id and first.id == preserved_north_star_id and preserved_north_star_html):
+        # Extract CSS + HTML
+        db2 = SessionLocal()
+        north_star_html = ""
+        north_star_css = ""
+        try:
+            _auto_approve_north_star(db2, project_id, first.id)
+            first_m = db2.query(DesignMockup).filter(DesignMockup.id == first.id).first()
+            north_star_html = first_m.component_code or "" if first_m else ""
+            north_star_css = _extract_north_star_css(north_star_html) if north_star_html else ""
+            print(f"🌟 North star CSS extracted ({len(north_star_css)} chars)")
+        finally:
+            db2.close()
 
     # Phase 2: remaining in parallel
     remaining_tasks = [
@@ -2353,14 +3280,15 @@ async def list_mockups(
             continue
         # Strip any script tags before quality checks (LLM sometimes adds JS)
         clean = _strip_script_tags(m.component_code)
-        normalized = _ensure_html_document(clean)
+        review_meta = _extract_review_metadata(clean)
+        normalized = _ensure_html_document(_strip_review_metadata(clean))
         if not _is_renderable_ui_html(normalized):
             # Only substitute fallback for complete/approved mockups with bad HTML
             m.component_code = _fallback_mockup_html(project.name, f"Screen: {m.screen_name}\nDescription: {m.description or ''}")
             m.updated_at = datetime.utcnow()
             healed = True
         elif normalized != m.component_code:
-            m.component_code = normalized
+            m.component_code = _attach_review_metadata(normalized, review_meta) if review_meta else normalized
             m.updated_at = datetime.utcnow()
             healed = True
 
@@ -2375,8 +3303,9 @@ async def list_mockups(
                 "description": m.description,
                 "priority": m.priority.value,
                 "status": m.status.value,
-                "component_code": m.component_code,
+                "component_code": _strip_review_metadata(m.component_code or "") if m.component_code else m.component_code,
                 "revision_notes": m.prompt,
+                "review": _extract_review_metadata(m.component_code),
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
             for m in mockups
@@ -2573,7 +3502,18 @@ async def generate_all_mockups(
     existing_mockups = db.query(DesignMockup).filter(
         DesignMockup.project_id == project_id,
     ).all()
+    preserved_north_star_id = None
+    approved_refs = [m for m in existing_mockups if m.status == MockupStatus.approved and m.component_code]
+    if approved_refs:
+        def _northstar_rank(m: DesignMockup) -> tuple[int, int]:
+            text = f"{m.screen_name or ''} {m.description or ''}".lower()
+            landing_like = any(word in text for word in ("landing", "hero", "home", "dashboard", "main", "overview"))
+            return (0 if landing_like else 1, m.sort_order or 0)
+        preserved_north_star_id = sorted(approved_refs, key=_northstar_rank)[0].id
+
     for m in existing_mockups:
+        if preserved_north_star_id and m.id == preserved_north_star_id:
+            continue
         m.status = MockupStatus.pending
         m.component_code = None          # clear stale HTML
     if existing_mockups:
@@ -2682,6 +3622,7 @@ async def approve_mockup(
     mockup.status = MockupStatus.approved
     mockup.updated_at = datetime.utcnow()
     db.commit()
+    _persist_design_system_hierarchy(db, project_id)
 
     return {"status": "approved"}
 

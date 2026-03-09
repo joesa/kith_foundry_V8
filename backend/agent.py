@@ -3,12 +3,34 @@ import re
 from models import Message, File
 from prompts import ARCHITECT_PROMPT, SURGEON_PROMPT
 import asyncio
-from design_context import get_design_context, get_design_context_compact
+from design_context import get_design_context, get_design_context_compact, get_design_contract_css
 import litellm
 import os
 
 # Ensure litellm doesn't drop requests if local models are passed
 litellm.drop_params = True
+
+
+def _enforce_app_css_contract(css_content: str, contract_css: str) -> str:
+    """Inject/overwrite :root CSS tokens from the design contract.
+
+    Same concept as _transplant_root_vars in the mockup pipeline:
+    deterministic enforcement that runs after the LLM has generated its output.
+    Inserts the locked brand tokens at the start of the existing :root block,
+    or prepends a new :root block when none exists yet.
+    """
+    prop_lines = re.findall(r'(--[^:]+:\s*[^;]+;)', contract_css)
+    if not prop_lines:
+        return css_content
+    injection = (
+        "\n  /* ═══ DESIGN CONTRACT — brand tokens locked by Kith Foundry ═══ */\n  "
+        + "\n  ".join(p.strip() for p in prop_lines)
+        + "\n"
+    )
+    if re.search(r':root\s*\{', css_content):
+        return re.sub(r':root\s*\{', f':root {{{injection}', css_content, count=1)
+    else:
+        return f":root {{{injection}}}\n\n" + css_content
 
 
 def _extract_json_block(text: str) -> str | None:
@@ -459,6 +481,24 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
                     })
         
         if edits:
+            # ── Deterministic design contract enforcement ──────────────────
+            # Locks :root CSS tokens in App.css after the LLM finishes — the same
+            # concept as _transplant_root_vars in the mockup pipeline. This ensures
+            # users who skip Design Studio still get product-branded output, not
+            # generic AI clichés. Runs silently; failures are logged, not fatal.
+            try:
+                _contract = await asyncio.to_thread(get_design_contract_css, project_id)
+                if _contract:
+                    for _edit in edits:
+                        _fp = _edit.get("file_path", "")
+                        if _fp.endswith("App.css") or _fp in ("src/index.css", "index.css"):
+                            _edit["content"] = _enforce_app_css_contract(
+                                _edit["content"], _contract
+                            )
+                            break
+            except Exception as _ce:
+                print(f"Design contract enforcement skipped: {_ce}")
+
             yield {"status": "execution_complete", "edits": edits}
         else:
             # Debug: log snippet when parsing fails (helps diagnose model output format)
