@@ -146,7 +146,7 @@ def _docx_shade_row(row, hex_color: str = "D9E1F2"):
         tcPr.append(shd)
 
 
-def _docx_new() -> "Document":
+def _docx_new():
     from docx import Document
     from docx.shared import Inches
     doc = Document()

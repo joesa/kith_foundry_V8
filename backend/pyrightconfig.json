@@ -1,7 +1,8 @@
 {
-  "pythonVersion": "3.13",
-  "venvPath": ".",
-  "venv": "venv",
+  "pythonVersion": "3.12",
+  "pythonPath": "C:\\Users\\jsa47\\miniconda3\\envs\\kith_venv\\python.exe",
+  "venvPath": "C:\\Users\\jsa47\\miniconda3\\envs",
+  "venv": "kith_venv",
   "reportMissingImports": "none",
   "reportMissingModuleSource": "none"
 }
