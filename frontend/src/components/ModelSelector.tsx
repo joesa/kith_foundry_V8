@@ -130,7 +130,7 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
         <div className="relative">
             <button
                 onClick={() => setOpen(!open)}
-                className="flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200 transition-colors bg-[#1A1A24] px-3 py-1.5 rounded border border-zinc-800 w-full cursor-pointer"
+                className="flex items-center gap-2 text-xs text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] transition-colors bg-[var(--kf-surface-alt)] px-3 py-1.5 rounded border border-[var(--kf-border)] w-full cursor-pointer"
             >
                 <Server className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                 <span className="truncate flex-1 text-left">{displayName}</span>
@@ -138,13 +138,13 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
             </button>
 
             {open && (
-                <div className="absolute top-full left-0 mt-2 w-72 bg-[#1A1A24] border border-zinc-700 rounded-lg shadow-xl z-50 text-sm overflow-hidden flex flex-col max-h-[420px]">
+                <div className="absolute top-full left-0 mt-2 w-72 bg-[var(--kf-surface)] border border-[var(--kf-border-muted)] rounded-lg shadow-xl z-50 text-sm overflow-hidden flex flex-col max-h-[420px]">
                     <div className="flex-1 overflow-y-auto">
                         {providers.length === 0 ? (
                             <div className="text-zinc-500 text-center py-6 px-4">
                                 <Server className="w-6 h-6 mx-auto mb-2 opacity-40" />
                                 <p className="text-xs">No providers configured</p>
-                                <p className="text-[11px] text-zinc-600 mt-1">
+                                <p className="text-[11px] text-[var(--kf-text-faint)] mt-1">
                                     Open Settings to add your API keys
                                 </p>
                             </div>
@@ -154,10 +154,10 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
                                     {/* Provider header */}
                                     <div
                                         onClick={() => fetchModels(p.id)}
-                                        className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-zinc-800/60 transition-colors cursor-pointer border-b border-zinc-800/50"
+                                        className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer border-b border-[var(--kf-border)]"
                                     >
                                         <div className="flex items-center gap-2">
-                                            <span className="text-xs font-semibold text-zinc-300">{p.name}</span>
+                                            <span className="text-xs font-semibold text-[var(--kf-text-secondary)]">{p.name}</span>
                                             {p.is_default && (
                                                 <span className="text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-400 border border-amber-500/20">
                                                     default
@@ -170,7 +170,7 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
                                             ) : providerModels[p.id] ? (
                                                 <span
                                                     onClick={(e) => refreshModels(p.id, e)}
-                                                    className="p-0.5 hover:bg-zinc-700 rounded cursor-pointer"
+                                                    className="p-0.5 hover:bg-[var(--kf-hover-bg)] rounded cursor-pointer"
                                                     title="Refresh models"
                                                 >
                                                     <RefreshCw className="w-3 h-3 text-zinc-600" />
@@ -182,7 +182,7 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
 
                                     {/* Models list */}
                                     {expandedProvider === p.id && (
-                                        <div className="bg-[#12121A]">
+                                        <div className="bg-[var(--kf-surface-alt)]">
                                             {loadingModels === p.id ? (
                                                 <div className="flex items-center justify-center py-3">
                                                     <Loader2 className="w-4 h-4 text-zinc-500 animate-spin" />
@@ -199,8 +199,8 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
                                                             key={modelId}
                                                             onClick={() => handleSelect(modelId)}
                                                             className={`w-full text-left px-4 py-1.5 text-xs truncate transition-colors cursor-pointer ${selectedModel === modelId
-                                                                ? 'bg-indigo-500/15 text-indigo-300'
-                                                                : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                                                                ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+                                                                : 'text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] hover:text-[var(--kf-text)]'
                                                                 }`}
                                                             title={modelId}
                                                         >
@@ -217,18 +217,18 @@ export function ModelSelector({ selectedModel, onChange }: ModelSelectorProps) {
                     </div>
 
                     {/* Custom model input */}
-                    <div className="border-t border-zinc-700 p-2">
+                    <div className="border-t border-[var(--kf-border-muted)] p-2">
                         <form onSubmit={handleCustomSubmit} className="flex gap-2">
                             <input
                                 type="text"
                                 value={customModel}
                                 onChange={(e) => setCustomModel(e.target.value)}
                                 placeholder="Custom model ID..."
-                                className="flex-1 bg-[#12121A] border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-indigo-500"
+                                className="flex-1 bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded px-2 py-1.5 text-xs text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500"
                             />
                             <button
                                 type="submit"
-                                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 rounded text-xs transition-colors cursor-pointer"
+                                className="bg-[var(--kf-badge-bg)] hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-secondary)] px-2 rounded text-xs transition-colors cursor-pointer"
                             >
                                 Set
                             </button>

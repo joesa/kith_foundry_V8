@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom";
 import Editor from "@monaco-editor/react";
-import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X, ListChecks, ChevronDown, ChevronRight, MessageSquare, PanelLeftClose } from "lucide-react";
+import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X, ChevronDown, ChevronRight, MessageSquare, PanelLeftClose } from "lucide-react";
 import { useFoundry } from "../hooks/useFoundry";
 import { useAutoSave } from "../hooks/useAutoSave";
 import { ModelSelector } from "./ModelSelector";
@@ -27,7 +27,7 @@ function LiveCodeBox({ filename, content }: { filename: string; content: string 
 
     return (
         <div className="rounded-lg border border-indigo-800/50 bg-[#0d1117] overflow-hidden text-xs font-mono shadow-lg shadow-indigo-950/40">
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border-b border-zinc-800">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--kf-surface)] border-b border-[var(--kf-border)]">
                 <Loader2 className="w-3 h-3 animate-spin text-indigo-400 shrink-0" />
                 <span className="text-indigo-300 truncate flex-1">{filename}</span>
                 <span className="text-zinc-600 text-[10px] shrink-0">{lines.length} lines</span>
@@ -37,7 +37,7 @@ function LiveCodeBox({ filename, content }: { filename: string; content: string 
                 className="p-2.5 h-32 overflow-hidden"
                 style={{ maskImage: "linear-gradient(to bottom, transparent 0%, black 25%)" }}
             >
-                <pre className="whitespace-pre-wrap break-all text-zinc-400 leading-relaxed">{visibleLines}</pre>
+                <pre className="whitespace-pre-wrap break-all text-[var(--kf-text-secondary)] leading-relaxed">{visibleLines}</pre>
             </div>
         </div>
     );
@@ -81,12 +81,52 @@ function getLanguage(filename: string): string {
     return map[ext] || "plaintext";
 }
 
+/**
+ * Lightweight markdown-to-HTML for assistant chat messages.
+ * Handles: bold, inline code, code blocks, headers, line breaks.
+ * HTML-escapes first to prevent XSS.
+ */
+function simpleMarkdown(text: string): string {
+    // HTML-escape
+    let html = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+    // Code blocks (```...```)
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) =>
+        `<pre class="bg-zinc-900/50 border border-zinc-700/40 rounded-md p-2 my-1.5 text-xs overflow-x-auto"><code>${code.trim()}</code></pre>`
+    );
+
+    // Inline code (`...`)
+    html = html.replace(/`([^`]+)`/g, '<code class="bg-zinc-800/60 text-purple-300 px-1 py-0.5 rounded text-xs">$1</code>');
+
+    // Bold (**...**)
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong class="text-zinc-100 font-semibold">$1</strong>');
+
+    // Italic (*...*)
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+    // Headers (### ... and ## ... and # ...)
+    html = html.replace(/^### (.+)$/gm, '<div class="font-semibold text-zinc-200 mt-2 mb-0.5 text-xs uppercase tracking-wide">$1</div>');
+    html = html.replace(/^## (.+)$/gm, '<div class="font-semibold text-zinc-100 mt-2.5 mb-0.5">$1</div>');
+    html = html.replace(/^# (.+)$/gm, '<div class="font-bold text-zinc-50 mt-3 mb-1 text-base">$1</div>');
+
+    // Bullet lists (- ...)
+    html = html.replace(/^- (.+)$/gm, '<div class="flex gap-1.5 ml-1"><span class="text-purple-400/70 shrink-0">•</span><span>$1</span></div>');
+
+    // Numbered lists (1. ...)
+    html = html.replace(/^(\d+)\. (.+)$/gm, '<div class="flex gap-1.5 ml-1"><span class="text-purple-400/70 shrink-0">$1.</span><span>$2</span></div>');
+
+    return html;
+}
+
 export default function Workspace() {
     const { projectId } = useParams<{ projectId: string }>();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const { getAccessToken } = useAuth();
-    const { wsConnected, status, previewUrl, iframeSrc, setIframeSrc, hasExistingFiles, files, setFiles, fileTree, messages, sendCommand, isStreaming, streamingFile } = useFoundry(projectId);
+    const { wsConnected, status, previewUrl, iframeSrc, setIframeSrc, hasExistingFiles, files, setFiles, fileTree, messages, sendCommand, isStreaming, streamingFile, assistantStreaming, streamingAssistantMessage } = useFoundry(projectId);
     const [input, setInput] = useState("");
     const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -95,7 +135,7 @@ export default function Workspace() {
     const [selectedModel, setSelectedModel] = useState("");
     const [showExplorer, setShowExplorer] = useState(false);
     const [showEditor, setShowEditor] = useState(false);
-    const [showActivity, setShowActivity] = useState(true);
+    const [showActivity] = useState(true);
     const [showChat, setShowChat] = useState(true);
     const [showMessages, setShowMessages] = useState(true);
     const [hasGenerated, setHasGenerated] = useState(false);
@@ -189,7 +229,7 @@ export default function Workspace() {
     const streamingContent = streamingFile ? files[streamingFile] : undefined;
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages, streamingFile, status, isStreaming, streamingContent]);
+    }, [messages, streamingFile, status, isStreaming, streamingContent, assistantStreaming, streamingAssistantMessage]);
 
     // Auto-open files as they are written
     useEffect(() => {
@@ -348,24 +388,24 @@ export default function Workspace() {
             <div className="flex h-screen bg-[#0E0E11] text-zinc-100 overflow-hidden font-sans">
 
                 {/* PANE 1: Chat UI — collapsible */}
-                <div style={{ width: showChat ? chatWidth : 48 }} className="flex flex-col border-r border-zinc-800 bg-[#12121A] shrink-0 overflow-hidden transition-[width] duration-200">
+                <div style={{ width: showChat ? chatWidth : 48 }} className="flex flex-col border-r border-[var(--kf-border)] bg-[var(--kf-surface)] shrink-0 overflow-hidden transition-[width] duration-200">
                     {showChat ? (
                         <>
-                            <div className="p-4 border-b border-zinc-800 flex flex-col gap-3">
+                            <div className="p-4 border-b border-[var(--kf-border)] flex flex-col gap-3">
                                 <div className="flex items-center justify-between">
                                     <h1 className="font-bold text-lg bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">Kith Foundry</h1>
                                     <div className="flex items-center gap-1">
                                         <button
                                     onClick={() => projectId && navigate(`/project/${projectId}`)}
                                     disabled={!projectId}
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] disabled:opacity-50"
                                     title="Back to project"
                                 >
                                     <ArrowLeft className="w-3.5 h-3.5" />
                                 </button>
                                 <button
                                     onClick={() => navigate("/")}
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
                                     title="All projects"
                                 >
                                     <LayoutGrid className="w-3.5 h-3.5" />
@@ -373,14 +413,14 @@ export default function Workspace() {
                                 <div className="w-px h-4 bg-zinc-700 mx-1" />
                                 <Link
                                     to="/profile"
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
                                     title="Profile & settings"
                                 >
                                     <UserCircle className="w-3.5 h-3.5" />
                                 </Link>
                                 <button
                                     onClick={() => setShowChat(false)}
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
                                     title="Hide chat"
                                 >
                                     <PanelLeftClose className="w-3.5 h-3.5" />
@@ -389,21 +429,21 @@ export default function Workspace() {
                                     <>
                                         <button
                                             onClick={() => setShowExplorer(v => !v)}
-                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showExplorer ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showExplorer ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)]'}`}
                                             title={showExplorer ? "Hide explorer" : "Show explorer"}
                                         >
                                             <FolderTree className="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             onClick={() => setShowEditor(v => !v)}
-                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showEditor ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showEditor ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)]'}`}
                                             title={showEditor ? "Hide editor" : "Show editor"}
                                         >
                                             <Code2 className="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             onClick={() => setShowChat(v => !v)}
-                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showChat ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showChat ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)]'}`}
                                             title={showChat ? "Hide chat" : "Show chat"}
                                         >
                                             <MessageSquare className="w-3.5 h-3.5" />
@@ -412,7 +452,7 @@ export default function Workspace() {
                                     </>
                                 )}
                                 <div className={`w-2 h-2 rounded-full ${status === 'idle' ? 'bg-green-500' : 'bg-amber-500 animate-pulse'}`}></div>
-                                <span className="text-xs text-zinc-400">{status === 'idle' ? 'idle' : status.replace(/_/g, ' ')}</span>
+                                <span className="text-xs text-[var(--kf-text-secondary)]">{status === 'idle' ? 'idle' : status.replace(/_/g, ' ')}</span>
                             </div>
                         </div>
                         <ModelSelector
@@ -424,7 +464,7 @@ export default function Workspace() {
                     {/* Messages toggle bar */}
                     <button
                         onClick={() => setShowMessages(v => !v)}
-                        className="flex items-center gap-2 w-full px-4 py-1.5 border-b border-zinc-800 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors cursor-pointer shrink-0"
+                        className="flex items-center gap-2 w-full px-4 py-1.5 border-b border-[var(--kf-border)] text-xs text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-badge-bg)] transition-colors cursor-pointer shrink-0"
                     >
                         {showMessages ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                         <span>Messages {messages.length > 0 ? `(${messages.length})` : ""}</span>
@@ -437,23 +477,43 @@ export default function Workspace() {
                             </div>
                         ) : (
                             messages.map((msg, i) => {
-                                const isActivity = msg.role !== 'user' && (msg.content.startsWith('✓') || msg.content.startsWith('Saving'));
+                                const isActivity = msg.role !== 'user' && msg.role !== 'assistant' && (msg.content.startsWith('✓') || msg.content.startsWith('Saving'));
                                 if (isActivity && (!showActivity || showExplorer)) return null;
                                 return (
                                     <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                                        <div className={`px-3 py-2 rounded-lg max-w-[90%] text-sm ${msg.role === 'user'
-                                            ? 'bg-indigo-600 text-white rounded-br-none'
-                                            : msg.content.startsWith('✓')
-                                                ? 'bg-green-900/30 text-green-300 border border-green-800/40 rounded-bl-none'
-                                                : msg.content.startsWith('Error')
-                                                    ? 'bg-red-900/30 text-red-300 border border-red-800/40 rounded-bl-none'
-                                                    : 'bg-zinc-800/80 text-zinc-300 rounded-bl-none'
-                                            }`}>
-                                            {msg.content}
+                                        {msg.role === 'assistant' && (
+                                            <span className="text-[10px] text-purple-400/70 mb-0.5 ml-1 font-medium">✦ Kith AI</span>
+                                        )}
+                                        <div className={`px-3 py-2 rounded-lg max-w-[90%] text-sm ${
+                                            msg.role === 'user'
+                                                ? 'bg-indigo-600 text-white rounded-br-none'
+                                                : msg.role === 'assistant'
+                                                    ? 'bg-purple-900/20 text-zinc-200 border border-purple-700/30 rounded-bl-none'
+                                                    : msg.content.startsWith('✓')
+                                                        ? 'bg-green-900/30 text-green-300 border border-green-800/40 rounded-bl-none'
+                                                        : msg.content.startsWith('Error')
+                                                            ? 'bg-red-900/30 text-red-300 border border-red-800/40 rounded-bl-none'
+                                                            : 'bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] rounded-bl-none'
+                                        }`}>
+                                            {msg.role === 'assistant' ? (
+                                                <div className="whitespace-pre-wrap leading-relaxed" dangerouslySetInnerHTML={{__html: simpleMarkdown(msg.content)}} />
+                                            ) : (
+                                                msg.content
+                                            )}
                                         </div>
                                     </div>
                                 );
                             })
+                        )}
+                        {/* Streaming assistant message */}
+                        {assistantStreaming && streamingAssistantMessage && (
+                            <div className="flex flex-col items-start">
+                                <span className="text-[10px] text-purple-400/70 mb-0.5 ml-1 font-medium">✦ Kith AI</span>
+                                <div className="px-3 py-2 rounded-lg max-w-[90%] text-sm bg-purple-900/20 text-zinc-200 border border-purple-700/30 rounded-bl-none">
+                                    <div className="whitespace-pre-wrap leading-relaxed" dangerouslySetInnerHTML={{__html: simpleMarkdown(streamingAssistantMessage)}} />
+                                    <span className="inline-block w-1.5 h-4 bg-purple-400/60 animate-pulse ml-0.5 align-text-bottom" />
+                                </div>
+                            </div>
                         )}
                         {isStreaming && streamingFile ? (
                             <LiveCodeBox
@@ -483,11 +543,11 @@ export default function Workspace() {
                         <div ref={messagesEndRef} />
                     </div>
 
-                    <div className="p-4 border-t border-zinc-800 space-y-2">
+                    <div className="p-4 border-t border-[var(--kf-border)] space-y-2">
                         {attachedImages.length > 0 && (
                             <div className="flex flex-wrap gap-1.5">
                                 {attachedImages.map((img, i) => (
-                                    <div key={i} className="relative group w-12 h-12 rounded-md overflow-hidden border border-zinc-700 shrink-0">
+                                    <div key={i} className="relative group w-12 h-12 rounded-md overflow-hidden border border-[var(--kf-border-muted)] shrink-0">
                                         <img src={img.dataUrl} alt={img.name} className="w-full h-full object-cover" />
                                         <button
                                             type="button"
@@ -502,7 +562,7 @@ export default function Workspace() {
                                     <button
                                         type="button"
                                         onClick={() => fileInputRef.current?.click()}
-                                        className="w-12 h-12 rounded-md border border-dashed border-zinc-700 flex items-center justify-center text-zinc-600 hover:text-zinc-400 hover:border-zinc-500 transition-colors shrink-0"
+                                        className="w-12 h-12 rounded-md border border-dashed border-[var(--kf-border-muted)] flex items-center justify-center text-zinc-600 hover:text-[var(--kf-text-secondary)] hover:border-zinc-500 transition-colors shrink-0"
                                     >
                                         <ImagePlus className="w-4 h-4" />
                                     </button>
@@ -516,14 +576,14 @@ export default function Workspace() {
                                 onChange={(e) => setInput(e.target.value)}
                                 onPaste={handlePaste}
                                 placeholder="Describe your feature..."
-                                className="w-full bg-[#1A1A24] border border-zinc-700 rounded-lg pl-4 pr-20 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-zinc-600"
+                                className="w-full bg-[var(--kf-surface-alt)] border border-[var(--kf-border-muted)] rounded-lg pl-4 pr-20 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-[var(--kf-text-faint)]"
                             />
                             <div className="absolute right-2 top-2 flex items-center gap-1">
                                 <button
                                     type="button"
                                     onClick={() => fileInputRef.current?.click()}
                                     disabled={attachedImages.length >= 20}
-                                    className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+                                    className="p-1.5 rounded-md text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] disabled:opacity-50 transition-colors"
                                     title={`Attach PNG images (${attachedImages.length}/20)`}
                                 >
                                     <ImagePlus className="w-4 h-4" />
@@ -531,7 +591,7 @@ export default function Workspace() {
                                 <button
                                     type="submit"
                                     disabled={(!input.trim() && attachedImages.length === 0) || !wsConnected}
-                                    className="p-1.5 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+                                    className="p-1.5 rounded-md text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] hover:bg-[var(--kf-hover-bg)] disabled:opacity-50 transition-colors"
                                 >
                                     <Send className="w-4 h-4" />
                                 </button>
@@ -550,7 +610,7 @@ export default function Workspace() {
                     ) : (
                         <button
                             onClick={() => setShowChat(true)}
-                            className="w-full h-full min-h-[200px] flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors cursor-pointer border-0"
+                            className="w-full h-full min-h-[200px] flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-badge-bg)] transition-colors cursor-pointer border-0"
                             title="Show chat"
                         >
                             <MessageSquare className="w-6 h-6" />
@@ -572,7 +632,7 @@ export default function Workspace() {
                 {/* PANE 2: File Explorer + Activity Log */}
                 {showExplorer && (
                     <>
-                        <div style={{ width: explorerWidth }} className="flex flex-col border-r border-zinc-800 shrink-0">
+                        <div style={{ width: explorerWidth }} className="flex flex-col border-r border-[var(--kf-border)] shrink-0">
                             <div className="flex-1 min-h-0 overflow-hidden">
                                 <FileExplorer
                                     tree={fileTree}
@@ -585,9 +645,9 @@ export default function Workspace() {
                                 const activityMsgs = messages.filter(m => m.role !== 'user' && (m.content.startsWith('✓') || m.content.startsWith('Saving')));
                                 if (activityMsgs.length === 0) return null;
                                 return (
-                                    <div className="border-t border-zinc-800 max-h-[45%] flex flex-col shrink-0">
-                                        <div className="px-3 py-2 flex items-center justify-between border-b border-zinc-800/50">
-                                            <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Activity</span>
+                                    <div className="border-t border-[var(--kf-border)] max-h-[45%] flex flex-col shrink-0">
+                                        <div className="px-3 py-2 flex items-center justify-between border-b border-[var(--kf-border)]">
+                                            <span className="text-[11px] font-semibold text-[var(--kf-text-secondary)] uppercase tracking-wider">Activity</span>
                                             <span className="text-[10px] text-zinc-600">{activityMsgs.length}</span>
                                         </div>
                                         <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -615,14 +675,14 @@ export default function Workspace() {
                 {showEditor && (
                     <div className="flex-1 flex flex-col min-w-0 bg-[#0A0A0F]">
                         {/* Tabs */}
-                        <div className="flex px-1 bg-[#12121A] border-b border-zinc-800 overflow-x-auto scrollbar-none">
+                        <div className="flex px-1 bg-[var(--kf-surface)] border-b border-[var(--kf-border)] overflow-x-auto scrollbar-none">
                             {openTabs.map((filename) => (
                                 <button
                                     key={filename}
                                     onClick={() => setActiveFile(filename)}
                                     className={`flex items-center gap-1.5 px-3 py-2 text-xs font-mono border-t-[2px] whitespace-nowrap shrink-0 group ${activeFile === filename
                                         ? 'border-indigo-500 text-indigo-300 bg-[#0A0A0F]'
-                                        : 'border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-[#1A1A24]'
+                                        : 'border-transparent text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-surface-alt)]'
                                         }`}
                                 >
                                     {filename.split("/").pop()}
@@ -640,11 +700,11 @@ export default function Workspace() {
                         </div>
 
                         {/* Breadcrumb */}
-                        <div className="flex items-center gap-1 px-3 py-1 bg-[#0F0F17] border-b border-zinc-800/40 text-[11px] text-zinc-500 overflow-x-auto scrollbar-none">
+                        <div className="flex items-center gap-1 px-3 py-1 bg-[#0F0F17] border-b border-[var(--kf-border)]/40 text-[11px] text-zinc-500 overflow-x-auto scrollbar-none">
                             {activeFile.split("/").map((seg, i, arr) => (
                                 <span key={i} className="flex items-center gap-1 shrink-0">
                                     {i > 0 && <ChevronRight className="w-2.5 h-2.5 opacity-40" />}
-                                    <span className={i === arr.length - 1 ? "text-zinc-300" : "hover:text-zinc-300 cursor-default"}>{seg}</span>
+                                    <span className={i === arr.length - 1 ? "text-[var(--kf-text-secondary)]" : "hover:text-[var(--kf-text-secondary)] cursor-default"}>{seg}</span>
                                 </span>
                             ))}
                         </div>
@@ -742,21 +802,21 @@ export default function Workspace() {
                 </div>
 
                 {/* PANE 4: Live Preview */}
-                <div style={{ width: (!showExplorer && !showEditor) ? undefined : previewWidth, flex: (!showExplorer && !showEditor) ? 1 : undefined }} className="flex flex-col border-l border-zinc-800 bg-[#0c0c14] shrink-0">
-                    <div className="h-10 bg-[#12121A] border-b border-zinc-800 flex items-center px-3 gap-2 z-10">
+                <div style={{ width: (!showExplorer && !showEditor) ? undefined : previewWidth, flex: (!showExplorer && !showEditor) ? 1 : undefined }} className="flex flex-col border-l border-[var(--kf-border)] bg-[#0c0c14] shrink-0">
+                    <div className="h-10 bg-[var(--kf-surface)] border-b border-[var(--kf-border)] flex items-center px-3 gap-2 z-10">
                         <div className="flex gap-1.5">
                             <div className="w-2.5 h-2.5 rounded-full bg-red-400/80"></div>
                             <div className="w-2.5 h-2.5 rounded-full bg-amber-400/80"></div>
                             <div className="w-2.5 h-2.5 rounded-full bg-green-400/80"></div>
                         </div>
-                        <div className="flex-1 bg-[#1A1A24] rounded h-6 px-2 flex items-center text-[11px] text-zinc-500 border border-zinc-700/50 font-mono overflow-hidden whitespace-nowrap">
+                        <div className="flex-1 bg-[var(--kf-surface-alt)] rounded h-6 px-2 flex items-center text-[11px] text-zinc-500 border border-[var(--kf-border)] font-mono overflow-hidden whitespace-nowrap">
                             {iframeSrc || "preview"}
                         </div>
                         <>
                             <button
                                 onClick={reloadPreview}
                                 disabled={!currentPreviewHref}
-                                className="flex items-center gap-1.5 px-2 py-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-[11px] font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                className="flex items-center gap-1.5 px-2 py-1 rounded text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] hover:bg-[var(--kf-hover-bg)] transition-colors text-[11px] font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                                 title={currentPreviewHref ? "Refresh preview" : "Preview not available yet"}
                             >
                                 <RefreshCw className="w-3.5 h-3.5" />
@@ -765,7 +825,7 @@ export default function Workspace() {
                             <button
                                 onClick={() => currentPreviewHref && window.open(currentPreviewHref, "_blank", "noopener,noreferrer")}
                                 disabled={!currentPreviewHref}
-                                className="p-1 rounded text-zinc-400 hover:bg-zinc-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                className="p-1 rounded text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] hover:text-[var(--kf-text)] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                                 title={currentPreviewHref ? "Open in new tab" : "Preview not available yet"}
                             >
                                 <ExternalLink className="w-3.5 h-3.5" />

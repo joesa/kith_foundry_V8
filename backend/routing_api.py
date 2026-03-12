@@ -13,13 +13,14 @@ from auth import get_current_user
 
 router = APIRouter(prefix="/api/v1/model-routing", tags=["model-routing"])
 
-VALID_TASK_TYPES = {"code_gen", "csuite", "design", "ideation"}
+VALID_TASK_TYPES = {"code_gen", "csuite", "design", "ideation", "artifacts"}
 
 TASK_TYPE_LABELS = {
     "code_gen": "Code Generation",
     "csuite": "C-Suite Analysis",
     "design": "Design Mockups",
     "ideation": "Ideation",
+    "artifacts": "Project Artifacts",
 }
 
 

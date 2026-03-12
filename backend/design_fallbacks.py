@@ -40,7 +40,8 @@ def screen_variant(screen_desc: str) -> str:
 
     if any(t in lower for t in (
         "analytics", "report", "insight", "statistic",
-        "data visualization", "metrics",
+        "data visualization", "metrics", "heatmap", "heat map",
+        "chart", "graph", "trend", "forecast", "benchmark",
     )):
         return "analytics"
 

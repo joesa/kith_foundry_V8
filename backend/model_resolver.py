@@ -12,11 +12,32 @@ PROVIDER_PREFIXES = {
     "openrouter": "openrouter/",
     "ollama": "ollama/",
     "lm_studio": "openai/",  # LM Studio uses OpenAI-compatible API
+    "openai_compatible": "openai/",  # Generic OpenAI-compatible endpoints
     "cohere": "cohere/",
     "huggingface": "huggingface/",
 }
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-20250514"
+
+
+def _normalize_base_url(provider: str, base_url: str | None) -> str | None:
+    """Normalize provider base URLs for LiteLLM expectations."""
+    if not base_url:
+        if provider == "lm_studio":
+            return "http://localhost:1234/v1"
+        return None
+
+    normalized = base_url.rstrip("/")
+
+    if provider == "lm_studio":
+        # LM Studio in this app is routed through LiteLLM's OpenAI-compatible path,
+        # which expects api_base ending in /v1.
+        if normalized.endswith("/api/v1"):
+            normalized = normalized[:-7] + "/v1"
+        elif not normalized.endswith("/v1"):
+            normalized = normalized + "/v1"
+
+    return normalized
 
 
 def resolve_model_for_task(user_id: str, task_type: str, db=None) -> dict:
@@ -80,7 +101,7 @@ def resolve_model_for_task(user_id: str, task_type: str, db=None) -> dict:
         # Decrypt the API key
         from provider_api import decrypt_key
         api_key = decrypt_key(provider_key.api_key_encrypted)
-        base_url = provider_key.base_url
+        base_url = _normalize_base_url(provider_key.provider, provider_key.base_url)
 
         # Determine the model ID
         if routing and routing.model_id:
@@ -91,8 +112,8 @@ def resolve_model_for_task(user_id: str, task_type: str, db=None) -> dict:
 
         # Build the litellm-compatible model string
         prefix = PROVIDER_PREFIXES.get(provider_key.provider, "")
-        if model_id.startswith(prefix) or "/" in model_id:
-            # Already prefixed or has a provider prefix
+        if prefix and model_id.startswith(prefix):
+            # Already has this provider's prefix
             litellm_model = model_id
         else:
             litellm_model = f"{prefix}{model_id}"
@@ -135,6 +156,7 @@ def _default_model_for_provider(provider: str) -> str:
         "openrouter": "anthropic/claude-sonnet-4-20250514",
         "ollama": "llama3",
         "lm_studio": "local-model",
+        "openai_compatible": "local-model",
         "cohere": "command-r-plus",
     }
     return defaults.get(provider, "gpt-4o")

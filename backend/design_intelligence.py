@@ -113,6 +113,9 @@ _DEFAULT_ANTI_PATTERNS = [
     "placeholder lorem ipsum or empty decorative cards",
     "same card grid reused on every screen",
     "visual styles that fight the CDO guidance or Design System Foundation",
+    "Generic startup/SaaS template patterns that could belong to any product",
+    "Reusing common hero layouts, feature grids, or pricing card arrangements seen across typical AI-generated apps",
+    "Cookie-cutter visual structures — every product must have a unique compositional fingerprint",
 ]
 
 
@@ -164,8 +167,19 @@ def _extract_named_block(project_context: str, title: str) -> str:
     return (match.group(1).strip() if match else "").strip()
 
 
+_STOP_WORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "they", "their", "them",
+    "will", "would", "could", "should", "what", "when", "where", "which", "who", "why",
+    "how", "has", "have", "had", "been", "are", "was", "were", "but", "not", "all",
+    "any", "can", "into", "our", "out", "over", "under", "through", "about", "after",
+    "before", "between", "during", "without", "within", "must", "these", "those",
+    "such", "many", "much", "very", "most", "some", "other", "only", "also", "then",
+    "than", "there", "here", "just", "like",
+}
+
 def _tokenize(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9][a-z0-9\-/+]*", (text or "").lower()) if len(t) > 2]
+    tokens = re.findall(r"[a-z0-9][a-z0-9\-/+]*", (text or "").lower())
+    return [t for t in tokens if len(t) > 2 and t not in _STOP_WORDS]
 
 
 def _load_vendor_rows(kind: str) -> list[dict[str, str]]:
@@ -418,6 +432,7 @@ def build_design_brief(
             "Do not default to dark mode, glassmorphism, gradient-heavy UI, or AI-native tropes unless the product context genuinely supports them.",
             "Let layout, density, and emotional tone emerge from product reality, the CDO recommendations, and the Design System Foundation.",
             "If a user direction is provided, treat it as a strong preference but still avoid generic AI-looking execution.",
+            "Each product must have a genuinely unique visual identity. Derive compositional choices, content hierarchy, section ordering, and illustration metaphors from the specific product context — never reuse template patterns across different products.",
         ],
         "must_honor": [
             "Treat the CDO recommendations and Design System Foundation as the primary sources of truth.",

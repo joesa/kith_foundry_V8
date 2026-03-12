@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
+import { useTheme } from "../../contexts/ThemeContext";
 import { useApiFetch } from "../../hooks/useApiFetch";
 import { motion } from "framer-motion";
 import { Plus, FolderOpen, Clock, ChevronRight, Sparkles, Trash2, Bookmark } from "lucide-react";
@@ -16,6 +17,7 @@ interface ProjectSummary {
 
 export default function DashboardPage() {
     const { loading: authLoading } = useAuth();
+    const { theme } = useTheme();
     const apiFetch = useApiFetch();
     const navigate = useNavigate();
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -66,13 +68,15 @@ export default function DashboardPage() {
         }
     };
 
+    const isDark = theme === "dark";
+
     const statusColors: Record<string, string> = {
-        ideation: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-        csuite_pending: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-        csuite_running: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-        csuite_complete: "bg-green-500/10 text-green-400 border-green-500/20",
-        building: "bg-purple-500/10 text-purple-400 border-purple-500/20",
-        deployed: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+        ideation: isDark ? "bg-amber-500/10 text-amber-400 border-amber-500/20" : "bg-amber-50 text-amber-700 border-amber-300/40",
+        csuite_pending: isDark ? "bg-blue-500/10 text-blue-400 border-blue-500/20" : "bg-blue-50 text-blue-700 border-blue-300/40",
+        csuite_running: isDark ? "bg-blue-500/10 text-blue-400 border-blue-500/20" : "bg-blue-50 text-blue-700 border-blue-300/40",
+        csuite_complete: isDark ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-green-50 text-green-700 border-green-300/40",
+        building: isDark ? "bg-purple-500/10 text-purple-400 border-purple-500/20" : "bg-purple-50 text-purple-700 border-purple-300/40",
+        deployed: isDark ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-emerald-50 text-emerald-700 border-emerald-300/40",
     };
 
     const statusLabels: Record<string, string> = {
@@ -97,23 +101,32 @@ export default function DashboardPage() {
         return d.toLocaleDateString();
     };
 
+    const headingClass = isDark ? "text-white" : "text-zinc-900";
+    const bodyClass = isDark ? "text-zinc-500" : "text-zinc-600";
+    const panelClass = isDark
+        ? "bg-[#12121A] border border-zinc-800/50"
+        : "bg-white border border-zinc-200 shadow-sm shadow-zinc-200/70";
+    const secondaryButtonClass = isDark
+        ? "border-zinc-700 bg-zinc-800/50 text-zinc-300 hover:bg-zinc-700 hover:text-white"
+        : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900";
+
     return (
         <div className="max-w-6xl mx-auto px-6 py-10">
             {/* Header */}
             <div className="flex items-center justify-between mb-6">
                 <div>
-                    <h1 className="text-3xl font-bold text-white">Your Projects</h1>
-                    <p className="text-zinc-500 mt-1">Build, iterate, and deploy</p>
+                    <h1 className={`text-3xl font-bold ${headingClass}`}>Your Projects</h1>
+                    <p className={`mt-1 ${bodyClass}`}>Build, iterate, and deploy</p>
                 </div>
                 <div className="flex items-center gap-3">
                     <button
                         onClick={() => navigate("/ideation/saved")}
-                        className="flex items-center gap-2 h-11 px-5 rounded-xl border border-zinc-700 bg-zinc-800/50 text-zinc-300 font-medium hover:bg-zinc-700 hover:text-white transition-all"
+                        className={`flex items-center gap-2 h-11 px-5 rounded-xl border font-medium transition-all ${secondaryButtonClass}`}
                     >
                         <Bookmark className="w-4 h-4 text-amber-400" />
                         Saved Ideas
                         {savedCount !== null && savedCount > 0 && (
-                            <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">
+                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${isDark ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "bg-amber-100 text-amber-700 border border-amber-300/50"}`}>
                                 {savedCount}
                             </span>
                         )}
@@ -134,15 +147,15 @@ export default function DashboardPage() {
                     initial={{ opacity: 0, y: -8 }}
                     animate={{ opacity: 1, y: 0 }}
                     onClick={() => navigate("/ideation/saved")}
-                    className="mb-6 flex items-center justify-between gap-4 px-5 py-3.5 rounded-xl border border-amber-500/20 bg-amber-500/5 cursor-pointer hover:bg-amber-500/10 transition-colors"
+                    className={`mb-6 flex items-center justify-between gap-4 px-5 py-3.5 rounded-xl border cursor-pointer transition-colors ${isDark ? "border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10" : "border-amber-300/40 bg-amber-50 hover:bg-amber-100"}`}
                 >
                     <div className="flex items-center gap-3">
-                        <Bookmark className="w-4 h-4 text-amber-400 shrink-0" />
-                        <p className="text-sm text-amber-300/90">
+                        <Bookmark className={`w-4 h-4 shrink-0 ${isDark ? "text-amber-400" : "text-amber-600"}`} />
+                        <p className={`text-sm ${isDark ? "text-amber-300/90" : "text-amber-800"}`}>
                             You have <span className="font-bold">{savedCount}</span> saved idea{savedCount !== 1 ? "s" : ""} ready to build.
                         </p>
                     </div>
-                    <span className="text-xs text-amber-400 font-medium whitespace-nowrap flex items-center gap-1">
+                    <span className={`text-xs font-medium whitespace-nowrap flex items-center gap-1 ${isDark ? "text-amber-400" : "text-amber-700"}`}>
                         View &amp; Build <ChevronRight className="w-3.5 h-3.5" />
                     </span>
                 </motion.div>
@@ -150,7 +163,7 @@ export default function DashboardPage() {
 
             {/* Projects grid */}
             {loading ? (
-                <div className="flex items-center justify-center py-32">
+                    <div className="flex items-center justify-center py-32">
                     <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
                 </div>
             ) : projects.length === 0 ? (
@@ -160,11 +173,11 @@ export default function DashboardPage() {
                     animate={{ opacity: 1, y: 0 }}
                     className="flex flex-col items-center justify-center py-32 text-center"
                 >
-                    <div className="w-20 h-20 rounded-2xl bg-[#12121A] border border-zinc-800/50 flex items-center justify-center mb-6">
+                    <div className={`w-20 h-20 rounded-2xl flex items-center justify-center mb-6 ${isDark ? "bg-[#12121A] border border-zinc-800/50" : "bg-zinc-100 border border-zinc-200"}`}>
                         <Sparkles className="w-8 h-8 text-purple-500/50" />
                     </div>
-                    <h2 className="text-xl font-semibold text-white mb-2">Start your first project</h2>
-                    <p className="text-zinc-500 max-w-sm mb-8">
+                    <h2 className={`text-xl font-semibold mb-2 ${headingClass}`}>Start your first project</h2>
+                    <p className={`max-w-sm mb-8 ${bodyClass}`}>
                         Describe your idea and let our AI C-Suite validate, design, and build it for you.
                     </p>
                     <button
@@ -177,7 +190,7 @@ export default function DashboardPage() {
                     {savedCount !== null && savedCount > 0 && (
                         <button
                             onClick={() => navigate("/ideation/saved")}
-                            className="flex items-center gap-2 h-11 px-6 rounded-xl border border-amber-500/20 bg-amber-500/5 text-amber-300 font-medium hover:bg-amber-500/10 transition-all"
+                            className={`flex items-center gap-2 h-11 px-6 rounded-xl border font-medium transition-all ${isDark ? "border-amber-500/20 bg-amber-500/5 text-amber-300 hover:bg-amber-500/10" : "border-amber-300/40 bg-amber-50 text-amber-700 hover:bg-amber-100"}`}
                         >
                             <Bookmark className="w-4 h-4" />
                             Build a Saved Idea ({savedCount})
@@ -202,7 +215,7 @@ export default function DashboardPage() {
                                     navigate(`/project/${project.id}`);
                                 }
                             }}
-                            className="relative bg-[#12121A] border border-zinc-800/50 rounded-xl p-5 hover:border-purple-500/30 hover:bg-[#14141E] transition-all cursor-pointer"
+                            className={`relative rounded-xl p-5 transition-all cursor-pointer ${panelClass} ${isDark ? "hover:border-purple-500/30 hover:bg-[#14141E]" : "hover:border-purple-300 hover:bg-zinc-50"}`}
                         >
                             {/* Delete button */}
                             {hoveredId === project.id && (
@@ -224,18 +237,18 @@ export default function DashboardPage() {
                                     {statusLabels[project.status] || project.status}
                                 </span>
                             </div>
-                            <h3 className="text-white font-semibold mb-1 group-hover:text-purple-300 transition-colors truncate">
+                            <h3 className={`font-semibold mb-1 transition-colors truncate ${headingClass} ${isDark ? "group-hover:text-purple-300" : "group-hover:text-purple-700"}`}>
                                 {project.name}
                             </h3>
-                            <p className="text-zinc-500 text-sm line-clamp-2 mb-4 min-h-[2.5rem]">
+                            <p className={`text-sm line-clamp-2 mb-4 min-h-[2.5rem] ${bodyClass}`}>
                                 {project.description || "No description"}
                             </p>
-                            <div className="flex items-center justify-between text-xs text-zinc-600">
+                            <div className={`flex items-center justify-between text-xs ${isDark ? "text-zinc-600" : "text-zinc-500"}`}>
                                 <div className="flex items-center gap-1">
                                     <Clock className="w-3 h-3" />
                                     {formatDate(project.updated_at)}
                                 </div>
-                                <ChevronRight className="w-4 h-4 text-zinc-700 group-hover:text-purple-400 transition-colors" />
+                                <ChevronRight className={`w-4 h-4 transition-colors ${isDark ? "text-zinc-700 group-hover:text-purple-400" : "text-zinc-400 group-hover:text-purple-600"}`} />
                             </div>
                         </motion.div>
                     ))}

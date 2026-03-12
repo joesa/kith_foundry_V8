@@ -97,7 +97,7 @@ export default function IdeationLanding() {
             <div className="flex justify-end mb-4">
                 <button
                     onClick={() => navigate("/ideation/saved")}
-                    className="flex items-center gap-2 px-4 py-2 rounded-xl border border-zinc-700/60 bg-zinc-800/40 text-sm text-zinc-400 hover:text-white hover:border-zinc-600 transition-colors"
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl border border-[var(--kf-border)] bg-[var(--kf-surface)] text-sm text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] hover:border-[var(--kf-border-muted)] transition-colors"
                 >
                     <Bookmark className="w-4 h-4" />
                     Saved Ideas
@@ -117,10 +117,10 @@ export default function IdeationLanding() {
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/10 mb-6">
                     <Sparkles className="w-8 h-8 text-purple-400" />
                 </div>
-                <h1 className="text-4xl font-bold text-white mb-3">
+                <h1 className="text-4xl font-bold text-[var(--kf-text)] mb-3">
                     What would you like to build?
                 </h1>
-                <p className="text-lg text-zinc-400 max-w-xl mx-auto">
+                <p className="text-lg text-[var(--kf-text-secondary)] max-w-xl mx-auto">
                     Whether you have a clear vision or need inspiration, we'll help you shape it into a validated, buildable product.
                 </p>
             </motion.div>
@@ -132,17 +132,17 @@ export default function IdeationLanding() {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.1 }}
                     onClick={() => navigate("/ideation/prompt")}
-                    className="group relative bg-[#12121A] border border-zinc-800/50 rounded-2xl p-8 text-left hover:border-purple-500/30 hover:bg-[#14141E] transition-all"
+                    className="group relative bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-8 text-left hover:border-purple-500/30 hover:bg-[var(--kf-surface-hover)] transition-all"
                 >
                     <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                     <div className="relative">
                         <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 border border-amber-500/10 flex items-center justify-center mb-5">
                             <Lightbulb className="w-7 h-7 text-amber-400" />
                         </div>
-                        <h2 className="text-xl font-bold text-white mb-2 group-hover:text-purple-300 transition-colors">
+                        <h2 className="text-xl font-bold text-[var(--kf-text)] mb-2 group-hover:text-purple-500 dark:group-hover:text-purple-300 transition-colors">
                             I Have an Idea
                         </h2>
-                        <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+                        <p className="text-[var(--kf-text-secondary)] text-sm mb-6 leading-relaxed">
                             Share your vision and our AI will enhance it into 3 unique variations — each a potential standalone product.
                         </p>
                         <div className="flex items-center gap-2 text-purple-400 text-sm font-medium group-hover:gap-3 transition-all">
@@ -158,17 +158,17 @@ export default function IdeationLanding() {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.2 }}
                     onClick={() => navigate("/ideation/discover")}
-                    className="group relative bg-[#12121A] border border-zinc-800/50 rounded-2xl p-8 text-left hover:border-purple-500/30 hover:bg-[#14141E] transition-all"
+                    className="group relative bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-8 text-left hover:border-purple-500/30 hover:bg-[var(--kf-surface-hover)] transition-all"
                 >
                     <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                     <div className="relative">
                         <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/10 flex items-center justify-center mb-5">
                             <Search className="w-7 h-7 text-purple-400" />
                         </div>
-                        <h2 className="text-xl font-bold text-white mb-2 group-hover:text-purple-300 transition-colors">
+                        <h2 className="text-xl font-bold text-[var(--kf-text)] mb-2 group-hover:text-purple-500 dark:group-hover:text-purple-300 transition-colors">
                             Help Me Discover
                         </h2>
-                        <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+                        <p className="text-[var(--kf-text-secondary)] text-sm mb-6 leading-relaxed">
                             We'll generate a globally unique idea just for you, or guide you through questions to find your perfect match.
                         </p>
                         <div className="flex items-center gap-2 text-purple-400 text-sm font-medium group-hover:gap-3 transition-all">
@@ -189,8 +189,8 @@ export default function IdeationLanding() {
                 >
                     <div className="flex items-center gap-3 mb-6">
                         <Bookmark className="w-5 h-5 text-zinc-400" />
-                        <h2 className="text-xl font-bold text-white">Saved Ideas</h2>
-                        <span className="text-xs bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-full">{savedIdeas.length}</span>
+                        <h2 className="text-xl font-bold text-[var(--kf-text)]">Saved Ideas</h2>
+                        <span className="text-xs bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] px-2 py-0.5 rounded-full">{savedIdeas.length}</span>
                     </div>
 
                     {/* Exclusivity reminder */}
@@ -208,11 +208,11 @@ export default function IdeationLanding() {
                                     initial={{ opacity: 0, height: 0 }}
                                     animate={{ opacity: 1, height: "auto" }}
                                     exit={{ opacity: 0, height: 0 }}
-                                    className="bg-[#12121A] border border-zinc-800/50 rounded-xl p-5 flex items-center gap-4"
+                                    className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-xl p-5 flex items-center gap-4"
                                 >
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2 mb-1">
-                                            <h3 className="text-sm font-semibold text-white truncate">{idea.name}</h3>
+                                            <h3 className="text-sm font-semibold text-[var(--kf-text)] truncate">{idea.name}</h3>
                                             {idea.is_claimed && (
                                                 <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full">
                                                     <Lock className="w-3 h-3" /> Yours
@@ -248,7 +248,7 @@ export default function IdeationLanding() {
                                             <button
                                                 onClick={() => handleDeleteSaved(idea.id)}
                                                 disabled={deletingId === idea.id}
-                                                className="h-8 w-8 rounded-lg border border-zinc-700 flex items-center justify-center text-zinc-500 hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-50"
+                                                className="h-8 w-8 rounded-lg border border-[var(--kf-border-muted)] flex items-center justify-center text-[var(--kf-text-muted)] hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-50"
                                                 title="Remove from saved"
                                             >
                                                 <Trash2 className="w-3.5 h-3.5" />

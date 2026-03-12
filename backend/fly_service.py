@@ -14,11 +14,11 @@ import json
 import socket
 import contextlib
 from pathlib import Path
-import httpx
-import requests
-from typing import Optional
+import httpx  # type: ignore[import]
+import requests  # type: ignore[import]
+from typing import Any, Optional
 
-load_dotenv = __import__("dotenv").load_dotenv
+load_dotenv: Any = __import__("dotenv").load_dotenv  # type: ignore[name-defined]
 _BACKEND_DIR = Path(__file__).resolve().parent
 load_dotenv()
 load_dotenv(_BACKEND_DIR / ".env", override=False)
@@ -90,76 +90,110 @@ def _get_project_lock(project_id: str) -> threading.Lock:
         return lock
 
 
+FLY_GRAPHQL_URL = "https://api.fly.io/graphql"
+
+
+def _graphql(query: str, variables: dict | None = None) -> dict:
+    """Execute a Fly.io GraphQL query/mutation using the API token."""
+    token = _get_fly_api_token()
+    if not token:
+        raise RuntimeError("FLY_API_TOKEN is not set — cannot call Fly GraphQL API")
+    resp = httpx.post(
+        FLY_GRAPHQL_URL,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"query": query, "variables": variables or {}},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("errors"):
+        raise RuntimeError(f"Fly GraphQL error: {data['errors']}")
+    return data.get("data") or {}
+
+
 def _allocate_public_ip(app_name: str) -> None:
     """Allocate a shared Anycast IPv4 so Fly Proxy can route to the app.
 
     Apps created via the Machines API don't automatically get public IPs.
     Without a public IP, the bridge can run inside the VM but will never be
     reachable through Fly Proxy or at *.fly.dev.
-    """
-    flyctl = _resolve_flyctl()
-    if not flyctl:
-        raise RuntimeError("flyctl not found; cannot allocate public IP for sandbox app")
 
+    Uses the Fly Machines REST API (POST /v1/apps/:name/ip_assignments).
+    """
+    token = _get_fly_api_token()
+    if not token:
+        raise RuntimeError("FLY_API_TOKEN is not set — cannot allocate IP")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    url = f"{FLY_API_HOST}/v1/apps/{app_name}/ip_assignments"
     last_err: Optional[str] = None
     for attempt in range(20):
-        proc = subprocess.run(
-            [flyctl, "ips", "allocate-v4", "--shared", "-a", app_name],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        output = (proc.stdout or "") + (proc.stderr or "")
-        lowered = output.lower()
-        if proc.returncode == 0:
-            print(f"[fly] Allocated shared IPv4 for {app_name}")
-            return
-        if "already has" in lowered or "shared ipv4 address" in lowered:
-            print(f"[fly] Shared IPv4 already allocated for {app_name}")
-            return
-        last_err = output.strip() or f"exit code {proc.returncode}"
-        if "could not find app" in lowered or "not found" in lowered:
-            time.sleep(3)
-            continue
-        break
+        try:
+            resp = httpx.post(
+                url,
+                headers=headers,
+                json={"type": "shared_v4"},
+                timeout=15,
+            )
+            if resp.status_code == 200 or resp.status_code == 201:
+                data = resp.json()
+                addr = data.get("address") or data.get("ip") or ""
+                if addr:
+                    print(f"[fly] Allocated shared IPv4 {addr} for {app_name}")
+                    return
+                # Some Fly regions return 200 with the IP nested differently
+                print(f"[fly] IP allocated (200) but no address in response: {data}")
+                return  # IP was allocated even if address not in response body
+            if resp.status_code == 409:
+                # Already allocated
+                print(f"[fly] Shared IPv4 already allocated for {app_name}")
+                return
+            body = resp.text[:300] if resp.text else "(empty)"
+            last_err = f"HTTP {resp.status_code}: {body}"
+            if resp.status_code == 404:
+                if attempt < 19:
+                    print(f"[fly] App not visible yet for IP allocation (attempt {attempt + 1}), retrying...")
+                time.sleep(3)
+                continue
+            print(f"[fly] IP allocate error (attempt {attempt + 1}): {last_err}")
+        except Exception as e:
+            last_err = str(e)
+            print(f"[fly] IP allocate exception (attempt {attempt + 1}): {e}")
+        time.sleep(3)
 
     raise RuntimeError(f"Failed to allocate shared IPv4 for {app_name}: {last_err}")
 
 
 def _get_public_ip(app_name: str) -> str:
-    """Return the app's shared public IPv4 allocated by Fly."""
-    flyctl = _resolve_flyctl()
-    if not flyctl:
-        raise RuntimeError("flyctl not found; cannot inspect public IP for sandbox app")
+    """Return the app's shared public IPv4 allocated by Fly.
 
+    Uses the Fly Machines REST API (GET /v1/apps/:name/ip_assignments).
+    """
+    token = _get_fly_api_token()
+    if not token:
+        raise RuntimeError("FLY_API_TOKEN is not set — cannot resolve IP")
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{FLY_API_HOST}/v1/apps/{app_name}/ip_assignments"
     last_err: Optional[str] = None
-    for _ in range(20):
-        proc = subprocess.run(
-            [flyctl, "ips", "list", "-a", app_name, "--json"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = (proc.stdout or "") + (proc.stderr or "")
-        if proc.returncode != 0:
-            last_err = output.strip() or f"exit code {proc.returncode}"
-            time.sleep(2)
-            continue
+    for attempt in range(20):
         try:
-            rows = json.loads(proc.stdout or "[]")
-        except Exception:
-            last_err = output.strip() or "invalid JSON from flyctl ips list"
-            time.sleep(2)
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            address = row.get("address") or row.get("Address")
-            ip_type = str(row.get("type") or row.get("Type") or "").lower()
-            version = str(row.get("version") or row.get("Version") or "")
-            if address and ((version == "v4") or ("v4" in ip_type)) and ("public ingress" in ip_type or "shared_v4" in ip_type):
-                return address
-        last_err = f"no shared IPv4 found for {app_name}"
+            resp = httpx.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            # Response can be a bare list or wrapped in {'ips': [...]}
+            entries = data if isinstance(data, list) else data.get("ips") or []
+            for entry in entries:
+                addr = entry.get("address") or entry.get("ip") or ""
+                ip_type = (entry.get("type") or "").lower()
+                is_shared = entry.get("shared", False)
+                # Match by type field (v4/shared) OR by the 'shared' boolean flag
+                if addr and ("v4" in ip_type or "shared" in ip_type or is_shared):
+                    return addr
+            last_err = f"no shared IPv4 found for {app_name} (response: {data})"
+        except Exception as e:
+            last_err = str(e)
         time.sleep(2)
 
     raise RuntimeError(f"Failed to resolve shared IPv4 for {app_name}: {last_err}")
@@ -254,12 +288,12 @@ class FlySandboxWorker:
         host = self._bridge_host
         ip = self._public_ip
 
-        def _patched(name, port, *args, **kwargs):
+        def _patched(name, port, *args, **kwargs):  # type: ignore[assignment]
             if name == host:
                 return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
             return original(name, port, *args, **kwargs)
 
-        socket.getaddrinfo = _patched
+        socket.getaddrinfo = _patched  # type: ignore[assignment]
         try:
             yield
         finally:
@@ -303,12 +337,13 @@ class FlySandboxWorker:
             resp.raise_for_status()
             return resp.json() if resp.content else {}
 
-    def create(self) -> str:
+    def create(self) -> str:  # type: ignore[return]
         """Create Fly app and machine, return preview URL."""
         hex_suffix = secrets.token_hex(4)
-        self.app_name = f"kith-sandbox-{hex_suffix}"
+        app_name = f"kith-sandbox-{hex_suffix}"
+        self.app_name = app_name
         with _lock:
-            _creating_apps.add(self.app_name)
+            _creating_apps.add(app_name)
 
         try:
 
@@ -345,15 +380,15 @@ class FlySandboxWorker:
                 json_body={"config": config, "region": FLY_REGION, "lease_ttl": 120},
             )
             self.machine_id = machine.get("id")
-            self.preview_url = f"https://{self.app_name}.fly.dev"
-            _allocate_public_ip(self.app_name)
-            self._public_ip = _get_public_ip(self.app_name)
-            print(f"[fly] Using shared IPv4 {self._public_ip} for {self.app_name}")
+            self.preview_url = f"https://{app_name}.fly.dev"
+            _allocate_public_ip(app_name)
+            self._public_ip = _get_public_ip(app_name)
+            print(f"[fly] Using shared IPv4 {self._public_ip} for {app_name}")
 
             # Wait for machine to be started
             print(f"[fly] Waiting for machine {self.machine_id} to start...")
             for i in range(60):
-                m = self._api_request("GET", f"/apps/{self.app_name}/machines/{self.machine_id}")
+                m = self._api_request("GET", f"/apps/{app_name}/machines/{self.machine_id}")
                 state = m.get("state")
                 if state == "started":
                     print(f"[fly] Machine started after {i * 2}s")
@@ -407,11 +442,12 @@ class FlySandboxWorker:
                     f"(container boot failure)"
                 )
 
-            return self.preview_url
+            preview: str = self.preview_url  # type: ignore[assignment]
+            return preview
         finally:
             with _lock:
                 if self.app_name:
-                    _creating_apps.discard(self.app_name)
+                    _creating_apps.discard(self.app_name)  # type: ignore[arg-type]
 
     def _bridge_call(
         self, path: str, method: str = "POST",
@@ -448,7 +484,8 @@ class FlySandboxWorker:
             self.preview_url = f"https://{self.app_name}.fly.dev"
         if not self.preview_url:
             raise RuntimeError("start_vite: preview_url is not set and app_name is unknown")
-        return self.preview_url
+        url: str = self.preview_url  # type: ignore[assignment]
+        return url
 
     def wait_vite_ready(self, timeout: float = 45.0) -> str:
         deadline = time.time() + timeout
@@ -579,7 +616,7 @@ def cleanup_stale_sandboxes() -> int:
             return 0
 
         print(f"[fly] Cleaning up {len(stale)} stale sandbox(es): {stale}")
-        deleted = 0
+        deleted: int = 0
         for name in stale:
             try:
                 httpx.delete(
@@ -588,7 +625,7 @@ def cleanup_stale_sandboxes() -> int:
                     timeout=30,
                 )
                 print(f"[fly] Deleted stale sandbox: {name}")
-                deleted += 1
+                deleted += 1  # type: ignore[operator]
             except Exception as e:
                 print(f"[fly] Warning: failed to delete {name}: {e}")
         return deleted

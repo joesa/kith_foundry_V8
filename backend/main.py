@@ -249,19 +249,27 @@ async def _inngest_dev_sync():
     # then trigger a sync by calling our own /api/inngest (PUT = SDK sync endpoint).
     dev_server = os.getenv("INNGEST_DEV_SERVER_URL", "http://localhost:8288")
     app_url = "http://localhost:8000/api/inngest"
-    try:
+    async def _wait_for_inngest_dev_server() -> None:
+        last_error = ""
         async with httpx.AsyncClient(timeout=3) as client:
-            # Check Dev Server is up
-            ping = await client.get(dev_server, timeout=2)
-            if ping.status_code >= 400:
-                raise RuntimeError(f"Dev Server returned {ping.status_code}")
-            print(f"✅ Inngest Dev Server reachable at {dev_server}")
-            # Trigger SDK sync: Dev Server polls our /api/inngest automatically
-            # when started with -u flag. No action needed here.
-            print(f"📡 Inngest functions registered at {app_url}")
-    except Exception as e:
-        print(f"⚠️  Inngest Dev Server not reachable ({e})")
+            for attempt in range(1, 11):
+                try:
+                    ping = await client.get(dev_server, timeout=2)
+                    if ping.status_code >= 400:
+                        raise RuntimeError(f"Dev Server returned {ping.status_code}")
+                    print(f"✅ Inngest Dev Server reachable at {dev_server}")
+                    print(f"📡 Inngest functions registered at {app_url}")
+                    return
+                except Exception as e:
+                    last_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                    if attempt < 10:
+                        await asyncio.sleep(2)
+
+        print(f"⚠️  Inngest Dev Server not reachable at {dev_server} ({last_error})")
         print(f"   Start it with: npx inngest-cli@latest dev -u {app_url}")
+        print("   If you started Inngest after the backend, this warning is harmless; jobs will work once the dev server is up.")
+
+    asyncio.create_task(_wait_for_inngest_dev_server())
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -749,7 +757,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ── Normal user prompt ───────────────────────────────────────
             user_prompt = payload.get("prompt")
-            model_id = payload.get("model", "claude-3-5-sonnet-latest")
+            model_id = payload.get("model", "default")
             images = payload.get("images", [])
 
             if not user_prompt and not images:
@@ -791,6 +799,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                     elif step["status"] == "stream_end":
                         await _send_json(websocket, {"type": "stream_end"})
+                    elif step["status"] == "chat_token":
+                        await _send_json(websocket, {
+                            "type": "chat_token", "token": step["token"]
+                        })
+                    elif step["status"] == "chat_complete":
+                        await _send_json(websocket, {
+                            "type": "chat_complete", "message": step["message"]
+                        })
+                        _persist_message(db, project_id, "assistant", step["message"])
                     elif step["status"] == "execution_complete":
                         edits = step.get("edits", [])
                         write_edits = [e for e in edits if e.get("action") == "write"]

@@ -1,9 +1,12 @@
 import { useAuth } from "../../contexts/AuthContext";
+import { useTheme } from "../../contexts/ThemeContext";
 import { ProviderSettings } from "../ProviderSettings";
 import { User } from "lucide-react";
 
 export default function ProfilePage() {
     const { user } = useAuth();
+    const { theme } = useTheme();
+    const isDark = theme === "dark";
 
     return (
         <div className="max-w-4xl mx-auto px-6 py-10">
@@ -14,8 +17,8 @@ export default function ProfilePage() {
                         <User className="w-5 h-5 text-white" />
                     </div>
                     <div>
-                        <h1 className="text-2xl font-bold text-white">Profile & Settings</h1>
-                        <p className="text-sm text-zinc-500">{user?.email}</p>
+                        <h1 className={`text-2xl font-bold ${isDark ? "text-white" : "text-zinc-900"}`}>Profile & Settings</h1>
+                        <p className={`text-sm ${isDark ? "text-zinc-500" : "text-zinc-600"}`}>{user?.email}</p>
                     </div>
                 </div>
             </div>

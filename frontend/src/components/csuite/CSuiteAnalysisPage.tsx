@@ -37,28 +37,30 @@ const ROLE_META: Record<string, { label: string; icon: any; color: string; gradi
     cdo: { label: "CDO", icon: Palette, color: "text-violet-400", gradient: "from-violet-500/20 to-fuchsia-500/20" },
 };
 
+function createPendingAgents(): AgentResult[] {
+    return Object.keys(ROLE_META).map(role => ({
+        role,
+        status: "pending",
+        score: null,
+        recommendation: null,
+        deep_analysis: null,
+        strengths: [],
+        risks: [],
+        suggestions: [],
+        key_metrics: [],
+        timeline: null,
+        priority_actions: [],
+        competitive_note: null,
+        verdict: null,
+    }));
+}
+
 export default function CSuiteAnalysisPage() {
     const { projectId } = useParams<{ projectId: string }>();
     const navigate = useNavigate();
     const { getAccessToken } = useAuth();
 
-    const [agents, setAgents] = useState<AgentResult[]>(
-        Object.keys(ROLE_META).map(role => ({
-            role,
-            status: "pending",
-            score: null,
-            recommendation: null,
-            deep_analysis: null,
-            strengths: [],
-            risks: [],
-            suggestions: [],
-            key_metrics: [],
-            timeline: null,
-            priority_actions: [],
-            competitive_note: null,
-            verdict: null,
-        }))
-    );
+    const [agents, setAgents] = useState<AgentResult[]>(createPendingAgents);
     const [overallScore, setOverallScore] = useState<number | null>(null);
     const [overallVerdict, setOverallVerdict] = useState<string | null>(null);
     const [projectName, setProjectName] = useState<string>("");
@@ -235,16 +237,7 @@ export default function CSuiteAnalysisPage() {
                 const body = await resp.json().catch(() => ({}));
                 throw new Error(body.detail || "Failed to start analysis");
             }
-            setAgents(Object.keys(ROLE_META).map(role => ({
-                role,
-                status: "pending",
-                score: null,
-                recommendation: null,
-                strengths: [],
-                risks: [],
-                suggestions: [],
-                verdict: null,
-            })));
+            setAgents(createPendingAgents());
             setOverallScore(null);
             setOverallVerdict(null);
             pollResults();
@@ -277,16 +270,7 @@ export default function CSuiteAnalysisPage() {
                 throw new Error(body.detail || "Failed to refine analysis");
             }
 
-            setAgents(Object.keys(ROLE_META).map(role => ({
-                role,
-                status: "pending",
-                score: null,
-                recommendation: null,
-                strengths: [],
-                risks: [],
-                suggestions: [],
-                verdict: null,
-            })));
+            setAgents(createPendingAgents());
             setOverallScore(null);
             setOverallVerdict(null);
 
@@ -361,7 +345,21 @@ export default function CSuiteAnalysisPage() {
             // Reset only affected agents to pending — keep other agents' results intact
             setAgents(prev => prev.map(a =>
                 roles.includes(a.role)
-                    ? { ...a, status: "pending", score: null, recommendation: null, strengths: [], risks: [], suggestions: [], verdict: null }
+                    ? {
+                        ...a,
+                        status: "pending",
+                        score: null,
+                        recommendation: null,
+                        deep_analysis: null,
+                        strengths: [],
+                        risks: [],
+                        suggestions: [],
+                        key_metrics: [],
+                        timeline: null,
+                        priority_actions: [],
+                        competitive_note: null,
+                        verdict: null,
+                    }
                     : a
             ));
             setAllDone(false);
@@ -410,20 +408,35 @@ export default function CSuiteAnalysisPage() {
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
                 <div className="flex items-center gap-3 mb-2">
                     <Crown className="w-6 h-6 text-amber-400" />
-                    <h1 className="text-3xl font-bold text-white">C-Suite Analysis</h1>
+                    <h1 className="text-3xl font-bold text-[var(--kf-text)]">C-Suite Analysis</h1>
                 </div>
-                {projectName && <p className="text-zinc-400 text-lg ml-9">{projectName}</p>}
+                {projectName && <p className="text-[var(--kf-text-secondary)] text-lg ml-9">{projectName}</p>}
             </motion.div>
 
+            {stuck && (
+                <div className="mb-6 flex items-start justify-between gap-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-5 py-4 text-sm text-amber-100">
+                    <div>
+                        <div className="font-semibold text-amber-300">Analysis stalled before any agents started.</div>
+                        <div className="mt-1 text-amber-100/80">Retry the run to restart the background job and resume the C-suite pass.</div>
+                    </div>
+                    <button
+                        onClick={handleRunAgain}
+                        className="shrink-0 rounded-lg border border-amber-400/30 px-3 py-1.5 font-medium text-amber-200 transition-colors hover:bg-amber-400/10"
+                    >
+                        Run Again
+                    </button>
+                </div>
+            )}
+
             {/* Overall progress bar */}
-            <div className="bg-[#12121A] border border-zinc-800/50 rounded-2xl p-6 mb-8">
+            <div className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-6 mb-8">
                 <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm text-zinc-400">{completedCount}/{agents.length} agents completed</span>
+                    <span className="text-sm text-[var(--kf-text-secondary)]">{completedCount}/{agents.length} agents completed</span>
                     <div className="flex items-center gap-3">
                         {overallScore != null ? (
                             <span className="text-lg font-bold text-purple-300">{Math.round(overallScore)}/100</span>
                         ) : agents.some(a => a.score != null) ? (
-                            <span className="text-lg font-bold text-zinc-400">{Math.round(avgScore)}/100 avg so far</span>
+                            <span className="text-lg font-bold text-[var(--kf-text-secondary)]">{Math.round(avgScore)}/100 avg so far</span>
                         ) : null}
                         {allDone && overallScore != null && overallScore < 85 && (
                             <button
@@ -441,7 +454,7 @@ export default function CSuiteAnalysisPage() {
                         )}
                     </div>
                 </div>
-                <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-2 bg-[var(--kf-badge-bg)] rounded-full overflow-hidden">
                     <motion.div
                         className="h-full bg-gradient-to-r from-purple-600 to-purple-400 rounded-full"
                         initial={{ width: 0 }}
@@ -459,7 +472,7 @@ export default function CSuiteAnalysisPage() {
             {/* Agent cards grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-8">
                 {agents.map((agent, i) => {
-                    const meta = ROLE_META[agent.role] || { label: agent.role, icon: Info, color: "text-zinc-400", gradient: "from-zinc-500/20 to-zinc-500/20" };
+                    const meta = ROLE_META[agent.role] || { label: agent.role, icon: Info, color: "text-[var(--kf-text-secondary)]", gradient: "from-zinc-500/20 to-zinc-500/20" };
                     const Icon = meta.icon;
                     const expanded = agent.status === "complete";
                     const isClickable = agent.status === "complete";
@@ -470,13 +483,13 @@ export default function CSuiteAnalysisPage() {
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: i * 0.05 }}
                             onClick={() => isClickable && setSelectedAgent(agent.role)}
-                            className={`bg-[#12121A] border rounded-xl p-5 transition-all ${
+                            className={`bg-[var(--kf-surface)] border rounded-xl p-5 transition-all ${
                                 isClickable ? "cursor-pointer hover:border-purple-500/40 hover:shadow-lg hover:shadow-purple-500/5" : ""
                             } ${agent.status === "running"
                                 ? "border-purple-500/40 shadow-lg shadow-purple-500/5"
                                 : agent.status === "complete"
-                                    ? "border-zinc-700/50"
-                                    : "border-zinc-800/30"
+                                    ? "border-[var(--kf-border)]"
+                                    : "border-[var(--kf-border)]"
                                 }`}
                         >
                             {/* Agent header */}
@@ -486,7 +499,7 @@ export default function CSuiteAnalysisPage() {
                                 </div>
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2">
-                                        <span className="font-bold text-white text-sm">{meta.label}</span>
+                                        <span className="font-bold text-[var(--kf-text)] text-sm">{meta.label}</span>
                                         {getStatusIcon(agent.status)}
                                     </div>
                                     {agent.score != null && (
@@ -524,14 +537,14 @@ export default function CSuiteAnalysisPage() {
                                     className="mt-2 space-y-3 text-xs"
                                 >
                                     {agent.recommendation && (
-                                        <p className="text-zinc-300 leading-relaxed">{agent.recommendation}</p>
+                                        <p className="text-[var(--kf-text-secondary)] leading-relaxed">{agent.recommendation}</p>
                                     )}
                                     {agent.strengths.length > 0 && (
                                         <div>
                                             <span className="text-green-400 font-medium">Strengths</span>
                                             <ul className="mt-1 space-y-0.5">
                                                 {agent.strengths.slice(0, 3).map((s, j) => (
-                                                    <li key={j} className="text-zinc-400 flex items-start gap-1.5">
+                                                    <li key={j} className="text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                         <span className="text-green-400 mt-0.5">+</span> {s}
                                                     </li>
                                                 ))}
@@ -543,7 +556,7 @@ export default function CSuiteAnalysisPage() {
                                             <span className="text-red-400 font-medium">Risks</span>
                                             <ul className="mt-1 space-y-0.5">
                                                 {agent.risks.slice(0, 3).map((r, j) => (
-                                                    <li key={j} className="text-zinc-400 flex items-start gap-1.5">
+                                                    <li key={j} className="text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                         <span className="text-red-400 mt-0.5">!</span> {r}
                                                     </li>
                                                 ))}
@@ -566,7 +579,7 @@ export default function CSuiteAnalysisPage() {
                                             {improveLoading && improveRoles?.includes(agent.role) ? "Analyzing..." : "Improve"}
                                         </button>
                                     )}
-                                    <div className="mt-3 pt-2 border-t border-zinc-800/50 flex items-center justify-end">
+                                    <div className="mt-3 pt-2 border-t border-[var(--kf-border)] flex items-center justify-end">
                                         <span className="text-[10px] text-purple-400/70 flex items-center gap-1">
                                             <ArrowRight className="w-2.5 h-2.5" /> Full analysis
                                         </span>
@@ -582,7 +595,7 @@ export default function CSuiteAnalysisPage() {
             <AnimatePresence>
                 {selectedAgent && (() => {
                     const agent = agents.find(a => a.role === selectedAgent)!;
-                    const meta = ROLE_META[agent.role] || { label: agent.role, icon: Info, color: "text-zinc-400", gradient: "from-zinc-500/20 to-zinc-500/20" };
+                    const meta = ROLE_META[agent.role] || { label: agent.role, icon: Info, color: "text-[var(--kf-text-secondary)]", gradient: "from-zinc-500/20 to-zinc-500/20" };
                     const Icon = meta.icon;
                     return (
                         <motion.div
@@ -600,16 +613,16 @@ export default function CSuiteAnalysisPage() {
                                 exit={{ x: "100%" }}
                                 transition={{ type: "spring", damping: 30, stiffness: 300 }}
                                 onClick={e => e.stopPropagation()}
-                                className="fixed right-0 top-0 bottom-0 w-full max-w-2xl bg-[#0E0E16] border-l border-zinc-800 shadow-2xl flex flex-col z-50"
+                                className="fixed right-0 top-0 bottom-0 w-full max-w-2xl bg-[#0E0E16] border-l border-[var(--kf-border)] shadow-2xl flex flex-col z-50"
                             >
                                 {/* Drawer header */}
-                                <div className={`flex items-center justify-between px-6 py-5 bg-gradient-to-r ${meta.gradient} border-b border-zinc-800/60`}>
+                                <div className={`flex items-center justify-between px-6 py-5 bg-gradient-to-r ${meta.gradient} border-b border-[var(--kf-border)]/60`}>
                                     <div className="flex items-center gap-3">
-                                        <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${meta.gradient} border border-zinc-700/50 flex items-center justify-center`}>
+                                        <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${meta.gradient} border border-[var(--kf-border)] flex items-center justify-center`}>
                                             <Icon className={`w-5 h-5 ${meta.color}`} />
                                         </div>
                                         <div>
-                                            <h2 className="text-lg font-bold text-white">{meta.label} Analysis</h2>
+                                            <h2 className="text-lg font-bold text-[var(--kf-text)]">{meta.label} Analysis</h2>
                                             {agent.score != null && (
                                                 <div className="flex items-center gap-2">
                                                     <span className={`text-sm font-bold ${meta.color}`}>{agent.score}/100</span>
@@ -624,7 +637,7 @@ export default function CSuiteAnalysisPage() {
                                             )}
                                         </div>
                                     </div>
-                                    <button onClick={() => setSelectedAgent(null)} className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors">
+                                    <button onClick={() => setSelectedAgent(null)} className="p-2 rounded-lg hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] transition-colors">
                                         <X className="w-5 h-5" />
                                     </button>
                                 </div>
@@ -635,7 +648,7 @@ export default function CSuiteAnalysisPage() {
                                     {agent.recommendation && (
                                         <div>
                                             <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Executive Summary</h3>
-                                            <p className="text-sm text-zinc-200 leading-relaxed bg-zinc-900/60 rounded-xl p-4 border border-zinc-800/50">{agent.recommendation}</p>
+                                            <p className="text-sm text-[var(--kf-text)] leading-relaxed bg-[var(--kf-surface)] rounded-xl p-4 border border-[var(--kf-border)]">{agent.recommendation}</p>
                                         </div>
                                     )}
 
@@ -643,9 +656,9 @@ export default function CSuiteAnalysisPage() {
                                     {agent.deep_analysis && (
                                         <div>
                                             <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Deep Analysis</h3>
-                                            <div className="text-sm text-zinc-300 leading-relaxed space-y-3">
+                                            <div className="text-sm text-[var(--kf-text-secondary)] leading-relaxed space-y-3">
                                                 {agent.deep_analysis.split(/\n\n+/).map((para, i) => (
-                                                    <p key={i} className="text-zinc-300">{para}</p>
+                                                    <p key={i} className="text-[var(--kf-text-secondary)]">{para}</p>
                                                 ))}
                                             </div>
                                         </div>
@@ -658,7 +671,7 @@ export default function CSuiteAnalysisPage() {
                                                 <h3 className="text-xs font-bold uppercase tracking-widest text-green-500/70 mb-2">Strengths</h3>
                                                 <ul className="space-y-2">
                                                     {(agent.strengths ?? []).map((s, j) => (
-                                                        <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                        <li key={j} className="text-xs text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                             <span className="text-green-400 mt-0.5 shrink-0">+</span>{s}
                                                         </li>
                                                     ))}
@@ -670,7 +683,7 @@ export default function CSuiteAnalysisPage() {
                                                 <h3 className="text-xs font-bold uppercase tracking-widest text-red-500/70 mb-2">Risks</h3>
                                                 <ul className="space-y-2">
                                                     {(agent.risks ?? []).map((r, j) => (
-                                                        <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                        <li key={j} className="text-xs text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                             <span className="text-red-400 mt-0.5 shrink-0">!</span>{r}
                                                         </li>
                                                     ))}
@@ -685,7 +698,7 @@ export default function CSuiteAnalysisPage() {
                                             <h3 className="text-xs font-bold uppercase tracking-widest text-purple-400/70 mb-2">Priority Actions</h3>
                                             <ol className="space-y-2">
                                                 {(agent.priority_actions ?? []).map((a, j) => (
-                                                    <li key={j} className="text-xs text-zinc-300 flex items-start gap-2.5 bg-purple-500/5 border border-purple-500/10 rounded-lg px-3 py-2">
+                                                    <li key={j} className="text-xs text-[var(--kf-text-secondary)] flex items-start gap-2.5 bg-purple-500/5 border border-purple-500/10 rounded-lg px-3 py-2">
                                                         <span className="text-purple-400 font-bold shrink-0">{j + 1}.</span>{a}
                                                     </li>
                                                 ))}
@@ -699,7 +712,7 @@ export default function CSuiteAnalysisPage() {
                                             <h3 className="text-xs font-bold uppercase tracking-widest text-amber-500/70 mb-2">Suggestions</h3>
                                             <ul className="space-y-2">
                                                 {(agent.suggestions ?? []).map((s, j) => (
-                                                    <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                    <li key={j} className="text-xs text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                         <span className="text-amber-400 mt-0.5 shrink-0">→</span>{s}
                                                     </li>
                                                 ))}
@@ -714,7 +727,7 @@ export default function CSuiteAnalysisPage() {
                                                 <h3 className="text-xs font-bold uppercase tracking-widest text-cyan-500/70 mb-2">Key Metrics</h3>
                                                 <ul className="space-y-1.5">
                                                     {(agent.key_metrics ?? []).map((m, j) => (
-                                                        <li key={j} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                                                        <li key={j} className="text-xs text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                             <span className="text-cyan-400 mt-0.5 shrink-0">◆</span>{m}
                                                         </li>
                                                     ))}
@@ -724,7 +737,7 @@ export default function CSuiteAnalysisPage() {
                                         {agent.timeline && (
                                             <div>
                                                 <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Timeline</h3>
-                                                <p className="text-xs text-zinc-400 leading-relaxed bg-zinc-900/40 rounded-lg p-3 border border-zinc-800/40">{agent.timeline}</p>
+                                                <p className="text-xs text-[var(--kf-text-secondary)] leading-relaxed bg-[var(--kf-surface)] rounded-lg p-3 border border-[var(--kf-border)]/40">{agent.timeline}</p>
                                             </div>
                                         )}
                                     </div>
@@ -733,14 +746,14 @@ export default function CSuiteAnalysisPage() {
                                     {agent.competitive_note && (
                                         <div>
                                             <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Competitive Perspective</h3>
-                                            <p className="text-xs text-zinc-400 leading-relaxed italic border-l-2 border-zinc-700 pl-3">{agent.competitive_note}</p>
+                                            <p className="text-xs text-[var(--kf-text-secondary)] leading-relaxed italic border-l-2 border-[var(--kf-border-muted)] pl-3">{agent.competitive_note}</p>
                                         </div>
                                     )}
                                 </div>
 
                                 {/* Drawer footer */}
                                 {agent.score != null && agent.score < 85 && allDone && (
-                                    <div className="px-6 py-4 border-t border-zinc-800/60 bg-zinc-900/40">
+                                    <div className="px-6 py-4 border-t border-[var(--kf-border)]/60 bg-[var(--kf-surface)]">
                                         <button
                                             onClick={(e) => { e.stopPropagation(); setSelectedAgent(null); handleImprove([agent.role]); }}
                                             disabled={improveLoading}
@@ -769,11 +782,11 @@ export default function CSuiteAnalysisPage() {
                             <div className="flex items-center justify-between mb-4">
                                 <div className="flex items-center gap-2">
                                     <Sparkles className="w-5 h-5 text-amber-400" />
-                                    <h3 className="text-lg font-bold text-white">AI Improvement Plan</h3>
+                                    <h3 className="text-lg font-bold text-[var(--kf-text)]">AI Improvement Plan</h3>
                                 </div>
                                 <button
                                     onClick={() => { setImprovePlan(null); setImproveRoles(null); }}
-                                    className="p-1 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                                    className="p-1 rounded-lg hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] transition-colors"
                                 >
                                     <X className="w-4 h-4" />
                                 </button>
@@ -782,12 +795,12 @@ export default function CSuiteAnalysisPage() {
                             {improveLoading ? (
                                 <div className="flex items-center gap-3 py-8 justify-center">
                                     <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
-                                    <span className="text-sm text-zinc-400">AI is analyzing scores and generating improvements...</span>
+                                    <span className="text-sm text-[var(--kf-text-secondary)]">AI is analyzing scores and generating improvements...</span>
                                 </div>
                             ) : improvePlan ? (
                                 <>
                                     {improvePlan.summary && (
-                                        <p className="text-sm text-zinc-300 mb-4 leading-relaxed">{improvePlan.summary}</p>
+                                        <p className="text-sm text-[var(--kf-text-secondary)] mb-4 leading-relaxed">{improvePlan.summary}</p>
                                     )}
 
                                     <div className="space-y-3 mb-5">
@@ -795,13 +808,13 @@ export default function CSuiteAnalysisPage() {
                                             const meta = ROLE_META[role];
                                             const isExpanded = expandedImproveCard === role;
                                             return (
-                                                <div key={role} className="bg-[#0E0E16] border border-zinc-800/50 rounded-xl overflow-hidden">
+                                                <div key={role} className="bg-[#0E0E16] border border-[var(--kf-border)] rounded-xl overflow-hidden">
                                                     <button
                                                         onClick={() => setExpandedImproveCard(isExpanded ? null : role)}
-                                                        className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-800/30 transition-colors"
+                                                        className="w-full flex items-center justify-between px-4 py-3 hover:bg-[var(--kf-hover-bg)]/30 transition-colors"
                                                     >
                                                         <div className="flex items-center gap-3">
-                                                            <span className={`font-bold text-sm ${meta?.color || "text-zinc-400"}`}>
+                                                            <span className={`font-bold text-sm ${meta?.color || "text-[var(--kf-text-secondary)]"}`}>
                                                                 {meta?.label || role.toUpperCase()}
                                                             </span>
                                                             <span className="text-xs text-zinc-500">{detail.current_score}/100</span>
@@ -828,7 +841,7 @@ export default function CSuiteAnalysisPage() {
                                                                             <span className="text-red-400 font-medium">Key Weaknesses</span>
                                                                             <ul className="mt-1 space-y-0.5">
                                                                                 {detail.key_weaknesses.map((w, i) => (
-                                                                                    <li key={i} className="text-zinc-400 flex items-start gap-1.5">
+                                                                                    <li key={i} className="text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                                                         <span className="text-red-400 mt-0.5">!</span> {w}
                                                                                     </li>
                                                                                 ))}
@@ -840,7 +853,7 @@ export default function CSuiteAnalysisPage() {
                                                                             <span className="text-green-400 font-medium">Recommended Changes</span>
                                                                             <ul className="mt-1 space-y-0.5">
                                                                                 {detail.recommended_changes.map((c, i) => (
-                                                                                    <li key={i} className="text-zinc-400 flex items-start gap-1.5">
+                                                                                    <li key={i} className="text-[var(--kf-text-secondary)] flex items-start gap-1.5">
                                                                                         <span className="text-green-400 mt-0.5">+</span> {c}
                                                                                     </li>
                                                                                 ))}
@@ -850,7 +863,7 @@ export default function CSuiteAnalysisPage() {
                                                                     {detail.enhanced_context && (
                                                                         <div>
                                                                             <span className="text-purple-400 font-medium">Enhanced Context</span>
-                                                                            <p className="mt-1 text-zinc-400 leading-relaxed bg-zinc-900/50 rounded-lg p-3 border border-zinc-800/30">
+                                                                            <p className="mt-1 text-[var(--kf-text-secondary)] leading-relaxed bg-[var(--kf-surface)] rounded-lg p-3 border border-[var(--kf-border)]">
                                                                                 {detail.enhanced_context}
                                                                             </p>
                                                                         </div>
@@ -867,7 +880,7 @@ export default function CSuiteAnalysisPage() {
                                     <div className="flex items-center justify-end gap-3">
                                         <button
                                             onClick={() => { setImprovePlan(null); setImproveRoles(null); }}
-                                            className="h-9 px-4 rounded-lg border border-zinc-700 text-zinc-400 text-sm hover:bg-zinc-800 transition-colors"
+                                            className="h-9 px-4 rounded-lg border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm hover:bg-[var(--kf-hover-bg)] transition-colors"
                                         >
                                             Dismiss
                                         </button>
@@ -898,19 +911,19 @@ export default function CSuiteAnalysisPage() {
                     animate={{ opacity: 1, y: 0 }}
                     className="space-y-4"
                 >
-                    <div className="max-w-3xl mx-auto bg-[#12121A] border border-zinc-800/50 rounded-xl p-4">
-                        <label className="block text-sm text-zinc-300 mb-2">Corrections / context for re-run (optional)</label>
+                    <div className="max-w-3xl mx-auto bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-xl p-4">
+                        <label className="block text-sm text-[var(--kf-text-secondary)] mb-2">Corrections / context for re-run (optional)</label>
                         <textarea
                             value={corrections}
                             onChange={(e) => setCorrections(e.target.value)}
                             placeholder="Add clarifications, constraints, target users, pricing assumptions, or technical requirements..."
-                            className="w-full min-h-24 bg-[#0E0E16] border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                            className="w-full min-h-24 bg-[#0E0E16] border border-[var(--kf-border-muted)] rounded-lg px-3 py-2 text-sm text-[var(--kf-text)] placeholder:text-[var(--kf-text-faint)] focus:outline-none focus:ring-1 focus:ring-purple-500"
                         />
                         <div className="mt-3 flex justify-end">
                             <button
                                 onClick={handleRefine}
                                 disabled={!corrections.trim() || refining}
-                                className="h-9 px-4 rounded-lg border border-zinc-700 text-zinc-200 text-sm hover:bg-zinc-800 disabled:opacity-50"
+                                className="h-9 px-4 rounded-lg border border-[var(--kf-border-muted)] text-[var(--kf-text)] text-sm hover:bg-[var(--kf-hover-bg)] disabled:opacity-50"
                             >
                                 {refining ? "Refining..." : "Re-run with Corrections"}
                             </button>

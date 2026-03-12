@@ -447,7 +447,30 @@ def _resolve_artifact_model(user_id: str | None, db=None) -> dict:
     """Resolve model config for artifact generation, with user's key."""
     if user_id:
         from model_resolver import resolve_model_for_task
-        return resolve_model_for_task(user_id, "artifacts", db=db)
+        from models import ModelRouting
+
+        # Prefer artifacts-specific routing when configured; otherwise mirror
+        # the design routing so artifacts behave like mockup generation by default.
+        has_artifacts_routing = False
+        close_db = False
+        if db is None:
+            from models import SessionLocal
+            db = SessionLocal()
+            close_db = True
+        try:
+            has_artifacts_routing = (
+                db.query(ModelRouting)
+                .filter(ModelRouting.user_id == user_id, ModelRouting.task_type == "artifacts")
+                .first()
+                is not None
+            )
+        finally:
+            if close_db:
+                db.close()
+
+        if has_artifacts_routing:
+            return resolve_model_for_task(user_id, "artifacts", db=db)
+        return resolve_model_for_task(user_id, "design", db=db)
     return {"model": _get_model(), "api_key": None, "api_base": None, "provider_name": "Default"}
 
 
@@ -727,6 +750,45 @@ async def generate_single_artifact_endpoint(
             background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context, user.id)
     else:
         background_tasks.add_task(_generate_single_artifact, project_id, artifact_key, artifact_def, context, user.id)
+
+
+@router.post("/{project_id}/artifacts/regenerate-all")
+async def regenerate_all_artifacts(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Regenerate all artifacts by resetting their statuses to pending."""
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Reset all artifact statuses to pending
+    artifacts_to_reset = db.query(Artifact).filter(
+        Artifact.project_id == project_id,
+        Artifact.artifact_type != ArtifactType.bootstrap_prompt,
+    ).all()
+    for art in artifacts_to_reset:
+        art.status = AgentStatus.pending
+        art.content = None
+        art.updated_at = datetime.utcnow()
+    db.commit()
+
+    if use_inngest():
+        try:
+            await inngest_client.send(inngest.Event(
+                name="artifacts/regenerate-all.requested",
+                data={"project_id": project_id, "user_id": user.id},
+            ))
+            print(f"📨 Inngest event: artifacts/regenerate-all.requested for {project_id[:8]}")
+        except Exception as e:
+            print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
+            background_tasks.add_task(_generate_all_artifacts, project_id, user.id)
+    else:
+        background_tasks.add_task(_generate_all_artifacts, project_id, user.id)
+
+    return {"status": "regenerating"}
 
     return {"status": "generating", "artifact_key": artifact_key}
 

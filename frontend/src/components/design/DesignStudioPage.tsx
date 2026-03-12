@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
+import { useTheme } from "../../contexts/ThemeContext";
 import { getApiBaseUrl } from "../../lib/runtimeConfig";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -27,6 +28,7 @@ import {
     ArrowLeft,
     LayoutGrid,
     Rocket,
+    ImageIcon,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -56,10 +58,15 @@ interface Direction {
 
 type Phase = "discovering" | "discovery" | "generating" | "gallery";
 
-const PRIORITY_COLORS: Record<string, string> = {
+const PRIORITY_COLORS_DARK: Record<string, string> = {
     high: "text-red-300 bg-red-500/10 border-red-500/30",
     medium: "text-amber-300 bg-amber-500/10 border-amber-500/30",
     low: "text-sky-300 bg-sky-500/10 border-sky-500/30",
+};
+const PRIORITY_COLORS_LIGHT: Record<string, string> = {
+    high: "text-red-700 bg-red-50 border-red-300/50",
+    medium: "text-amber-700 bg-amber-50 border-amber-300/50",
+    low: "text-sky-700 bg-sky-50 border-sky-300/50",
 };
 
 const DIRECTION_SWATCH_SIZE = { width: 380, height: 240 };
@@ -126,6 +133,7 @@ function ScaledHtmlPreview({
                     }}
                 >
                     <iframe
+                        id="generated-mockup-frame"
                         title={title}
                         srcDoc={html}
                         className="pointer-events-none border-0"
@@ -157,12 +165,65 @@ function DirectionPickerModal({
 }: {
     directions: Direction[];
     loadingDirections: boolean;
-    onPick: (d: Direction) => void;
-    onDescribe: (text: string) => void;
+    onPick: (d: Direction, images: string[]) => void;
+    onDescribe: (text: string, images: string[]) => void;
     onClose: () => void;
     onStopLoading: () => void;
 }) {
     const [customText, setCustomText] = useState("");
+    const [referenceImages, setReferenceImages] = useState<{ id: string; url: string; file: File }[]>([]);
+    const [isProcessing, setIsProcessing] = useState(false);
+
+    const handleFiles = async (files: FileList | null) => {
+        if (!files) return;
+        const newImages = Array.from(files).filter(f => f.type.startsWith("image/"));
+        if (referenceImages.length + newImages.length > 20) {
+            alert("Maximum of 20 reference images allowed.");
+            return;
+        }
+
+        setIsProcessing(true);
+        const processed = await Promise.all(
+            newImages.map((file) => new Promise<{ id: string; url: string; file: File }>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement("canvas");
+                        let width = img.width;
+                        let height = img.height;
+                        const maxEdge = 800; // compress reference images heavily
+                        if (width > height) {
+                            if (width > maxEdge) {
+                                height = Math.round((height * maxEdge) / width);
+                                width = maxEdge;
+                            }
+                        } else {
+                            if (height > maxEdge) {
+                                width = Math.round((width * maxEdge) / height);
+                                height = maxEdge;
+                            }
+                        }
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext("2d");
+                        ctx?.drawImage(img, 0, 0, width, height);
+                        const url = canvas.toDataURL("image/jpeg", 0.7);
+                        resolve({ id: Math.random().toString(36).substring(7), url, file });
+                    };
+                    img.src = e.target?.result as string;
+                };
+                reader.readAsDataURL(file);
+            }))
+        );
+
+        setReferenceImages(prev => [...prev, ...processed]);
+        setIsProcessing(false);
+    };
+
+    const handleRemoveImage = (id: string) => {
+        setReferenceImages(prev => prev.filter(img => img.id !== id));
+    };
 
     return (
         <motion.div
@@ -177,18 +238,18 @@ function DirectionPickerModal({
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.95, opacity: 0 }}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-[#0E1225] border border-zinc-700/60 rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl"
+                className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl"
             >
                 {/* Header */}
-                <div className="p-5 border-b border-zinc-800/60 flex items-center justify-between">
+                <div className="p-5 border-b border-[var(--kf-border)]/60 flex items-center justify-between">
                     <div>
-                        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                        <h2 className="text-lg font-bold text-[var(--kf-text)] flex items-center gap-2">
                             <Compass className="w-5 h-5 text-purple-400" />
                             New Design Direction
                         </h2>
-                        <p className="text-xs text-zinc-400 mt-1">Choose a completely different visual style, or describe your own</p>
+                        <p className="text-xs text-[var(--kf-text-secondary)] mt-1">Choose a completely different visual style, or describe your own</p>
                     </div>
-                    <button onClick={onClose} className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors">
+                    <button onClick={onClose} className="p-2 rounded-lg hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] transition-colors">
                         <X className="w-5 h-5" />
                     </button>
                 </div>
@@ -198,7 +259,7 @@ function DirectionPickerModal({
                     {loadingDirections ? (
                         <div className="flex flex-col items-center justify-center py-16">
                             <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-3" />
-                            <p className="text-zinc-400 text-sm">Generating design directions...</p>
+                            <p className="text-[var(--kf-text-secondary)] text-sm">Generating design directions...</p>
                             <p className="text-zinc-600 text-xs mt-1">AI is creating 10 unique visual proposals</p>
                             <button
                                 onClick={onStopLoading}
@@ -215,8 +276,8 @@ function DirectionPickerModal({
                                     initial={{ opacity: 0, y: 20 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ delay: i * 0.08 }}
-                                    onClick={() => onPick(d)}
-                                    className="group text-left rounded-xl border border-zinc-800 hover:border-purple-500/50 bg-zinc-900/50 hover:bg-zinc-900/80 overflow-hidden transition-all duration-200 hover:shadow-lg hover:shadow-purple-500/10"
+                                    onClick={() => onPick(d, referenceImages.map(img => img.url))}
+                                    className="group text-left rounded-xl border border-[var(--kf-border)] hover:border-purple-500/50 bg-[var(--kf-surface)] hover:bg-[var(--kf-surface)] overflow-hidden transition-all duration-200 hover:shadow-lg hover:shadow-purple-500/10"
                                 >
                                     {/* Rendered swatch */}
                                     <ScaledHtmlPreview
@@ -224,15 +285,15 @@ function DirectionPickerModal({
                                         html={d.html_swatch}
                                         baseWidth={DIRECTION_SWATCH_SIZE.width}
                                         baseHeight={DIRECTION_SWATCH_SIZE.height}
-                                        className="h-[160px] w-full border-b border-zinc-800 bg-zinc-950"
+                                        className="h-[160px] w-full border-b border-[var(--kf-border)] bg-[var(--kf-bg)]"
                                     />
                                     <div className="p-3">
-                                        <h3 className="text-sm font-bold text-white group-hover:text-purple-300 transition-colors">{d.name}</h3>
-                                        <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{d.description}</p>
+                                        <h3 className="text-sm font-bold text-[var(--kf-text)] group-hover:text-purple-300 transition-colors">{d.name}</h3>
+                                        <p className="text-xs text-[var(--kf-text-secondary)] mt-1 line-clamp-2">{d.description}</p>
                                         {/* Palette dots */}
                                         <div className="flex gap-1.5 mt-2">
                                             {d.palette.map((hex, pi) => (
-                                                <div key={pi} className="w-4 h-4 rounded-full border border-zinc-700" style={{ background: hex }} title={hex} />
+                                                <div key={pi} className="w-4 h-4 rounded-full border border-[var(--kf-border-muted)]" style={{ background: hex }} title={hex} />
                                             ))}
                                         </div>
                                     </div>
@@ -241,22 +302,79 @@ function DirectionPickerModal({
                         </div>
                     )}
 
-                    {/* Custom direction */}
-                    <div className="mt-6 p-4 rounded-xl border border-zinc-800 bg-zinc-900/40">
-                        <p className="text-xs font-semibold text-zinc-400 mb-2">Or describe your own direction:</p>
-                        <textarea
-                            value={customText}
-                            onChange={(e) => setCustomText(e.target.value)}
-                            placeholder="e.g., 'Warm retro palette with cream backgrounds, burnt orange accents, rounded generous spacing, and a magazine-like editorial layout'"
-                            className="w-full h-20 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-zinc-200 p-3 resize-none focus:outline-none focus:border-purple-500/50 placeholder:text-zinc-600"
-                        />
-                        <button
-                            onClick={() => customText.trim() && onDescribe(customText.trim())}
-                            disabled={!customText.trim()}
-                            className="mt-2 h-8 px-4 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold disabled:opacity-40 flex items-center gap-1.5 transition-colors"
-                        >
-                            <Sparkles className="w-3.5 h-3.5" /> Apply Custom Direction
-                        </button>
+                    {/* Custom direction & Image upoad section */}
+                    <div className="mt-6 flex flex-col md:flex-row gap-4">
+                        {/* Custom direction */}
+                        <div className="flex-1 p-4 rounded-xl border border-[var(--kf-border)] bg-[var(--kf-surface)] flex flex-col">
+                            <p className="text-xs font-semibold text-[var(--kf-text-secondary)] mb-2">Or describe your own direction:</p>
+                            <textarea
+                                value={customText}
+                                onChange={(e) => setCustomText(e.target.value)}
+                                placeholder="e.g., 'Warm retro palette with cream backgrounds, burnt orange accents, rounded generous spacing, and a magazine-like editorial layout'"
+                                className="w-full flex-1 min-h-[80px] rounded-lg bg-[var(--kf-surface)] border border-[var(--kf-border-muted)] text-sm text-[var(--kf-text)] p-3 resize-none focus:outline-none focus:border-purple-500/50 placeholder:text-[var(--kf-text-faint)]"
+                            />
+                        </div>
+
+                        {/* Image upload */}
+                        <div className="w-full md:w-80 p-4 rounded-xl border border-[var(--kf-border)] bg-[var(--kf-surface)] flex flex-col items-start">
+                            <h4 className="text-xs font-semibold text-[var(--kf-text-secondary)] mb-1 flex items-center gap-1.5">
+                                <ImageIcon className="w-3.5 h-3.5" />
+                                Inspiration Images (Max 20)
+                            </h4>
+                            <p className="text-[10px] text-zinc-500 mb-3 leading-tight">
+                                Upload screenshots of UIs you like. AI will extract structural hints, mood, and texture (but will NOT copy them exactly).
+                            </p>
+
+                            {/* Drop zone */}
+                            <label className={`w-full h-16 rounded-lg border-2 border-dashed ${isProcessing ? 'border-purple-500/50 bg-purple-500/5' : 'border-[var(--kf-border-muted)] hover:border-purple-500/40 hover:bg-[var(--kf-badge-bg)]'} flex items-center justify-center cursor-pointer transition-colors mb-3`}>
+                                <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleFiles(e.target.files)} disabled={isProcessing} />
+                                {isProcessing ? (
+                                    <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+                                ) : (
+                                    <span className="text-xs text-[var(--kf-text-secondary)] font-medium text-center px-4">
+                                        Click or drop images here
+                                    </span>
+                                )}
+                            </label>
+
+                            {/* Image previews */}
+                            {referenceImages.length > 0 && (
+                                <div className="w-full flex flex-wrap gap-2 max-h-[140px] overflow-y-auto pr-1">
+                                    <AnimatePresence>
+                                        {referenceImages.map((img) => (
+                                            <motion.div
+                                                key={img.id}
+                                                initial={{ scale: 0.8, opacity: 0 }}
+                                                animate={{ scale: 1, opacity: 1 }}
+                                                exit={{ scale: 0.8, opacity: 0 }}
+                                                className="relative w-12 h-12 rounded border border-[var(--kf-border-muted)] bg-black overflow-hidden group/img shrink-0"
+                                            >
+                                                <img src={img.url} alt="img" className="w-full h-full object-cover opacity-80" />
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleRemoveImage(img.id); }}
+                                                    className="absolute top-0 right-0 p-0.5 bg-red-500/80 hover:bg-red-500 text-white rounded-bl opacity-0 group-hover/img:opacity-100 transition-opacity"
+                                                >
+                                                    <X className="w-3 h-3" />
+                                                </button>
+                                            </motion.div>
+                                        ))}
+                                    </AnimatePresence>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="mt-4 flex items-center justify-end gap-3 pt-4 border-t border-[var(--kf-border)]/60">
+                        {customText.trim() || referenceImages.length > 0 ? (
+                            <button
+                                onClick={() => onDescribe(customText.trim(), referenceImages.map(img => img.url))}
+                                disabled={isProcessing}
+                                className="h-9 px-5 rounded-lg bg-gradient-to-r from-purple-600 to-violet-500 hover:from-purple-500 hover:to-violet-400 text-white text-sm font-semibold flex items-center gap-1.5 shadow-lg shadow-purple-500/20"
+                            >
+                                <Sparkles className="w-4 h-4" /> Apply Custom Direction
+                            </button>
+                        ) : null}
                     </div>
                 </div>
             </motion.div>
@@ -305,34 +423,34 @@ function PreviewOverlay({
         >
             {/* Toolbar */}
             <div
-                className="h-14 bg-[#0A1020] border-b border-zinc-800/60 px-5 flex items-center justify-between shrink-0"
+                className="h-14 bg-[var(--kf-surface)] border-b border-[var(--kf-border)]/60 px-5 flex items-center justify-between shrink-0"
                 onClick={(e) => e.stopPropagation()}
             >
                 <div className="flex items-center gap-3 min-w-0">
-                    <button onClick={onClose} className="p-1.5 rounded-md hover:bg-zinc-800 text-zinc-400 hover:text-white">
+                    <button onClick={onClose} className="p-1.5 rounded-md hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]">
                         <X className="w-4 h-4" />
                     </button>
                     <div className="min-w-0">
-                        <h3 className="text-sm font-bold text-white truncate">{mockup.name}</h3>
-                        <p className="text-xs text-zinc-400 truncate">{mockup.description}</p>
+                        <h3 className="text-sm font-bold text-[var(--kf-text)] truncate">{mockup.name}</h3>
+                        <p className="text-xs text-[var(--kf-text-secondary)] truncate">{mockup.description}</p>
                     </div>
                 </div>
 
                 <div className="flex items-center gap-3">
                     {/* Device toggle */}
-                    <div className="flex items-center gap-1 bg-zinc-800/60 rounded-lg p-1">
-                        <button onClick={() => setPreviewDevice("desktop")} className={`p-1.5 rounded ${previewDevice === "desktop" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"}`}><Monitor className="w-4 h-4" /></button>
-                        <button onClick={() => setPreviewDevice("tablet")} className={`p-1.5 rounded ${previewDevice === "tablet" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"}`}><Tablet className="w-4 h-4" /></button>
-                        <button onClick={() => setPreviewDevice("mobile")} className={`p-1.5 rounded ${previewDevice === "mobile" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"}`}><Smartphone className="w-4 h-4" /></button>
+                    <div className="flex items-center gap-1 bg-[var(--kf-hover-bg)] rounded-lg p-1">
+                        <button onClick={() => setPreviewDevice("desktop")} className={`p-1.5 rounded ${previewDevice === "desktop" ? "bg-zinc-700 text-white" : "text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"}`}><Monitor className="w-4 h-4" /></button>
+                        <button onClick={() => setPreviewDevice("tablet")} className={`p-1.5 rounded ${previewDevice === "tablet" ? "bg-zinc-700 text-white" : "text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"}`}><Tablet className="w-4 h-4" /></button>
+                        <button onClick={() => setPreviewDevice("mobile")} className={`p-1.5 rounded ${previewDevice === "mobile" ? "bg-zinc-700 text-white" : "text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"}`}><Smartphone className="w-4 h-4" /></button>
                     </div>
 
-                    <button onClick={onRegenerate} disabled={isRegenerating} className="h-8 px-3 rounded-md border border-zinc-700 text-zinc-300 hover:border-purple-500/60 hover:bg-purple-500/10 text-xs flex items-center gap-1.5 disabled:opacity-40">
+                    <button onClick={onRegenerate} disabled={isRegenerating} className="h-8 px-3 rounded-md border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:border-purple-500/60 hover:bg-purple-500/10 text-xs flex items-center gap-1.5 disabled:opacity-40">
                         {isRegenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} Regenerate
                     </button>
 
                     {mockup.status === "complete" && (
                         <>
-                            <button onClick={onRevise} className="h-8 px-3 rounded-md border border-zinc-700 text-zinc-300 hover:bg-zinc-800 text-xs">Revise</button>
+                            <button onClick={onRevise} className="h-8 px-3 rounded-md border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] text-xs">Revise</button>
                             <button onClick={onApprove} className="h-8 px-3 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs flex items-center gap-1.5">
                                 <Check className="w-3.5 h-3.5" /> Approve
                             </button>
@@ -353,12 +471,12 @@ function PreviewOverlay({
             {/* Preview */}
             <div className="flex-1 overflow-auto flex items-start justify-center p-6" onClick={(e) => e.stopPropagation()}>
                 {mockup.component_code ? (
-                    <div className={`${deviceContainerClass[previewDevice]} rounded-xl border border-zinc-700 bg-zinc-950 overflow-hidden shadow-2xl`}>
-                        <div className="h-8 bg-zinc-900 border-b border-zinc-700 flex items-center px-3 gap-2">
+                    <div className={`${deviceContainerClass[previewDevice]} rounded-xl border border-[var(--kf-border-muted)] bg-[var(--kf-bg)] overflow-hidden shadow-2xl`}>
+                        <div className="h-8 bg-[var(--kf-surface)] border-b border-[var(--kf-border-muted)] flex items-center px-3 gap-2">
                             <div className="w-2.5 h-2.5 rounded-full bg-red-400" />
                             <div className="w-2.5 h-2.5 rounded-full bg-amber-400" />
                             <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                            <span className="text-[11px] text-zinc-400 ml-2">{mockup.name}</span>
+                            <span className="text-[11px] text-[var(--kf-text-secondary)] ml-2">{mockup.name}</span>
                         </div>
                         <iframe
                             title={`Preview: ${mockup.name}`}
@@ -384,6 +502,7 @@ export default function DesignStudioPage() {
     const { projectId } = useParams<{ projectId: string }>();
     const navigate = useNavigate();
     const { getAccessToken, signOut } = useAuth();
+    const { theme } = useTheme();
 
     // Core state
     const [mockups, setMockups] = useState<Mockup[]>([]);
@@ -403,6 +522,7 @@ export default function DesignStudioPage() {
     const [loadingDirections, setLoadingDirections] = useState(false);
     const directionsAbortRef = useRef<AbortController | null>(null);
     const [pendingDirection, setPendingDirection] = useState<string | null>(null);
+    const [pendingReferenceImages, setPendingReferenceImages] = useState<string[]>([]);
 
     // Add screen
     const [addScreenName, setAddScreenName] = useState("");
@@ -465,8 +585,9 @@ export default function DesignStudioPage() {
             if (resp.ok) {
                 const data = await resp.json();
                 const next: Mockup[] = data.mockups || [];
-                setMockups(next);
+
                 prevStatusRef.current = Object.fromEntries(next.map((m: Mockup) => [m.id, m.status]));
+                setMockups(next);
 
                 // Auto-resume polling if backend is actively generating
                 const activelyGenerating = next.some((m: Mockup) => m.status === "generating");
@@ -609,9 +730,11 @@ export default function DesignStudioPage() {
 
     /* ─── Handlers ────────────────────────────────────────────────── */
 
-    const handleGenerateAll = async (direction?: string) => {
-        const directionToUse = direction || pendingDirection || null;
+    const handleGenerateAll = async (overrideDirection?: string, overrideImages?: string[]) => {
+        const directionToUse = overrideDirection !== undefined ? overrideDirection : pendingDirection;
+        const imagesToUse = overrideImages !== undefined ? overrideImages : pendingReferenceImages;
         setPendingDirection(null);
+        setPendingReferenceImages([]);
         setGenerating(true);
         setPhase("generating");
         setError(null);
@@ -626,7 +749,7 @@ export default function DesignStudioPage() {
             const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/design/generate-all`, {
                 method: "POST",
                 headers: { ...headers, "Content-Type": "application/json" },
-                body: JSON.stringify({ design_mode: "ai_free", direction: directionToUse }),
+                body: JSON.stringify({ design_mode: "ai_free", direction: directionToUse, reference_images: imagesToUse, theme }),
             });
             handleApi401(resp);
             if (!resp.ok) throw new Error("Failed to start design generation");
@@ -808,20 +931,28 @@ export default function DesignStudioPage() {
         setLoadingDirections(false);
     };
 
-    const handlePickDirection = (d: Direction) => {
+    const handlePickDirection = (d: Direction, images: string[] = []) => {
         setShowDirections(false);
         setDirections([]);
         const directionDesc = `Direction: ${d.name}\nDescription: ${d.description}\nPalette: ${d.palette.join(", ")}\nStyle: ${d.style_keywords.join(", ")}\nLayout: ${d.layout_approach}`;
-        handleGenerateAll(directionDesc);
+        setPendingDirection(directionDesc);
+        setPendingReferenceImages(images);
+        handleGenerateAll(directionDesc, images);
     };
 
-    const handleDescribeDirection = (text: string) => {
+    const handleDescribeDirection = (text: string, images: string[] = []) => {
         setShowDirections(false);
         setDirections([]);
-        handleGenerateAll(`Custom direction from user: ${text}`);
+        const directionText = text ? `Custom direction from user: ${text}` : null;
+        setPendingDirection(directionText);
+        setPendingReferenceImages(images);
+        handleGenerateAll(directionText || undefined, images);
     };
 
     /* ─── Derived ─────────────────────────────────────────────────── */
+
+    const isDark = theme === "dark";
+    const PRIORITY_COLORS = isDark ? PRIORITY_COLORS_DARK : PRIORITY_COLORS_LIGHT;
 
     const approvedCount = mockups.filter((m) => m.status === "approved").length;
     const generatedCount = mockups.filter((m) => m.status === "complete" || m.status === "approved").length;
@@ -848,25 +979,25 @@ export default function DesignStudioPage() {
      * ═══════════════════════════════════════════════════════════════════════ */
 
     return (
-        <div className="h-[calc(100vh-65px)] bg-[#070913] text-zinc-100 flex flex-col overflow-hidden">
+        <div className="h-[calc(100vh-65px)] bg-[var(--kf-bg)] text-[var(--kf-text)] flex flex-col overflow-hidden">
             {/* ── Top bar ──────────────────────────────────────────────── */}
-            <div className="h-14 border-b border-zinc-800/60 px-5 flex items-center justify-between bg-[#0A1020] shrink-0">
+            <div className="h-14 border-b border-[var(--kf-border)]/60 px-5 flex items-center justify-between bg-[var(--kf-surface)] shrink-0">
                 <div className="flex items-center gap-3">
                     <button
                         onClick={() => navigate(`/project/${projectId}`)}
-                        className="flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-zinc-700 text-zinc-300 hover:bg-zinc-800 text-xs transition-colors"
+                        className="flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] text-xs transition-colors"
                     >
                         <ArrowLeft className="w-3.5 h-3.5" /> Project
                     </button>
                     <div className="flex items-center gap-2">
                         <Palette className="w-4 h-4 text-purple-300" />
-                        <h2 className="text-sm font-bold">Design Studio</h2>
+                        <h2 className="text-sm font-bold text-[var(--kf-text)]">Design Studio</h2>
                     </div>
                 </div>
 
                 <div className="flex items-center gap-3">
                     {/* Progress badge */}
-                    <span className="text-xs text-zinc-400">
+                    <span className="text-xs text-[var(--kf-text-secondary)]">
                         {approvedCount} approved &middot; {generatedCount}/{mockups.length || 0} generated
                     </span>
 
@@ -888,7 +1019,7 @@ export default function DesignStudioPage() {
 
                     <button
                         onClick={() => navigate("/")}
-                        className="h-8 px-2.5 rounded-md border border-zinc-700 text-zinc-300 hover:bg-zinc-800 text-xs flex items-center gap-1.5"
+                        className="h-8 px-2.5 rounded-md border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] text-xs flex items-center gap-1.5"
                     >
                         <LayoutGrid className="w-3.5 h-3.5" /> All Projects
                     </button>
@@ -913,7 +1044,7 @@ export default function DesignStudioPage() {
                             >
                                 <Compass className="w-12 h-12 text-purple-400" />
                             </motion.div>
-                            <p className="text-zinc-300 mt-4 text-sm font-medium">Discovering screens...</p>
+                            <p className="text-[var(--kf-text-secondary)] mt-4 text-sm font-medium">Discovering screens...</p>
                             <p className="text-zinc-600 text-xs mt-1">AI is analyzing your product to determine the right screens</p>
 
                             {/* Progress timeline */}
@@ -946,11 +1077,11 @@ export default function DesignStudioPage() {
                             className="h-full flex flex-col"
                         >
                             {/* Discovery header */}
-                            <div className="px-6 pt-5 pb-4 border-b border-zinc-800/40">
+                            <div className="px-6 pt-5 pb-4 border-b border-[var(--kf-border)]/40">
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <h3 className="text-lg font-bold text-white">Screens Discovered</h3>
-                                        <p className="text-xs text-zinc-400 mt-1">
+                                        <h3 className="text-lg font-bold text-[var(--kf-text)]">Screens Discovered</h3>
+                                        <p className="text-xs text-[var(--kf-text-secondary)] mt-1">
                                             AI identified {mockups.length} screens for your MVP. Edit, add or remove before generating.
                                         </p>
                                     </div>
@@ -972,7 +1103,7 @@ export default function DesignStudioPage() {
                                                 <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${PRIORITY_COLORS[priority]}`}>
                                                     {label}
                                                 </span>
-                                                <div className="h-px flex-1 bg-zinc-800/60" />
+                                                <div className="h-px flex-1 bg-[var(--kf-hover-bg)]" />
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                                                 {items.map((m, i) => (
@@ -981,10 +1112,10 @@ export default function DesignStudioPage() {
                                                         initial={{ opacity: 0, y: 10 }}
                                                         animate={{ opacity: 1, y: 0 }}
                                                         transition={{ delay: i * 0.05 }}
-                                                        className="group rounded-xl border border-zinc-800/60 bg-zinc-900/40 hover:bg-zinc-800/40 hover:border-zinc-700 p-4 transition-all"
+                                                        className="group rounded-xl border border-[var(--kf-border)]/60 bg-[var(--kf-surface)] hover:bg-[var(--kf-badge-bg)] hover:border-[var(--kf-border-muted)] p-4 transition-all"
                                                     >
                                                         <div className="flex items-start justify-between mb-2">
-                                                            <h4 className="text-sm font-bold text-white">{m.name}</h4>
+                                                            <h4 className="text-sm font-bold text-[var(--kf-text)]">{m.name}</h4>
                                                             <button
                                                                 onClick={() => handleDelete(m.id, m.name)}
                                                                 className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/10 text-zinc-600 hover:text-red-400 transition-all"
@@ -992,7 +1123,7 @@ export default function DesignStudioPage() {
                                                                 <Trash2 className="w-3 h-3" />
                                                             </button>
                                                         </div>
-                                                        <p className="text-xs text-zinc-400 line-clamp-2 mb-3">{m.description}</p>
+                                                        <p className="text-xs text-[var(--kf-text-secondary)] line-clamp-2 mb-3">{m.description}</p>
                                                         <div className="flex items-center justify-between">
                                                             <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded border ${PRIORITY_COLORS[m.priority]}`}>
                                                                 {m.priority}
@@ -1013,7 +1144,7 @@ export default function DesignStudioPage() {
                             </div>
 
                             {/* Bottom dock */}
-                            <div className="border-t border-zinc-800/60 bg-[#0A1020] px-6 py-3 flex items-center gap-3 shrink-0">
+                            <div className="border-t border-[var(--kf-border)]/60 bg-[var(--kf-surface)] px-6 py-3 flex items-center gap-3 shrink-0">
                                 {/* Add screen input */}
                                 <div className="flex items-center gap-2 flex-1 max-w-md">
                                     <Plus className="w-4 h-4 text-zinc-500 shrink-0" />
@@ -1023,12 +1154,12 @@ export default function DesignStudioPage() {
                                         onChange={(e) => setAddScreenName(e.target.value)}
                                         onKeyDown={(e) => e.key === "Enter" && handleAddScreen()}
                                         placeholder="Add a screen..."
-                                        className="flex-1 h-8 bg-zinc-900 border border-zinc-700 rounded-lg px-3 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50"
+                                        className="flex-1 h-8 bg-[var(--kf-surface)] border border-[var(--kf-border-muted)] rounded-lg px-3 text-xs text-[var(--kf-text)] placeholder:text-[var(--kf-text-faint)] focus:outline-none focus:border-purple-500/50"
                                     />
                                     <button
                                         onClick={handleAddScreen}
                                         disabled={!addScreenName.trim()}
-                                        className="h-8 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 disabled:opacity-30 transition-colors"
+                                        className="h-8 px-3 rounded-lg bg-[var(--kf-badge-bg)] hover:bg-[var(--kf-hover-bg)] text-xs text-[var(--kf-text-secondary)] disabled:opacity-30 transition-colors"
                                     >
                                         Add
                                     </button>
@@ -1036,12 +1167,15 @@ export default function DesignStudioPage() {
 
                                 <div className="flex-1" />
 
-                                {/* Pending direction badge */}
-                                {pendingDirection && (
+                                {/* Pending direction/images badge */}
+                                {(pendingDirection || pendingReferenceImages.length > 0) && (
                                     <div className="flex items-center gap-2 h-9 px-3 rounded-lg bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs">
                                         <Compass className="w-3.5 h-3.5 shrink-0" />
-                                        <span className="truncate max-w-[180px]">{pendingDirection.split("\n")[0].replace("Direction: ", "").replace("Custom direction from user: ", "")}</span>
-                                        <button onClick={() => setPendingDirection(null)} className="p-0.5 rounded hover:bg-purple-500/20">
+                                        <span className="truncate max-w-[180px]">
+                                            {pendingDirection ? pendingDirection.split("\n")[0].replace("Direction: ", "").replace("Custom direction from user: ", "") : `${pendingReferenceImages.length} images `}
+                                            {pendingDirection && pendingReferenceImages.length > 0 && ` + ${pendingReferenceImages.length} images`}
+                                        </span>
+                                        <button onClick={() => { setPendingDirection(null); setPendingReferenceImages([]); }} className="p-0.5 rounded hover:bg-purple-500/20">
                                             <X className="w-3 h-3" />
                                         </button>
                                     </div>
@@ -1050,7 +1184,7 @@ export default function DesignStudioPage() {
                                 {/* New direction */}
                                 <button
                                     onClick={handleOpenDirections}
-                                    className="h-9 px-4 rounded-lg border border-zinc-700 hover:border-purple-500/40 text-zinc-300 hover:text-purple-300 text-xs font-medium flex items-center gap-2 transition-colors"
+                                    className="h-9 px-4 rounded-lg border border-[var(--kf-border-muted)] hover:border-purple-500/40 text-[var(--kf-text-secondary)] hover:text-purple-300 text-xs font-medium flex items-center gap-2 transition-colors"
                                 >
                                     <Compass className="w-3.5 h-3.5" /> {pendingDirection ? "Change Direction" : "New Design Direction"}
                                 </button>
@@ -1077,13 +1211,13 @@ export default function DesignStudioPage() {
                             className="h-full flex flex-col"
                         >
                             {/* Progress header */}
-                            <div className="px-6 pt-5 pb-4 border-b border-zinc-800/40">
+                            <div className="px-6 pt-5 pb-4 border-b border-[var(--kf-border)]/40">
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-3">
                                         <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
                                         <div>
-                                            <h3 className="text-lg font-bold text-white">Generating Designs</h3>
-                                            <p className="text-xs text-zinc-400 mt-0.5">
+                                            <h3 className="text-lg font-bold text-[var(--kf-text)]">Generating Designs</h3>
+                                            <p className="text-xs text-[var(--kf-text-secondary)] mt-0.5">
                                                 {generatedCount}/{mockups.length} complete &mdash; First screen is the north star
                                             </p>
                                         </div>
@@ -1097,7 +1231,7 @@ export default function DesignStudioPage() {
                                 </div>
 
                                 {/* Progress bar */}
-                                <div className="mt-3 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                                <div className="mt-3 h-1.5 rounded-full bg-[var(--kf-badge-bg)] overflow-hidden">
                                     <motion.div
                                         className="h-full bg-gradient-to-r from-purple-500 to-violet-400 rounded-full"
                                         initial={{ width: 0 }}
@@ -1120,11 +1254,11 @@ export default function DesignStudioPage() {
                                                 animate={{ opacity: 1, scale: 1 }}
                                                 transition={{ delay: i * 0.04 }}
                                                 className={`rounded-xl border overflow-hidden transition-all ${
-                                                    isDone ? "border-zinc-700/60 bg-zinc-900/40" : "border-zinc-800/40 bg-zinc-900/20"
+                                                    isDone ? "border-[var(--kf-border)] bg-[var(--kf-surface)]" : "border-[var(--kf-border)]/40 bg-[var(--kf-surface)]"
                                                 }`}
                                             >
                                                 {/* Thumbnail area */}
-                                                <div className="h-48 relative bg-zinc-950 overflow-hidden">
+                                                <div className="h-48 relative bg-[var(--kf-bg)] overflow-hidden">
                                                     {isDone && m.component_code ? (
                                                         <ScaledHtmlPreview
                                                             title={m.name}
@@ -1156,9 +1290,9 @@ export default function DesignStudioPage() {
                                                 </div>
 
                                                 {/* Info bar */}
-                                                <div className="px-3 py-2.5 border-t border-zinc-800/40">
+                                                <div className="px-3 py-2.5 border-t border-[var(--kf-border)]/40">
                                                     <div className="flex items-center justify-between">
-                                                        <span className="text-xs font-semibold text-white truncate">{m.name}</span>
+                                                        <span className="text-xs font-semibold text-[var(--kf-text)] truncate">{m.name}</span>
                                                         {isDone && (
                                                             <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-0.5">
                                                                 <Check className="w-2.5 h-2.5" /> Done
@@ -1187,24 +1321,24 @@ export default function DesignStudioPage() {
                             className="h-full flex flex-col"
                         >
                             {/* Gallery header */}
-                            <div className="px-6 pt-5 pb-4 border-b border-zinc-800/40">
+                            <div className="px-6 pt-5 pb-4 border-b border-[var(--kf-border)]/40">
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <h3 className="text-lg font-bold text-white">Design Gallery</h3>
-                                        <p className="text-xs text-zinc-400 mt-1">
+                                        <h3 className="text-lg font-bold text-[var(--kf-text)]">Design Gallery</h3>
+                                        <p className="text-xs text-[var(--kf-text-secondary)] mt-1">
                                             {generatedCount} designs generated &middot; Click to preview and refine
                                         </p>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <button
                                             onClick={() => setPhase("discovery")}
-                                            className="h-8 px-3 rounded-md border border-zinc-700 text-zinc-300 hover:bg-zinc-800 text-xs flex items-center gap-1.5"
+                                            className="h-8 px-3 rounded-md border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] text-xs flex items-center gap-1.5"
                                         >
                                             <Eye className="w-3.5 h-3.5" /> View Screens
                                         </button>
                                         <button
                                             onClick={handleOpenDirections}
-                                            className="h-8 px-3 rounded-md border border-zinc-700 hover:border-purple-500/40 text-zinc-300 hover:text-purple-300 text-xs flex items-center gap-1.5 transition-colors"
+                                            className="h-8 px-3 rounded-md border border-[var(--kf-border-muted)] hover:border-purple-500/40 text-[var(--kf-text-secondary)] hover:text-purple-300 text-xs flex items-center gap-1.5 transition-colors"
                                         >
                                             <Compass className="w-3.5 h-3.5" /> New Direction
                                         </button>
@@ -1231,15 +1365,15 @@ export default function DesignStudioPage() {
                                                 initial={{ opacity: 0, y: 15 }}
                                                 animate={{ opacity: 1, y: 0 }}
                                                 transition={{ delay: i * 0.05 }}
-                                                className={`group rounded-xl border overflow-hidden bg-zinc-900/40 transition-all cursor-pointer hover:shadow-xl hover:shadow-purple-500/5 ${
+                                                className={`group rounded-xl border overflow-hidden bg-[var(--kf-surface)] transition-all cursor-pointer hover:shadow-xl hover:shadow-purple-500/5 ${
                                                     m.status === "approved"
                                                         ? "border-emerald-500/30 hover:border-emerald-500/50"
-                                                        : "border-zinc-800/60 hover:border-zinc-600"
+                                                        : "border-[var(--kf-border)]/60 hover:border-[var(--kf-border-muted)]"
                                                 }`}
                                                 onClick={() => isDone && setExpandedMockupId(m.id)}
                                             >
                                                 {/* Thumbnail */}
-                                                <div className="h-56 relative bg-zinc-950 overflow-hidden">
+                                                <div className="h-56 relative bg-[var(--kf-bg)] overflow-hidden">
                                                     {isDone && m.component_code ? (
                                                         <ScaledHtmlPreview
                                                             title={m.name}
@@ -1258,7 +1392,7 @@ export default function DesignStudioPage() {
                                                             <span className="text-red-400 text-xs mb-2">Generation failed</span>
                                                             <button
                                                                 onClick={(e) => { e.stopPropagation(); handleRegenerateSingle(m.id); }}
-                                                                className="h-7 px-3 rounded-md border border-zinc-700 text-zinc-300 text-[11px] flex items-center gap-1"
+                                                                className="h-7 px-3 rounded-md border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-[11px] flex items-center gap-1"
                                                             >
                                                                 <RefreshCw className="w-3 h-3" /> Retry
                                                             </button>
@@ -1303,14 +1437,14 @@ export default function DesignStudioPage() {
                                                 </div>
 
                                                 {/* Info bar */}
-                                                <div className="px-4 py-3 border-t border-zinc-800/40">
+                                                <div className="px-4 py-3 border-t border-[var(--kf-border)]/40">
                                                     <div className="flex items-center justify-between mb-1">
-                                                        <h4 className="text-sm font-bold text-white truncate">{m.name}</h4>
+                                                        <h4 className="text-sm font-bold text-[var(--kf-text)] truncate">{m.name}</h4>
                                                         <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded border ${PRIORITY_COLORS[m.priority]}`}>
                                                             {m.priority}
                                                         </span>
                                                     </div>
-                                                    <p className="text-xs text-zinc-400 line-clamp-1 mb-2">{m.description}</p>
+                                                    <p className="text-xs text-[var(--kf-text-secondary)] line-clamp-1 mb-2">{m.description}</p>
 
                                                     {/* Actions */}
                                                     <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1324,7 +1458,7 @@ export default function DesignStudioPage() {
                                                         ) : (
                                                             <button
                                                                 onClick={(e) => { e.stopPropagation(); handleRegenerateSingle(m.id); }}
-                                                                className="h-6 px-2 rounded text-[10px] border border-zinc-700 text-zinc-400 hover:text-white flex items-center gap-1"
+                                                                className="h-6 px-2 rounded text-[10px] border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] flex items-center gap-1"
                                                             >
                                                                 <RefreshCw className="w-2.5 h-2.5" /> Regen
                                                             </button>
@@ -1340,7 +1474,7 @@ export default function DesignStudioPage() {
                                                         {isDone && (
                                                             <button
                                                                 onClick={(e) => { e.stopPropagation(); handleRequestRevision(m.id); }}
-                                                                className="h-6 px-2 rounded text-[10px] border border-zinc-700 text-zinc-400 hover:text-white flex items-center gap-1"
+                                                                className="h-6 px-2 rounded text-[10px] border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] flex items-center gap-1"
                                                             >
                                                                 <MessageSquare className="w-2.5 h-2.5" /> Revise
                                                             </button>
@@ -1361,7 +1495,7 @@ export default function DesignStudioPage() {
                             </div>
 
                             {/* Bottom dock */}
-                            <div className="border-t border-zinc-800/60 bg-[#0A1020] px-6 py-3 flex items-center gap-3 shrink-0">
+                            <div className="border-t border-[var(--kf-border)]/60 bg-[var(--kf-surface)] px-6 py-3 flex items-center gap-3 shrink-0">
                                 <div className="flex items-center gap-2 flex-1 max-w-md">
                                     <Plus className="w-4 h-4 text-zinc-500 shrink-0" />
                                     <input
@@ -1370,12 +1504,12 @@ export default function DesignStudioPage() {
                                         onChange={(e) => setAddScreenName(e.target.value)}
                                         onKeyDown={(e) => e.key === "Enter" && handleAddScreen()}
                                         placeholder="Add a screen..."
-                                        className="flex-1 h-8 bg-zinc-900 border border-zinc-700 rounded-lg px-3 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50"
+                                        className="flex-1 h-8 bg-[var(--kf-surface)] border border-[var(--kf-border-muted)] rounded-lg px-3 text-xs text-[var(--kf-text)] placeholder:text-[var(--kf-text-faint)] focus:outline-none focus:border-purple-500/50"
                                     />
                                     <button
                                         onClick={handleAddScreen}
                                         disabled={!addScreenName.trim()}
-                                        className="h-8 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 disabled:opacity-30"
+                                        className="h-8 px-3 rounded-lg bg-[var(--kf-badge-bg)] hover:bg-[var(--kf-hover-bg)] text-xs text-[var(--kf-text-secondary)] disabled:opacity-30"
                                     >
                                         Add
                                     </button>
@@ -1425,7 +1559,7 @@ export default function DesignStudioPage() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 20 }}
-                        className="fixed bottom-6 right-6 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-sm flex items-center gap-3 z-50"
+                        className="fixed bottom-6 right-6 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-3 z-50"
                     >
                         {error}
                         <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300">

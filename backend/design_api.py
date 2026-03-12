@@ -72,6 +72,93 @@ def _build_litellm_kwargs(model_config: dict, messages: list, **extra) -> dict:
     return kwargs
 
 
+def _should_retry_design_with_env_fallback(exc: Exception) -> bool:
+    text = str(exc).lower()
+    retry_markers = (
+        "rate limit",
+        "ratelimit",
+        "quota exceeded",
+        '"code": 429',
+        "authentication",
+        "invalid api key",
+        "permission denied",
+        "service unavailable",
+        "overloaded",
+        "resource exhausted",
+        "timed out",
+        "timeout",
+        "provider not provided",
+        "not found. passed model=",
+        "connection error",
+        "connection refused",
+    )
+    return any(marker in text for marker in retry_markers)
+
+
+async def _design_acompletion(
+    model_config: dict,
+    messages: list,
+    *,
+    user_id: str | None = None,
+    reference_images: list[str] | None = None,
+    **extra,
+):
+    """Call LiteLLM for design tasks with automatic server-env fallback on provider failure."""
+    if reference_images:
+        # If reference images are provided, find the last user message and convert it to a multimodal message
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                original_content = msg.get("content", "")
+                new_content = []
+                for img_b64 in reference_images:
+                    new_content.append({ # type: ignore
+                        "type": "image_url",
+                        "image_url": {"url": img_b64}
+                    })
+
+                if isinstance(original_content, str):
+                    new_content.append({"type": "text", "text": original_content})
+                else:
+                    new_content.extend(original_content)
+
+                new_content.append({
+                    "type": "text",
+                    "text": "\n\nCRITICAL MANDATE: The images above are for structural and stylistic inspiration ONLY. You MUST NOT copy the text, brand names, or specific content from these images. You MUST design the screen requested in the text prompt using your own layout, adapted entirely to the specified product. If your output looks exactly like the reference image, it is a FAILURE. Create a unique, distinct variation."
+                })
+                msg["content"] = new_content
+                break
+
+    primary_kwargs = _build_litellm_kwargs(model_config, messages, **extra)
+    try:
+        return await litellm.acompletion(**primary_kwargs)
+    except Exception as exc:
+        if not user_id or not _should_retry_design_with_env_fallback(exc):
+            raise
+
+        from model_resolver import _env_fallback
+
+        fallback_model = _env_fallback()
+        if fallback_model.get("error"):
+            raise
+
+        same_provider = (
+            fallback_model.get("model") == model_config.get("model")
+            and fallback_model.get("api_key") == model_config.get("api_key")
+            and fallback_model.get("api_base") == model_config.get("api_base")
+        )
+        if same_provider:
+            raise
+
+        provider_name = model_config.get("provider_name") or model_config.get("model") or "configured provider"
+        fallback_name = fallback_model.get("provider_name") or fallback_model.get("model") or "server fallback"
+        print(
+            f"⚠️ Design model fallback: {provider_name} failed ({exc}). "
+            f"Retrying with {fallback_name}."
+        )
+        fallback_kwargs = _build_litellm_kwargs(fallback_model, messages, **extra)
+        return await litellm.acompletion(**fallback_kwargs)
+
+
 # ── Deterministic brand palette selector ─────────────────────────────────────
 
 _PALETTES = [
@@ -407,19 +494,31 @@ _LAYOUT_ARCHETYPES = [
 
 
 def _derive_design_dna(project_context: str) -> dict:
-    """Deterministically derive a full 8-dimension design DNA from the product name.
+    """Deterministically derive a full 8-dimension design DNA from the project.
 
-    Returns a dict with all design specs. Same product → same DNA every time.
-    Different products get visually distinct identities.
+    Returns a dict with all design specs. Same project → same DNA every time.
+    Different projects get visually distinct identities.
+
+    The hash seed incorporates product name, description, AND target audience
+    so two projects with the same name but different purposes get completely
+    different visual identities.
     """
     import hashlib
 
     product_name = ""
+    description = ""
+    audience = ""
     for line in (project_context or "").splitlines():
-        if line.lower().startswith("product:"):
+        low = line.lower()
+        if low.startswith("product:"):
             product_name = line.split(":", 1)[-1].strip()
-            break
-    seed = product_name.lower() if product_name else "default"
+        elif low.startswith("description:"):
+            description = line.split(":", 1)[-1].strip()
+        elif low.startswith("target audience:"):
+            audience = line.split(":", 1)[-1].strip()
+    # Combine all three fields so even identically-named projects with
+    # different descriptions / audiences get distinct design DNA
+    seed = f"{product_name}|{description}|{audience}".lower().strip() if product_name else "default"
     h = hashlib.md5(seed.encode()).hexdigest()
 
     # Use different byte ranges so each dimension is independent
@@ -608,6 +707,7 @@ Status badges:   {c.get('badge_css', 'background: color-mix(in srgb, var(--accen
 - NEVER introduce purple (#7c5cff, #6f59ff, #8b5cf6) unless --primary above is already purple
 - FOLLOW the macro layout archetype (#7) — avoid uniform 3/4-column card grids
 - NO lorem ipsum — all copy must be specific to this product
+- UNIQUENESS IS MANDATORY — this product must look NOTHING like any other app. Derive every visual decision (hero composition, content layout, illustration metaphors, section ordering, CTA placement) from THIS product's specific context, audience, and industry. Never fall back on common SaaS/startup template patterns.
 ══════════════════════════════════════════════════════
 """
 
@@ -617,7 +717,13 @@ def _pick_palette(project_context: str) -> dict:
     return _derive_design_dna(project_context)["palette"]
 
 
-def _build_project_context(project: Project, cdo_analysis: CSuiteAnalysis | None, db=None) -> str:
+def _build_project_context(
+    project: Project, 
+    cdo_analysis: CSuiteAnalysis | None, 
+    db=None,
+    direction: str | None = None,
+    reference_images: list[str] | None = None,
+) -> str:
     idea_context = ""
     if project.idea and project.idea.content:
         idea_context = project.idea.content
@@ -635,8 +741,12 @@ def _build_project_context(project: Project, cdo_analysis: CSuiteAnalysis | None
             Artifact.status == AgentStatus.complete,
         ).first()
         if dsf and dsf.content:
+            print(f"BUILD PROJECT CONTEXT DIRECTION = {direction!r}")
             if isinstance(dsf.content, dict):
-                raw = dsf.content.get("master") or dsf.content.get("text") or ""
+                if direction or reference_images:
+                    raw = dsf.content.get("text") or ""
+                else:
+                    raw = dsf.content.get("master") or dsf.content.get("text") or ""
             else:
                 raw = str(dsf.content)
             if raw and raw.strip():
@@ -706,7 +816,7 @@ Then add 2-4 more product-specific screens as important or nice_to_have."""
     if not screens:
         screens = [
             {"name": "Landing Page", "description": "Main marketing landing page with hero, features, testimonials, pricing, CTA, and footer", "priority": "critical"},
-            {"name": "Login / Register", "description": "Authentication pages with login and signup forms, mock auth flow", "priority": "critical"},
+            {"name": "Login / Register", "description": "Authentication pages with beautiful login and signup forms", "priority": "critical"},
             {"name": "Dashboard", "description": "User dashboard with sidebar navigation, KPI metrics, activity feed, and data tables", "priority": "critical"},
             {"name": "Settings", "description": "User settings and preferences", "priority": "important"},
         ]
@@ -779,10 +889,10 @@ def _fallback_mockup_html_LEGACY(project_name: str, screen_desc: str) -> str:
     if variant == "auth":
         action_text = "Sign Up" if "sign up" in title.lower() else "Sign In"
         return f"""<!DOCTYPE html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"UTF-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{title}</title>
   <style>
     :root {{ --bg:#0a0d1a; --panel:#121832; --border:#2d3a66; --text:#e8eeff; --muted:#9db0de; --primary:#7c5cff; --secondary:#20305a; }}
@@ -805,24 +915,24 @@ def _fallback_mockup_html_LEGACY(project_name: str, screen_desc: str) -> str:
   </style>
 </head>
 <body>
-  <main class=\"shell\">
-    <section class=\"promo\">
-      <div class=\"badge\">{project_name}</div>
+  <main class="shell">
+    <section class="promo">
+      <div class="badge">{project_name}</div>
       <h1>{title}</h1>
       <p>{subtitle or "Authenticate quickly and continue your workflow without interruption."}</p>
-      <div class=\"points\">
+      <div class="points">
         <div>Secure email and password authentication</div>
         <div>Google OAuth for faster onboarding</div>
         <div>Session persistence across devices</div>
       </div>
     </section>
-    <section class=\"form\">
-      <div><label>Email</label><input type=\"email\" placeholder=\"you@company.com\" /></div>
-      <div><label>Password</label><input type=\"password\" placeholder=\"Enter your password\" /></div>
-      <div class=\"row\"><span><input type=\"checkbox\" style=\"height:auto;width:auto;vertical-align:middle;margin-right:6px\" />Remember me</span><span>Forgot password?</span></div>
-      <button class=\"btn primary\">{action_text}</button>
-      <button class=\"btn\">Continue with Google</button>
-      <div class=\"foot\">No account yet? Create one</div>
+    <section class="form">
+      <div><label>Email</label><input type="email" placeholder="you@company.com" /></div>
+      <div><label>Password</label><input type="password" placeholder="Enter your password" /></div>
+      <div class="row"><span><input type="checkbox" style="height:auto;width:auto;vertical-align:middle;margin-right:6px" />Remember me</span><span>Forgot password?</span></div>
+      <button class="btn primary">Get Started</button>
+      <button class="btn">Continue with Google</button>
+      <div class="foot">No account yet? Create one</div>
     </section>
   </main>
 </body>
@@ -830,10 +940,10 @@ def _fallback_mockup_html_LEGACY(project_name: str, screen_desc: str) -> str:
 
     if variant == "landing":
         return f"""<!DOCTYPE html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"UTF-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{title}</title>
   <style>
     :root {{ --bg:#080b18; --panel:#111934; --border:#2a3b6b; --text:#ecf0ff; --muted:#9aabd8; --primary:#6f59ff; --accent:#38c993; }}
@@ -841,8 +951,8 @@ def _fallback_mockup_html_LEGACY(project_name: str, screen_desc: str) -> str:
     body {{ margin:0; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:radial-gradient(1400px 700px at 75% -15%,#2f2d8a 0%,transparent 62%), var(--bg); color:var(--text); }}
     .wrap {{ width:min(1120px,100%); margin:0 auto; padding:22px; }}
     .top {{ display:flex; justify-content:space-between; align-items:center; }}
-    .btn {{ height:40px; border-radius:10px; border:1px solid var(--border); background:#162349; color:var(--text); padding:0 14px; font-weight:600; }}
-    .btn.primary {{ border:0; background:linear-gradient(90deg,#6f59ff,#4f85ff); }}
+    .btn {{ border:1px solid var(--border); background:#151c33; color:var(--text); border-radius:10px; padding:10px 14px; font-weight:600; font-size:13px; }}
+    .btn.primary {{ background:linear-gradient(90deg,var(--primary),#5e7bff); border:0; }}
     .hero {{ display:grid; grid-template-columns:1.2fr .8fr; gap:18px; margin-top:20px; }}
     .card {{ border:1px solid var(--border); border-radius:16px; background:rgba(17,25,52,.78); padding:20px; }}
     h1 {{ margin:8px 0 10px; font-size:48px; line-height:1.05; }}
@@ -856,42 +966,42 @@ def _fallback_mockup_html_LEGACY(project_name: str, screen_desc: str) -> str:
   </style>
 </head>
 <body>
-  <div class=\"wrap\">
-    <header class=\"top\">
+  <div class="wrap">
+    <header class="top">
       <strong>{project_name}</strong>
-      <div style=\"display:flex;gap:8px\"><button class=\"btn\">View Demo</button><button class=\"btn primary\">Start Free</button></div>
+      <div style="display:flex;gap:8px;"><button class="btn">Secondary</button><button class="btn primary">Primary Action</button></div>
     </header>
-    <section class=\"hero\">
-      <article class=\"card\">
-        <div style=\"font-size:12px;color:#b4c5f7\">Launch Faster</div>
+    <section class="hero">
+      <article class="card">
+        <div style="font-size:12px;color:#b4c5f7">Launch Faster</div>
         <h1>{title}</h1>
         <p>{subtitle or "A high-conversion landing experience with clear value messaging, trust signals, and direct CTAs."}</p>
-        <div class=\"cta\"><button class=\"btn primary\">Get Started</button><button class=\"btn\">Book a Demo</button></div>
+        <div class="cta"><button class="btn primary">Get Started</button><button class="btn">Book a Demo</button></div>
       </article>
-      <aside class=\"card\">
-        <h3 style=\"margin:0 0 6px\">Trusted by product teams</h3>
+      <aside class="card">
+        <h3 style="margin:0 0 6px">Trusted by product teams</h3>
         <p>Used by startups and enterprise teams to ship polished experiences quickly.</p>
-        <div class=\"quote\">\"Setup took minutes and the conversion uplift was immediate.\"</div>
+        <div class="quote">\"Setup took minutes and the conversion uplift was immediate.\"</div>
       </aside>
     </section>
-    <section class=\"grid\">
-      <article class=\"card feature\"><h3>Faster onboarding</h3><p>Guided setup that gets users to value quickly.</p></article>
-      <article class=\"card feature\"><h3>Actionable analytics</h3><p>See conversion blockers and fix friction fast.</p></article>
-      <article class=\"card feature\"><h3>Reusable components</h3><p>Maintain visual consistency at scale.</p></article>
+    <section class="grid">
+      <article class="card feature"><h3>Faster onboarding</h3><p>Guided setup that gets users to value quickly.</p></article>
+      <article class="card feature"><h3>Actionable analytics</h3><p>See conversion blockers and fix friction fast.</p></article>
+      <article class="card feature"><h3>Reusable components</h3><p>Maintain visual consistency at scale.</p></article>
     </section>
-    <section class=\"card\" style=\"margin-top:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;\">
-      <div><div style=\"font-size:12px;color:#a8bbe9\">Starting at</div><div class=\"price\">$29<span style=\"font-size:16px;color:var(--muted)\">/month</span></div></div>
-      <button class=\"btn primary\">Choose Plan</button>
+    <section class="card" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div><div style="font-size:12px;color:#a8bbe9">Starting at</div><div class="price">$29<span style="font-size:16px;color:var(--muted)\">/month</span></div></div>
+      <button class="btn primary">Choose Plan</button>
     </section>
   </div>
 </body>
 </html>"""
 
     return f"""<!DOCTYPE html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"UTF-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{title}</title>
   <style>
     :root {{ --bg:#0a0d1a; --panel:#11172a; --border:#2a3557; --text:#e8eeff; --muted:#9aa7ce; --primary:#7c5cff; }}
@@ -908,13 +1018,31 @@ def _fallback_mockup_html_LEGACY(project_name: str, screen_desc: str) -> str:
   </style>
 </head>
 <body>
-  <header class=\"top\">
+  <header class="top">
     <strong>{project_name}</strong>
-    <div style=\"display:flex; gap:8px;\"><button class=\"btn\">Secondary</button><button class=\"btn primary\">Primary Action</button></div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn">Secondary</button>
+      <button class="btn primary">Primary Action</button>
+    </div>
   </header>
-  <div class=\"layout\">
-    <aside class=\"card\"><div class=\"muted\">Navigation</div><div class=\"list\"><div class=\"card\">Overview</div><div class=\"card\">Analytics</div><div class=\"card\">Team</div></div></aside>
-    <main class=\"card\"><h1 style=\"margin-top:0\">{title}</h1><p class=\"muted\">{subtitle or "High-fidelity fallback layout generated to ensure visible UI rendering."}</p><section class=\"list\"><article class=\"card\">Primary panel content</article><article class=\"card\">Secondary panel content</article><article class=\"card\">Actionable controls</article></section></main>
+  <div class="layout">
+    <aside class="card">
+      <div class="muted">Navigation</div>
+      <div class="list">
+        <div class="card">Overview</div>
+        <div class="card">Analytics</div>
+        <div class="card">Team</div>
+      </div>
+    </aside>
+    <main class="card">
+      <h1 style="margin-top:0">{"title"}</h1>
+      <p class="muted">{"subtitle"}</p>
+      <section class="list">
+        <article class="card">Primary panel content</article>
+        <article class="card">Secondary panel content</article>
+        <article class="card">Actionable controls</article>
+      </section>
+    </main>
   </div>
 </body>
 </html>"""
@@ -932,7 +1060,7 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
     bg_hex = bg.lstrip("#")
     try:
         r, g, b = int(bg_hex[0:2],16), int(bg_hex[2:4],16), int(bg_hex[4:6],16)
-        is_dark = (0.299*r + 0.587*g + 0.114*b) < 80
+        is_dark = (0.299 * r + 0.587 * g + 0.114 * b) < 80
     except Exception:
         is_dark = True
 
@@ -940,6 +1068,7 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
     override = (
         f"\n  /* === THEME LOCK === */\n"
         f"  html, body {{ background-color: {bg} !important; color: {text} !important; }}\n"
+        f"  body {{ background-color: {bg} !important; color: {text} !important; }}\n"
     )
 
     # Inject right after the opening <style> tag if present, else append a new <style>
@@ -993,11 +1122,34 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
             r"background(?:-color)?\s*:\s*(?:linear|radial)-gradient\s*\([^;)]{0,400}\)",
             _collapse_light_gradient_dark, html, flags=re.I
         )
-        # Replace color: #000 / black on body-level text that would be invisible on dark bg
+        # Light rgba() backgrounds in dark mode (was previously only handled for light mode)
+        html = re.sub(
+            r"background(?:-color)?\s*:\s*rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[^)]*\)",
+            lambda m: "background-color: var(--surface)"
+                if 0.299 * int(m.group(1)) + 0.587 * int(m.group(2)) + 0.114 * int(m.group(3)) > 180
+                else m.group(0),
+            html, flags=re.I
+        )
+        # Replace color: #000 / black / dark greys that would be invisible on dark bg
         html = re.sub(
             r"(?<=\s)color\s*:\s*(?:#000(?:000)?|black)\b",
             "color: var(--text)",
             html, flags=re.I
+        )
+        # Also catch dark grey text colors (luminance < 80) that would be near-invisible
+        def _replace_dark_text_in_dark(m: re.Match) -> str:
+            hex_val = m.group(1).lstrip("#")
+            try:
+                expanded = hex_val if len(hex_val) == 6 else "".join(c * 2 for c in hex_val)
+                rv, gv, bv = int(expanded[0:2], 16), int(expanded[2:4], 16), int(expanded[4:6], 16)
+                if 0.299 * rv + 0.587 * gv + 0.114 * bv < 80:
+                    return "color: var(--text)"
+            except Exception:
+                pass
+            return m.group(0)
+        html = re.sub(
+            r"(?<=[\s;{])color\s*:\s*(#[0-9a-fA-F]{3,6})\b",
+            _replace_dark_text_in_dark, html, flags=re.I
         )
     else:
         # Luminance-based: replace any hardcoded dark background.
@@ -1054,6 +1206,35 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
             "color: var(--text)",
             html, flags=re.I
         )
+
+    # ── Nuclear lock: inject a FINAL <style> block right before </head> ──────
+    # This guarantees the critical theme surfaces (html, body, *, main, section,
+    # divs) use the palette colors even if the LLM's own CSS uses !important or
+    # late overrides that defeat the earlier injection.
+    p = dna["palette"]
+    nuclear = (
+        "\n<style data-theme-lock>\n"
+        f"  :root {{ --bg: {p['bg']}; --surface: {p['surface']}; --border: {p['border']}; "
+        f"--primary: {p['primary']}; --accent: {p['accent']}; --text: {p['text']}; --muted: {p['muted']}; }}\n"
+        f"  html {{ background-color: {p['bg']} !important; color: {p['text']} !important; }}\n"
+        f"  body {{ background-color: {p['bg']} !important; color: {p['text']} !important; }}\n"
+        "</style>\n"
+    )
+    if "</head>" in html.lower():
+        html = re.sub(r"(</head>)", nuclear + r"\1", html, count=1, flags=re.I)
+    else:
+        # No </head> tag — prepend the lock to the body
+        html = nuclear + html
+
+    # Add theme class to html element for frontend theming
+    theme = "dark" if is_dark else "light"
+    html = re.sub(
+        r"<html[^>]*>",
+        lambda m: m.group(0).replace("<html", f"<html class=\"{theme}\""),
+        html,
+        count=1,
+        flags=re.I
+    )
 
     return html
 
@@ -1462,10 +1643,10 @@ def _ensure_html_document(code: str) -> str:
     if "<html" in c.lower() or "<!doctype" in c.lower():
         return c
     return f"""<!DOCTYPE html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"UTF-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Design Mockup</title>
   <style>
     * {{ box-sizing: border-box; }}
@@ -1591,14 +1772,13 @@ Rules:
 {_screen_specific_requirements(screen_desc)}
 """
     mc = _resolve_design_model(user_id)
-    call_kwargs = _build_litellm_kwargs(mc, [
+    resp = await _design_acompletion(mc, [
         {"role": "system", "content": system},
         {
             "role": "user",
             "content": f"Project context:\n{project_context}\n\nScreen:\n{screen_desc}\n\nCode to convert:\n{raw_code}",
         },
-    ], temperature=0.4, max_tokens=4000)
-    resp = await litellm.acompletion(**call_kwargs)
+    ], user_id=user_id, temperature=0.4, max_tokens=4000)
     result = _strip_code_fences(resp.choices[0].message.content.strip())
     return _enforce_theme_css(result, dna)
 
@@ -1611,6 +1791,7 @@ class RevisionRequest(BaseModel):
 class GenerateAllRequest(BaseModel):
     design_mode: str = "dna"  # "dna" | "ai_free"
     direction: Optional[str] = None  # chosen direction description/style to follow
+    reference_images: list[str] | None = None  # b64 image data URLs for inspiration
 
 class AddScreenRequest(BaseModel):
     name: str
@@ -1837,6 +2018,8 @@ def _build_mockup_system_prompt(
     component_class_names: list[str] | None = None,
     # Gap 3: token audit across all approved sibling screens
     sibling_token_audit: str = "",
+    # Vision gap: if user provided images, we must instruct the AI how to interpret them
+    has_reference_images: bool = False,
 ) -> str:
     direction_block = ""
     if direction:
@@ -1845,6 +2028,23 @@ User-requested direction:
 {direction}
 
 Treat this as a strong stylistic preference, but execute it with human product-design judgement rather than generic AI styling.
+"""
+
+    reference_image_block = ""
+    if has_reference_images:
+        reference_image_block = f"""
+=============================================================================
+                          CRITICAL INSTRUCTION
+      REGARDING USER-PROVIDED INSPIRATION IMAGES (VISION INPUT)
+=============================================================================
+The user has attached images as design inspiration. 
+YOU MUST NOT TRANSCRIBE OR COPY THE CONTENT OF THESE IMAGES.
+1. DO NOT copy the text, brand names, or specific copy from the images.
+2. DO NOT clone the exact layout. You must create a *STRONGLY UNIQUE VARIATION*.
+3. Use the images ONLY for abstract inspiration (vibe, typography styles, spacing).
+4. You MUST use the copy appropriate for the current product ("{product_name}").
+5. If you output a design that looks like a clone of the provided image, YOU HAVE FAILED.
+=============================================================================
 """
 
     if north_star_css:
@@ -1871,7 +2071,8 @@ North-star HTML reference:
         # but may define their own spacing/animation/layout tokens as page overrides.
         _ns_root_m = re.search(r':root\s*\{([^}]+)\}', north_star_css, re.DOTALL)
         _PALETTE_PAT = re.compile(
-            r'^\s*--(bg|background|surface|primary|secondary|accent|cta|text|muted|border|color|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height|letter-spacing)[^:]*:.*$',
+            r'^\s*--(bg|background|surface|primary|secondary|accent|cta|text|muted|border|color'
+            r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height|letter-spacing)[^:]*:.*$',
             re.IGNORECASE | re.MULTILINE
         )
         mandatory_root_block = ""
@@ -1914,6 +2115,7 @@ Product name: "{product_name}"
 
 {brief_text}
 {direction_block}
+{reference_image_block}
 North-star style contract:
 ```css
 {north_star_css}
@@ -1962,10 +2164,16 @@ Product name: "{product_name}"
 
 {brief_text}
 {direction_block}
+{reference_image_block}
 {freedom_line}
 {hierarchy_block}
 
 Treat the compiled design spec above as a hard contract for non-negotiables, forbidden moves, and screen obligations.
+
+Uniqueness mandate:
+- This product MUST look genuinely different from every other application. Do NOT reuse common SaaS dashboard layouts, startup landing page templates, or familiar card-grid patterns.
+- Derive every visual choice — hero composition, section ordering, content hierarchy, illustration metaphors, CTA placement, data visualization style — from THIS product's specific context, audience, and industry.
+- If two different products were placed side by side, a viewer should immediately see they are unrelated designs with distinct visual personalities.
 
 Design principles:
 - Do not default to dark mode, glassmorphism, purple/cyan AI gradients, or generic SaaS styling
@@ -2025,14 +2233,13 @@ Rules:
         creative_mode="guided",
     )
     
-    call_kwargs = _build_litellm_kwargs(mc, [
+    resp = await _design_acompletion(mc, [
         {"role": "system", "content": system},
         {
             "role": "user",
             "content": f"Project context:\n{project_context}\n\nScreen:\n{screen_desc}\n\nCode to convert:\n{raw_code}",
         },
-    ], temperature=0.3, max_tokens=4200)
-    resp = await litellm.acompletion(**call_kwargs)
+    ], user_id=user_id, temperature=0.3, max_tokens=4200)
     return _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
 
 
@@ -2073,11 +2280,10 @@ Fix the following:
         creative_mode="guided",
     )
     
-    call_kwargs = _build_litellm_kwargs(mc, [
+    resp = await _design_acompletion(mc, [
         {"role": "system", "content": system},
         {"role": "user", "content": f"Project context:\n{project_context}\n\nHTML to repair:\n{candidate}"},
-    ], temperature=0.55, max_tokens=4500)
-    resp = await litellm.acompletion(**call_kwargs)
+    ], user_id=user_id, temperature=0.55, max_tokens=4500)
     return _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
 
 
@@ -2107,11 +2313,10 @@ Review criteria:
 
 {brief_text}"""
     try:
-        call_kwargs = _build_litellm_kwargs(mc, [
+        resp = await _design_acompletion(mc, [
             {"role": "system", "content": system},
             {"role": "user", "content": f"Screen:\n{screen_desc}\n\nHTML:\n{candidate}"},
-        ], temperature=0.2, max_tokens=700)
-        resp = await litellm.acompletion(**call_kwargs)
+        ], user_id=user_id, temperature=0.2, max_tokens=700)
         raw = _strip_code_fences(resp.choices[0].message.content.strip())
         match = re.search(r"\{[\s\S]*\}", raw)
         data = json.loads(match.group(0) if match else raw)
@@ -2225,11 +2430,10 @@ Rules:
         creative_mode="guided",
     )
     
-    call_kwargs = _build_litellm_kwargs(mc, [
+    resp = await _design_acompletion(mc, [
         {"role": "system", "content": system},
         {"role": "user", "content": f"Project context:\n{project_context}\n\nScreen:\n{screen_desc}\n\nHTML to revise:\n{candidate}"},
-    ], temperature=0.55, max_tokens=5000)
-    resp = await litellm.acompletion(**call_kwargs)
+    ], user_id=user_id, temperature=0.55, max_tokens=5000)
     return _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
 
 
@@ -2271,8 +2475,8 @@ def _build_cross_screen_consensus_css(
     from collections import Counter
 
     _TOK_PAT = re.compile(
-        r'^\s*(--(bg|background|surface|primary|secondary|accent|cta|text|muted|border|color'
-        r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height|letter-spacing)[\w-]*)'
+        r'^\s*(--(bg|background|surface|primary|secondary|accent|cta|text|muted|border'
+        r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height)[\w-]*)'
         r'\s*:\s*([^;]+);',
         re.IGNORECASE | re.MULTILINE,
     )
@@ -2336,7 +2540,8 @@ def _build_sibling_screen_token_audit(
 
     _TOK_PAT = re.compile(
         r'^\s*(--(bg|background|surface|primary|secondary|accent|cta|text|muted|border'
-        r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height)[\w-]*)\s*:\s*([^;]+);',
+        r'|font(?:-family|-size|-weight|-scale|-display)?|foreground|line-height)[\w-]*)'
+        r'\s*:\s*([^;]+);',
         re.IGNORECASE | re.MULTILINE,
     )
 
@@ -2490,7 +2695,13 @@ def _persist_design_system_hierarchy(db: Session, project_id: str) -> None:
     db.commit()
 
 
-def _load_design_system_hierarchy(db: Session, project_id: str, screen_desc: str) -> tuple[str, str]:
+def _load_design_system_hierarchy(
+    db: Session, 
+    project_id: str, 
+    screen_desc: str,
+    direction: str | None = None,
+    reference_images: list[str] | None = None
+) -> tuple[str, str]:
     artifact = db.query(Artifact).filter(
         Artifact.project_id == project_id,
         Artifact.artifact_type == ArtifactType.design_system,
@@ -2498,6 +2709,11 @@ def _load_design_system_hierarchy(db: Session, project_id: str, screen_desc: str
     ).first()
     if not artifact or not isinstance(artifact.content, dict):
         return "", ""
+
+    if direction or reference_images:
+        text = str(artifact.content.get("text") or "").strip()
+        master = f"## Master Design System\n\nGlobal source of truth for tokens, typography, spacing, motion, and component behavior.\n\n{text}" if text else ""
+        return master, ""
 
     master = str(artifact.content.get("master") or "").strip()
     pages = artifact.content.get("pages") or {}
@@ -2599,6 +2815,7 @@ async def _generate_mockup_with_design_brief(
     direction: str | None = None,
     north_star_css: str | None = None,
     north_star_html: str | None = None,
+    reference_images: list[str] | None = None,
 ) -> None:
     from models import SessionLocal
 
@@ -2618,18 +2835,25 @@ async def _generate_mockup_with_design_brief(
         db.commit()
 
         if not north_star_css and not north_star_html:
-            auto_css, auto_html = _load_consistency_contract(
-                db, mockup.project_id, exclude_mockup_id=mockup_id
-            )
-            north_star_css = north_star_css or auto_css
-            north_star_html = north_star_html or auto_html
+            if not direction and not reference_images:
+                # Only load the existing contract if the user hasn't explicitly
+                # requested a new direction or provided reference images that should
+                # override the past style.
+                auto_css, auto_html = _load_consistency_contract(
+                    db, mockup.project_id, exclude_mockup_id=mockup_id
+                )
+                north_star_css = north_star_css or auto_css
+                north_star_html = north_star_html or auto_html
             theme_lock_dna = _resolve_theme_lock_dna(project_context, north_star_css, north_star_html)
 
-        references = _get_mockup_reference_summaries(
-            db, mockup.project_id, exclude_mockup_id=mockup_id
-        )
+        if direction or reference_images:
+            references = []
+        else:
+            references = _get_mockup_reference_summaries(
+                db, mockup.project_id, exclude_mockup_id=mockup_id
+            )
         master_design_reference, page_override_reference = _load_design_system_hierarchy(
-            db, mockup.project_id, screen_desc
+            db, mockup.project_id, screen_desc, direction=direction, reference_images=reference_images
         )
         brief, _, brief_text = _build_design_brief_text(
             project_context,
@@ -2645,9 +2869,12 @@ async def _generate_mockup_with_design_brief(
         component_class_names = _extract_component_class_names(north_star_html)
 
         # Gap 3: build cross-screen token audit to inform the LLM about sibling screens
-        sibling_token_audit = _build_sibling_screen_token_audit(
-            db, mockup.project_id, exclude_mockup_id=mockup_id
-        )
+        if direction or reference_images:
+            sibling_token_audit = None
+        else:
+            sibling_token_audit = _build_sibling_screen_token_audit(
+                db, mockup.project_id, exclude_mockup_id=mockup_id
+            )
 
         system = _build_mockup_system_prompt(
             product_name=product_name,
@@ -2662,14 +2889,18 @@ async def _generate_mockup_with_design_brief(
             creative_mode=creative_mode,
             component_class_names=component_class_names,
             sibling_token_audit=sibling_token_audit,
+            has_reference_images=bool(reference_images),
         )
 
+        with open("/tmp/prompt.txt", "w") as f:
+            f.write("PRODUCT_getContext:\n" + project_context + "\n\n")
+            f.write("SYSTEM PROMPT:\n" + system)
+
         mc = _resolve_design_model(user_id)
-        call_kwargs = _build_litellm_kwargs(mc, [
+        resp = await _design_acompletion(mc, [
             {"role": "system", "content": system},
             {"role": "user", "content": f"Product context:\n{project_context}\n\nScreen:\n{screen_desc}"},
-        ], temperature=0.95 if creative_mode == "ai_free" and not north_star_css else 0.7, max_tokens=5000)
-        resp = await litellm.acompletion(**call_kwargs)
+        ], user_id=user_id, temperature=0.95 if creative_mode == "ai_free" and not north_star_css else 0.7, max_tokens=5000)
 
         if mockup_id in _cancelled_mockups:
             _cancelled_mockups.discard(mockup_id)
@@ -2742,6 +2973,9 @@ async def _generate_mockup_with_design_brief(
         mockup.updated_at = datetime.utcnow()
         db.commit()
     except Exception as e:
+        import traceback
+        print(f"❌ Mockup generation failed for {mockup_id[:8]} ({screen_desc[:80]}): {e}")
+        traceback.print_exc()
         if "mockup" in locals() and mockup is not None:
             mockup.status = MockupStatus.error
             mockup.component_code = f"<div style='padding:2rem;color:red'>Generation failed: {str(e)}</div>"
@@ -2783,11 +3017,10 @@ Problems to fix:
 - Do NOT truncate — output the complete finished document
 
 Return ONLY the corrected complete HTML document, no explanations."""
-    call_kwargs = _build_litellm_kwargs(mc, [
+    resp = await _design_acompletion(mc, [
         {"role": "system", "content": repair_prompt},
         {"role": "user", "content": f"Incomplete HTML to fix:\n\n{candidate}"},
-    ], temperature=0.7, max_tokens=4500)
-    resp = await litellm.acompletion(**call_kwargs)
+    ], user_id=user_id, temperature=0.7, max_tokens=4500)
     result = _strip_script_tags(_strip_code_fences(resp.choices[0].message.content.strip()))
     return _enforce_theme_css(result, dna)
 
@@ -2799,6 +3032,7 @@ async def _generate_mockup_component(
     user_id: str | None = None,
     north_star_css: str | None = None,
     north_star_html: str | None = None,
+    reference_images: list[str] | None = None,
 ):
     """Generate a single mockup as an HTML/CSS component (with up to 3 self-repair attempts).
 
@@ -2905,6 +3139,7 @@ async def _generate_mockup_ai_free(
     user_id: str | None = None,
     direction: str | None = None,
     north_star_html: str | None = None,
+    reference_images: list[str] | None = None,
 ):
     """Generate a single mockup with full AI creative freedom.
 
@@ -2922,11 +3157,12 @@ async def _generate_mockup_ai_free(
         direction=direction,
         north_star_css=north_star_css,
         north_star_html=north_star_html,
+        reference_images=reference_images,
     )
 
 
 
-async def _generate_all_mockups_ai_free(project_id: str, direction: str | None = None):
+async def _generate_all_mockups_ai_free(project_id: str, direction: str | None = None, reference_images: list[str] | None = None):
     """AI creative freedom: first screen (landing/home) is the north star; all others follow it."""
     import traceback
     from models import SessionLocal
@@ -2948,10 +3184,19 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
             CSuiteAnalysis.project_id == project_id,
             CSuiteAnalysis.agent_role == CSuiteRole.cdo,
         ).first()
-        project_context = _build_project_context(project, cdo_analysis, db=db)
+        project_context = _build_project_context(
+            project, cdo_analysis, db=db, direction=direction, reference_images=reference_images
+        )
         user_id = project.user_id
         _persist_design_system_hierarchy(db, project_id)
         preserved_north_star_css, preserved_north_star_html, _ = _select_north_star_reference(db, project_id)
+
+        if direction:
+            # If the user explicitly provided a new design direction, we must discard the old
+            # north star reference. Otherwise, the prompt's mandatory CSS contract will force
+            # the LLM to just copy the old design and ignore the new direction.
+            preserved_north_star_css = None
+            preserved_north_star_html = None
 
         screens = await _discover_screens_from_context(project_context, user_id=user_id)
 
@@ -3021,11 +3266,13 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
             user_id=user_id,
             direction=direction,
             north_star_html=preserved_north_star_html,
+            reference_images=reference_images,
         )
 
         # Step 2 — extract north-star CSS and full HTML from generated screen
         db2 = SessionLocal()
         north_star_html = ""
+        north_star_css = ""
         try:
             _auto_approve_north_star(db2, project_id, first_id)
             first_mockup = db2.query(DesignMockup).filter(DesignMockup.id == first_id).first()
@@ -3044,6 +3291,7 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
                 user_id=user_id,
                 direction=direction,
                 north_star_html=north_star_html or None,
+                reference_images=reference_images,
             )
             for mid, s in mockup_ids[1:]
         ]
@@ -3069,7 +3317,7 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
             db3.close()
 
 
-async def _generate_all_mockups(project_id: str):
+async def _generate_all_mockups(project_id: str, theme: str = "dark"):
     """Determine screens needed and generate mockups.
 
     Uses a north-star pattern: the landing/hero screen is generated FIRST,
@@ -3081,6 +3329,7 @@ async def _generate_all_mockups(project_id: str):
     db = SessionLocal()
     preserved_north_star_css: str | None = None
     preserved_north_star_html: str | None = None
+    user_id: str | None = None
     try:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
@@ -3150,10 +3399,10 @@ async def _generate_all_mockups(project_id: str):
     north_star_css = ""
     try:
         _auto_approve_north_star(db2, project_id, first_id)
-        first_mockup = db2.query(DesignMockup).filter(DesignMockup.id == first_id).first()
-        north_star_html = first_mockup.component_code or "" if first_mockup else ""
+        first_m = db2.query(DesignMockup).filter(DesignMockup.id == first_id).first()
+        north_star_html = first_m.component_code or "" if first_m else ""
         north_star_css = _extract_north_star_css(north_star_html) if north_star_html else ""
-        print(f"🌟 North star CSS extracted ({len(north_star_css)} chars) from '{first_screen['name']}'")
+        print(f"🌟 North star CSS extracted ({len(north_star_css)} chars)")
     finally:
         db2.close()
 
@@ -3161,18 +3410,18 @@ async def _generate_all_mockups(project_id: str):
     remaining_tasks = [
         _generate_mockup_component(
             mid, project_context,
-            f"Screen: {s['name']}\nDescription: {s.get('description', '')}",
+            f"Screen: {scr['name']}\nDescription: {scr.get('description', '')}",
             user_id=user_id,
             north_star_css=north_star_css or None,
             north_star_html=north_star_html or None,
         )
-        for mid, s in mockup_ids[1:]
+        for mid, scr in mockup_ids[1:]
     ]
     if remaining_tasks:
         await asyncio.gather(*remaining_tasks, return_exceptions=True)
 
 
-async def _generate_existing_mockups(project_id: str):
+async def _generate_existing_mockups(project_id: str, reference_images: list[str] | None = None):
     """Generate components for existing mockup rows using north-star pattern.
 
     The first mockup (by sort_order) is generated first, its CSS is extracted,
@@ -3224,6 +3473,7 @@ async def _generate_existing_mockups(project_id: str):
             user_id=user_id,
             north_star_css=preserved_north_star_css,
             north_star_html=preserved_north_star_html,
+            reference_images=reference_images,
         )
 
     if not (preserved_north_star_id and first.id == preserved_north_star_id and preserved_north_star_html):
@@ -3248,6 +3498,7 @@ async def _generate_existing_mockups(project_id: str):
             user_id=user_id,
             north_star_css=north_star_css or None,
             north_star_html=north_star_html or None,
+            reference_images=reference_images,
         )
         for m in mockups[1:]
     ]
@@ -3271,6 +3522,10 @@ async def list_mockups(
         DesignMockup.project_id == project_id
     ).order_by(DesignMockup.sort_order).all()
 
+    # Build project_context once for healing fallbacks so _enforce_theme_css is applied
+    cdo = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.project_id == project_id).first()
+    project_context = _build_project_context(project, cdo, db=db)
+
     healed = False
     for m in mockups:
         # Never touch mockups that are still generating, pending, or in error state
@@ -3284,7 +3539,7 @@ async def list_mockups(
         normalized = _ensure_html_document(_strip_review_metadata(clean))
         if not _is_renderable_ui_html(normalized):
             # Only substitute fallback for complete/approved mockups with bad HTML
-            m.component_code = _fallback_mockup_html(project.name, f"Screen: {m.screen_name}\nDescription: {m.description or ''}")
+            m.component_code = _fallback_mockup_html(project.name, f"Screen: {m.screen_name}\nDescription: {m.description or ''}", project_context)
             m.updated_at = datetime.utcnow()
             healed = True
         elif normalized != m.component_code:
@@ -3319,23 +3574,28 @@ async def generate_mockups(
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    theme: str = "dark",
 ):
     project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Validate theme parameter
+    if theme not in ("dark", "light"):
+        raise HTTPException(status_code=400, detail="Theme must be 'dark' or 'light'")
+
     if use_inngest():
         try:
             await inngest_client.send(inngest.Event(
                 name="design/generate.requested",
-                data={"project_id": project_id},
+                data={"project_id": project_id, "theme": theme},
             ))
-            print(f"📨 Inngest event: design/generate.requested for {project_id[:8]}")
+            print(f"📨 Inngest event: design/generate.requested for {project_id[:8]} (theme: {theme})")
         except Exception as e:
             print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
-            background_tasks.add_task(_generate_all_mockups, project_id)
+            background_tasks.add_task(_generate_all_mockups, project_id, theme)
     else:
-        background_tasks.add_task(_generate_all_mockups, project_id)
+        background_tasks.add_task(_generate_all_mockups, project_id, theme)
     return {"status": "generating"}
 
 
@@ -3533,6 +3793,7 @@ async def generate_all_mockups(
                     "project_id": project_id,
                     "design_mode": body.design_mode,
                     "direction": body.direction,
+                    "reference_images": body.reference_images,
                     "task": task_name,
                 },
             ))
@@ -3540,16 +3801,16 @@ async def generate_all_mockups(
         except Exception as e:
             print(f"⚠️  Inngest send failed ({e}) — falling back to BackgroundTasks")
             if task_name == "ai_free":
-                background_tasks.add_task(_generate_all_mockups_ai_free, project_id, body.direction)
+                background_tasks.add_task(_generate_all_mockups_ai_free, project_id, body.direction, body.reference_images)
             elif task_name == "generate_existing":
-                background_tasks.add_task(_generate_existing_mockups, project_id)
+                background_tasks.add_task(_generate_existing_mockups, project_id, body.reference_images)
             else:
                 background_tasks.add_task(_generate_all_mockups, project_id)
     else:
         if task_name == "ai_free":
-            background_tasks.add_task(_generate_all_mockups_ai_free, project_id, body.direction)
+            background_tasks.add_task(_generate_all_mockups_ai_free, project_id, body.direction, body.reference_images)
         elif task_name == "generate_existing":
-            background_tasks.add_task(_generate_existing_mockups, project_id)
+            background_tasks.add_task(_generate_existing_mockups, project_id, body.reference_images)
         else:
             background_tasks.add_task(_generate_all_mockups, project_id)
 

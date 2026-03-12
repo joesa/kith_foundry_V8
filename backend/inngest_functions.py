@@ -9,7 +9,7 @@ Events handled:
 
   Design / Mockups:
     design/generate.requested        — data: {project_id}
-    design/generate-all.requested    — data: {project_id, design_mode, direction?}
+    design/generate-all.requested    — data: {project_id, design_mode, direction?, reference_images?}
     design/generate-single.requested — data: {mockup_id, project_context, screen_desc, user_id?}
     design/revision.requested        — data: {mockup_id, project_context, screen_desc, user_id?}
 
@@ -112,12 +112,13 @@ async def design_generate_all_fn(ctx: inngest.Context) -> dict:
     project_id: str = ctx.event.data["project_id"]
     design_mode: str = ctx.event.data.get("design_mode", "dna")
     direction: str | None = ctx.event.data.get("direction")
+    reference_images: list[str] | None = ctx.event.data.get("reference_images")
     task: str = ctx.event.data.get("task", "generate_all")  # generate_all | generate_existing | ai_free
     print(f"🚀 Inngest design-generate-all executing for {project_id[:8]} mode={design_mode} task={task}")
     if task == "ai_free":
-        await _generate_all_mockups_ai_free(project_id, direction)
+        await _generate_all_mockups_ai_free(project_id, direction, reference_images)
     elif task == "generate_existing":
-        await _generate_existing_mockups(project_id)
+        await _generate_existing_mockups(project_id, reference_images)
     else:
         await _generate_all_mockups(project_id)
     print(f"✅ Inngest design-generate-all complete for {project_id[:8]}")

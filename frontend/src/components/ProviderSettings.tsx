@@ -72,9 +72,10 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
     const [routings, setRoutings] = useState<ModelRoutingEntry[]>([]);
     const [providerModels, setProviderModels] = useState<Record<number, any[]>>({});
 
-    const fetchProviders = async (token?: string) => {
+    const fetchProviders = async (token?: string | null) => {
         try {
             const t = token ?? await getAccessToken();
+            if (!t) return;
             const res = await fetch(`${API}/api/v1/providers`, {
                 headers: { Authorization: `Bearer ${t}` }
             });
@@ -87,9 +88,10 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
         }
     };
 
-    const fetchRoutings = async (token?: string) => {
+    const fetchRoutings = async (token?: string | null) => {
         try {
             const t = token ?? await getAccessToken();
+            if (!t) return;
             const res = await fetch(`${API}/api/v1/model-routing`, {
                 headers: { Authorization: `Bearer ${t}` }
             });
@@ -104,6 +106,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
         if (providerModels[providerId]) return;
         try {
             const token = await getAccessToken();
+            if (!token) return;
             const res = await fetch(`${API}/api/v1/providers/${providerId}/models`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
@@ -117,15 +120,23 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
     useEffect(() => {
         // Fetch token once and share it to avoid concurrent refresh races
         getAccessToken().then(async (token) => {
+            if (!token) {
+                setLoading(false);
+                return;
+            }
             fetchProviders(token);
             const res = await fetch(`${API}/api/v1/model-routing`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
             const data = await res.json();
-            const r = data.routings || [];
+            const r: ModelRoutingEntry[] = data.routings || [];
             setRoutings(r);
             // Pre-load models for any already-configured providers
-            const configuredProviderIds = [...new Set(r.filter((rt: any) => rt.provider_id).map((rt: any) => rt.provider_id))];
+            const configuredProviderIds = [...new Set(
+                r
+                    .map((rt) => rt.provider_id)
+                    .filter((providerId): providerId is number => providerId != null)
+            )];
             for (const pid of configuredProviderIds) {
                 loadProviderModels(pid);
             }
@@ -157,7 +168,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                     body: JSON.stringify({
                         name: keyName || undefined,
                         api_key: apiKey || undefined,
-                        base_url: baseUrl || undefined,
+                        base_url: baseUrl || null,
                     }),
                 });
             } else {
@@ -285,7 +296,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
     const urlPlaceholder = (() => {
         switch (selectedProvider) {
             case "ollama": return "http://localhost:11434";
-            case "lm_studio": return "http://localhost:1234";
+            case "lm_studio": return "http://localhost:1234/v1";
             case "openai_compatible": return "https://openrouter.ai/api/v1";
             case "azure_openai": return "https://your-resource.openai.azure.com";
             default: return "https://api.example.com/v1";
@@ -297,10 +308,10 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
     const innerContent = (
         <>
             {/* Header */}
-            <div className={`flex items-center justify-between ${inline ? 'mb-6' : 'px-6 py-5 border-b border-zinc-800'}`}>
+            <div className={`flex items-center justify-between ${inline ? 'mb-6' : 'px-6 py-5 border-b border-[var(--kf-border)]'}`}>
                 {!inline && (
                     <div>
-                        <h2 className="text-xl font-bold text-white">AI Provider Settings</h2>
+                        <h2 className="text-xl font-bold text-[var(--kf-text)]">AI Provider Settings</h2>
                         <p className="text-sm text-zinc-500 mt-1">
                             Manage your custom API keys for different AI providers.
                         </p>
@@ -316,7 +327,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                     {!inline && onClose && (
                         <button
                             onClick={onClose}
-                            className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                            className="p-2 hover:bg-[var(--kf-hover-bg)] rounded-lg text-[var(--kf-text-muted)] hover:text-[var(--kf-text)] transition-colors cursor-pointer"
                         >
                             <X className="w-5 h-5" />
                         </button>
@@ -330,7 +341,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                     <div className="flex items-start gap-3 bg-indigo-500/5 border border-indigo-500/15 rounded-lg p-4 mb-6">
                         <Shield className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
                         <div>
-                            <p className="text-sm font-medium text-indigo-300">Enterprise-Grade Security</p>
+                            <p className="text-sm font-medium text-indigo-600 dark:text-indigo-300">Enterprise-Grade Security</p>
                             <p className="text-xs text-zinc-500 mt-1">
                                 Your API keys are encrypted at rest using AES-256. They are never exposed to the client-side
                                 and are only decrypted securely within our server environment when making API requests.
@@ -342,8 +353,8 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                     <div className="mb-6">
                         <div className="flex items-center gap-2 mb-3">
                             <Key className="w-4 h-4 text-indigo-400" />
-                            <h3 className="text-sm font-semibold text-white">Configured Keys</h3>
-                            <span className="text-xs bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">{providers.length}</span>
+                            <h3 className="text-sm font-semibold text-[var(--kf-text)]">Configured Keys</h3>
+                            <span className="text-xs bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] px-1.5 py-0.5 rounded">{providers.length}</span>
                         </div>
 
                         {loading ? (
@@ -365,8 +376,8 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                         <div
                                             key={p.id}
                                             className={`flex items-center gap-4 px-4 py-3 rounded-lg border transition-colors ${p.is_active
-                                                ? "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
-                                                : "bg-zinc-900/20 border-zinc-800/50 opacity-50"
+                                                ? "bg-[var(--kf-surface)] border-[var(--kf-border)] hover:border-[var(--kf-border-muted)]"
+                                                : "bg-[var(--kf-surface)] border-[var(--kf-border)] opacity-50"
                                                 }`}
                                         >
                                             <div
@@ -378,7 +389,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
 
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-center gap-2">
-                                                    <span className="text-sm font-medium text-white truncate">{p.name}</span>
+                                                    <span className="text-sm font-medium text-[var(--kf-text)] truncate">{p.name}</span>
                                                     {p.is_default && (
                                                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 flex items-center gap-1">
                                                             <Star className="w-2.5 h-2.5" /> Default
@@ -404,7 +415,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                                     {p.base_url && (
                                                         <>
                                                             <span>•</span>
-                                                            <span className="bg-zinc-800 px-1.5 py-0.5 rounded text-[10px] font-mono truncate max-w-[180px]">
+                                                            <span className="bg-[var(--kf-badge-bg)] px-1.5 py-0.5 rounded text-[10px] font-mono truncate max-w-[180px]">
                                                                 {p.base_url}
                                                             </span>
                                                         </>
@@ -425,14 +436,14 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                             <div className="flex items-center gap-1 shrink-0">
                                                 <button
                                                     onClick={() => handleSetDefault(p.id)}
-                                                    className={`p-1.5 rounded hover:bg-zinc-800 transition-colors cursor-pointer ${p.is_default ? "text-amber-400" : "text-zinc-600 hover:text-zinc-300"}`}
+                                                    className={`p-1.5 rounded hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer ${p.is_default ? "text-amber-400" : "text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)]"}`}
                                                     title="Set as default"
                                                 >
                                                     <Star className="w-3.5 h-3.5" />
                                                 </button>
                                                 <button
                                                     onClick={() => handleTest(p.id)}
-                                                    className="p-1.5 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors cursor-pointer"
+                                                    className="p-1.5 rounded text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
                                                     title="Test connection"
                                                     disabled={testingId === p.id}
                                                 >
@@ -444,22 +455,22 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                                 </button>
                                                 <button
                                                     onClick={() => handleToggle(p.id)}
-                                                    className={`p-1.5 rounded hover:bg-zinc-800 transition-colors cursor-pointer ${p.is_active ? "text-green-500 hover:text-red-400" : "text-zinc-600 hover:text-green-400"}`}
+                                                    className={`p-1.5 rounded hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer ${p.is_active ? "text-green-500 hover:text-red-400" : "text-[var(--kf-text-faint)] hover:text-green-400"}`}
                                                     title={p.is_active ? "Deactivate" : "Activate"}
                                                 >
                                                     <Power className="w-3.5 h-3.5" />
                                                 </button>
                                                 <button
                                                     onClick={() => handleEdit(p)}
-                                                    className="p-1.5 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors cursor-pointer"
+                                                    className="p-1.5 rounded text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
                                                     title="Edit"
                                                 >
                                                     <Pencil className="w-3.5 h-3.5" />
                                                 </button>
-                                                <div className="w-px h-4 bg-zinc-800 mx-0.5" />
+                                                <div className="w-px h-4 bg-[var(--kf-border)] mx-0.5" />
                                                 <button
                                                     onClick={() => handleDelete(p.id)}
-                                                    className="p-1.5 rounded text-zinc-600 hover:text-red-400 hover:bg-zinc-800 transition-colors cursor-pointer"
+                                                    className="p-1.5 rounded text-[var(--kf-text-faint)] hover:text-red-400 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
                                                     title="Delete"
                                                 >
                                                     <Trash2 className="w-3.5 h-3.5" />
@@ -477,7 +488,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                         <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
                                 <Cpu className="w-4 h-4 text-indigo-400" />
-                                <h3 className="text-sm font-semibold text-white">Task Routing</h3>
+                                <h3 className="text-sm font-semibold text-[var(--kf-text)]">Task Routing</h3>
                             </div>
                             <span className="text-xs text-zinc-500">Route specific tasks to specific models</span>
                         </div>
@@ -485,12 +496,12 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                             {routings.length === 0 ? (
                                 <div className="text-sm text-zinc-500 text-center py-4">Loading routing configurations...</div>
                             ) : routings.map(r => (
-                                <div key={r.task_type} className="flex flex-col gap-2 p-3 rounded-lg border border-zinc-800 bg-zinc-900/30">
+                                <div key={r.task_type} className="flex flex-col gap-2 p-3 rounded-lg border border-[var(--kf-border)] bg-[var(--kf-surface)]">
                                     <div className="flex items-center justify-between">
-                                        <span className="text-sm font-medium text-white">{r.task_label}</span>
+                                        <span className="text-sm font-medium text-[var(--kf-text)]">{r.task_label}</span>
                                         <button
                                             onClick={() => handleUpdateRouting(r.task_type, null, null)}
-                                            className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                                            className="text-xs text-[var(--kf-text-muted)] hover:text-[var(--kf-text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                                             disabled={!r.provider_id}
                                         >
                                             Reset to Default
@@ -498,7 +509,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                     </div>
                                     <div className="grid grid-cols-2 gap-3">
                                         <select
-                                            className="bg-[#12121A] border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                                            className="bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-md px-3 py-2 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 cursor-pointer"
                                             value={r.provider_id || ""}
                                             onChange={(e) => {
                                                 const pid = e.target.value ? Number(e.target.value) : null;
@@ -512,7 +523,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                             ))}
                                         </select>
                                         <select
-                                            className="bg-[#12121A] border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500 disabled:opacity-50 cursor-pointer"
+                                            className="bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-md px-3 py-2 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 disabled:opacity-50 cursor-pointer"
                                             value={r.model_id || ""}
                                             onChange={(e) => handleUpdateRouting(r.task_type, r.provider_id, e.target.value || null)}
                                             disabled={!r.provider_id}
@@ -531,8 +542,8 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
 
                     {/* Add/Edit Form */}
                     {showForm && (
-                        <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/30 mb-6">
-                            <h3 className="text-sm font-semibold text-white mb-4">
+                        <div className="border border-[var(--kf-border)] rounded-lg p-5 bg-[var(--kf-surface)] mb-6">
+                            <h3 className="text-sm font-semibold text-[var(--kf-text)] mb-4">
                                 {editingId ? "Edit Provider" : "Select Provider"}
                             </h3>
 
@@ -546,8 +557,8 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                                 key={p.id}
                                                 onClick={() => setSelectedProvider(p.id)}
                                                 className={`flex flex-col items-center gap-2 py-3 px-2 rounded-lg border transition-all cursor-pointer ${selectedProvider === p.id
-                                                    ? "border-indigo-500 bg-indigo-500/10 text-white"
-                                                    : "border-zinc-800 hover:border-zinc-600 text-zinc-400 hover:text-zinc-200"
+                                                    ? "border-indigo-500 bg-indigo-500/10 text-[var(--kf-text)]"
+                                                    : "border-[var(--kf-border)] hover:border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"
                                                     }`}
                                             >
                                                 <Icon className="w-5 h-5" style={{ color: p.color }} />
@@ -560,7 +571,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
 
                             {/* Key Name */}
                             <div className="mb-4">
-                                <label className="block text-sm font-medium text-zinc-300 mb-1.5">Key Name</label>
+                                <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">Key Name</label>
                                 <div className="relative">
                                     <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600" />
                                     <input
@@ -568,7 +579,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                         value={keyName}
                                         onChange={e => setKeyName(e.target.value)}
                                         placeholder="e.g. My Production Key"
-                                        className="w-full bg-[#1A1A24] border border-zinc-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500 placeholder:text-zinc-600"
+                                        className="w-full bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-lg pl-10 pr-4 py-2.5 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 placeholder:text-[var(--kf-text-faint)]"
                                     />
                                 </div>
                                 <p className="text-xs text-zinc-600 mt-1">A friendly name to identify this key.</p>
@@ -576,7 +587,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
 
                             {/* API Key */}
                             <div className="mb-4">
-                                <label className="block text-sm font-medium text-zinc-300 mb-1.5">
+                                <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">
                                     API Key <span className="text-red-400">*</span>
                                 </label>
                                 <div className="relative">
@@ -586,12 +597,12 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                         value={apiKey}
                                         onChange={e => setApiKey(e.target.value)}
                                         placeholder="sk-••••••••••••"
-                                        className="w-full bg-[#12121A] border border-indigo-500/30 rounded-lg pl-10 pr-12 py-2.5 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500 placeholder:text-zinc-600"
+                                        className="w-full bg-[var(--kf-input-bg)] border border-indigo-500/30 rounded-lg pl-10 pr-12 py-2.5 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 placeholder:text-[var(--kf-text-faint)]"
                                     />
                                     <button
                                         type="button"
                                         onClick={() => setShowKey(v => !v)}
-                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-300 cursor-pointer"
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)] cursor-pointer"
                                     >
                                         {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                     </button>
@@ -603,7 +614,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
 
                             {/* Base URL */}
                             <div className="mb-4">
-                                <label className="block text-sm font-medium text-zinc-300 mb-1.5">
+                                <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">
                                     Base URL {needsBaseUrl ? "" : "(Optional)"}
                                 </label>
                                 <div className="relative">
@@ -613,7 +624,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                         value={baseUrl}
                                         onChange={e => setBaseUrl(e.target.value)}
                                         placeholder={urlPlaceholder}
-                                        className="w-full bg-[#1A1A24] border border-zinc-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500 placeholder:text-zinc-600"
+                                        className="w-full bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-lg pl-10 pr-4 py-2.5 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 placeholder:text-[var(--kf-text-faint)]"
                                     />
                                 </div>
                                 <p className="text-xs text-zinc-600 mt-1">
@@ -626,7 +637,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
 
                             {/* Set as default checkbox */}
                             {!editingId && (
-                                <div className="flex items-start gap-3 bg-zinc-900/50 border border-zinc-800 rounded-lg p-3 mb-5">
+                                <div className="flex items-start gap-3 bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-lg p-3 mb-5">
                                     <input
                                         type="checkbox"
                                         id="set-default"
@@ -635,7 +646,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                                         className="mt-0.5 accent-indigo-500"
                                     />
                                     <label htmlFor="set-default" className="cursor-pointer">
-                                        <p className="text-sm font-medium text-white">
+                                        <p className="text-sm font-medium text-[var(--kf-text)]">
                                             Set as default for {providerInfo.name}
                                         </p>
                                         <p className="text-xs text-zinc-500 mt-0.5">
@@ -646,10 +657,10 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                             )}
 
                             {/* Action buttons */}
-                            <div className="flex justify-end gap-3 pt-2 border-t border-zinc-800">
+                            <div className="flex justify-end gap-3 pt-2 border-t border-[var(--kf-border)]">
                                 <button
                                     onClick={() => { resetForm(); setShowForm(false); }}
-                                    className="px-4 py-2 text-sm text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors cursor-pointer"
+                                    className="px-4 py-2 text-sm text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] bg-[var(--kf-badge-bg)] hover:bg-[var(--kf-hover-bg)] rounded-lg transition-colors cursor-pointer"
                                 >
                                     Cancel
                                 </button>
@@ -670,7 +681,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
                     )}
 
                     {/* Footer badges */}
-                    <div className="flex items-center justify-center gap-6 text-[11px] text-zinc-600 pt-2 pb-1">
+                    <div className="flex items-center justify-center gap-6 text-[11px] text-[var(--kf-text-faint)] pt-2 pb-1">
                         <span className="flex items-center gap-1"><Shield className="w-3 h-3" /> Encrypted Storage</span>
                         <span className="flex items-center gap-1"><Server className="w-3 h-3" /> Server-Side Execution</span>
                         <span className="flex items-center gap-1"><Check className="w-3 h-3" /> Zero-Logging Policy</span>
@@ -686,7 +697,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
             <div
-                className="w-full max-w-[820px] max-h-[90vh] bg-[#0E0E14] border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+                className="w-full max-w-[820px] max-h-[90vh] bg-[var(--kf-bg)] border border-[var(--kf-border)] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
                 style={{ animation: "fadeInScale 0.2s ease" }}
             >
                 {innerContent}

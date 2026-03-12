@@ -3,7 +3,7 @@
  * Install: npm install @nhost/nhost-js
  */
 import { NhostClient } from "@nhost/nhost-js";
-import type { AuthClient, AuthSession, AuthUser } from "./auth";
+import type { AuthClient, AuthSession } from "./auth";
 
 const nhostSubdomain = import.meta.env.VITE_NHOST_SUBDOMAIN || "";
 const nhostRegion = import.meta.env.VITE_NHOST_REGION || "";
@@ -15,6 +15,25 @@ function toAuthSession(session: { user: { id: string; email?: string }; accessTo
         access_token: session.accessToken,
         user: { id: session.user.id, email: session.user.email },
     };
+}
+
+// Deduplicate concurrent refresh attempts — only one in-flight at a time.
+let _refreshPromise: Promise<void> | null = null;
+let _refreshFailedAt = 0;
+const REFRESH_COOLDOWN_MS = 5_000;
+
+function _debouncedRefresh(): Promise<void> {
+    // If a refresh just failed, don't retry until cooldown expires.
+    if (_refreshFailedAt && Date.now() - _refreshFailedAt < REFRESH_COOLDOWN_MS) {
+        return Promise.reject(new Error("refresh cooldown"));
+    }
+    if (_refreshPromise) return _refreshPromise;
+    _refreshPromise = nhost!.auth
+        .refreshSession()
+        .then(() => { _refreshFailedAt = 0; })
+        .catch((err: unknown) => { _refreshFailedAt = Date.now(); throw err; })
+        .finally(() => { _refreshPromise = null; });
+    return _refreshPromise;
 }
 
 export const nhostAuth: AuthClient = nhost
@@ -40,8 +59,8 @@ export const nhostAuth: AuthClient = nhost
                   cb(toAuthSession(session as Parameters<typeof toAuthSession>[0]));
               });
               // nhost-js v2 returns Promise<() => void>, v1 returns () => void
-              if (result && typeof (result as Promise<unknown>).then === "function") {
-                  (result as Promise<() => void>).then((unsub) => {
+              if (result && typeof (result as { then?: unknown }).then === "function") {
+                  (result as unknown as Promise<() => void>).then((unsub) => {
                       if (destroyed) unsub();
                       else unsubscribe = unsub;
                   });
@@ -64,20 +83,13 @@ export const nhostAuth: AuthClient = nhost
           async signOut() {
               await nhost.auth.signOut();
           },
-          async refreshSession() {
-              const res = await nhost.auth.refreshSession();
-              const session = (res as { session?: unknown; data?: { session?: unknown } })?.session
-                  ?? (res as { data?: { session?: unknown } })?.data?.session
-                  ?? null;
-              return toAuthSession(session as Parameters<typeof toAuthSession>[0]);
-          },
           async getAccessToken() {
               const session = nhost.auth.getSession();
               if (!session) return null;
 
               // Only proactively refresh if the access token expires within 60 seconds.
               // Avoids hammering /v1/token on every API call.
-              const readExpiry = (token: string | null): number => {
+              const readExpiry = (token: string | null | undefined): number => {
                   if (!token) return 0;
                   try {
                       const payload = JSON.parse(atob(token.split(".")[1]));
@@ -92,8 +104,8 @@ export const nhostAuth: AuthClient = nhost
                   const expiresAt = readExpiry(token);
                   const needsRefresh = !token || expiresAt - Date.now() < 60_000;
                   if (!needsRefresh) return token;
-                  // Token missing or near expiry — attempt refresh
-                  await nhost.auth.refreshSession();
+                  // Token missing or near expiry — single deduplicated refresh
+                  await _debouncedRefresh();
               } catch {
                   /* ignore — we'll validate the final token below */
               }

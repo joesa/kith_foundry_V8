@@ -1,5 +1,39 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Semantic colour tokens ─────────────────────────────── */
+:root, .light {
+    --kf-bg:            #F8F9FA;
+    --kf-surface:       #FFFFFF;
+    --kf-surface-alt:   #F3F4F6;
+    --kf-surface-hover: #F9FAFB;
+    --kf-input-bg:      #FFFFFF;
+    --kf-border:        #E5E7EB;
+    --kf-border-muted:  #D1D5DB;
+    --kf-text:          #18181B;
+    --kf-text-secondary:#52525B;
+    --kf-text-muted:    #71717A;
+    --kf-text-faint:    #A1A1AA;
+    --kf-badge-bg:      #F3F4F6;
+    --kf-hover-bg:      #F3F4F6;
+}
+.dark {
+    --kf-bg:            #0A0A10;
+    --kf-surface:       #12121A;
+    --kf-surface-alt:   #1A1A24;
+    --kf-surface-hover: #14141E;
+    --kf-input-bg:      #12121A;
+    --kf-border:        rgba(39,39,42,0.5);
+    --kf-border-muted:  #3F3F46;
+    --kf-text:          #FFFFFF;
+    --kf-text-secondary:#A1A1AA;
+    --kf-text-muted:    #71717A;
+    --kf-text-faint:    #52525B;
+    --kf-badge-bg:      #27272A;
+    --kf-hover-bg:      rgba(39,39,42,0.5);
+}
+
 /* Global: pointer cursor on all interactive elements */
 a,
 button,

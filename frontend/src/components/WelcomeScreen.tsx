@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Sparkles, Code2, Layers, Zap, Palette, Globe } from "lucide-react";
+import { useTheme } from "../contexts/ThemeContext";
 
 const TIPS = [
     "\"Build me a beautiful todo app with dark mode\"",
@@ -10,6 +11,8 @@ const TIPS = [
 ];
 
 export function WelcomeScreen() {
+    const { theme } = useTheme();
+    const isDark = theme === "dark";
     const [activeTip, setActiveTip] = useState(0);
     const [fadeIn, setFadeIn] = useState(false);
 
@@ -29,21 +32,27 @@ export function WelcomeScreen() {
         <div
             className={`flex flex-col items-center justify-center h-full w-full transition-opacity duration-700 ${fadeIn ? "opacity-100" : "opacity-0"}`}
             style={{
-                background: "linear-gradient(145deg, #0c0c14, #0e0f1a 40%, #110e1c 70%, #0c0c14)",
+                background: isDark
+                    ? "linear-gradient(145deg, #0c0c14, #0e0f1a 40%, #110e1c 70%, #0c0c14)"
+                    : "linear-gradient(145deg, #f8f9fa, #f1f3f8 40%, #eef0f7 70%, #f8f9fa)",
             }}
         >
             {/* Glow orbs */}
             <div style={{
                 position: "absolute", top: "20%", left: "30%",
                 width: 300, height: 300,
-                background: "radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)",
+                background: isDark
+                    ? "radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)"
+                    : "radial-gradient(circle, rgba(99,102,241,0.06) 0%, transparent 70%)",
                 borderRadius: "50%", pointerEvents: "none",
                 animation: "float 6s ease-in-out infinite",
             }} />
             <div style={{
                 position: "absolute", bottom: "25%", right: "20%",
                 width: 220, height: 220,
-                background: "radial-gradient(circle, rgba(168,85,247,0.06) 0%, transparent 70%)",
+                background: isDark
+                    ? "radial-gradient(circle, rgba(168,85,247,0.06) 0%, transparent 70%)"
+                    : "radial-gradient(circle, rgba(168,85,247,0.04) 0%, transparent 70%)",
                 borderRadius: "50%", pointerEvents: "none",
                 animation: "float 8s ease-in-out infinite reverse",
             }} />
@@ -55,7 +64,9 @@ export function WelcomeScreen() {
                     borderRadius: 16,
                     background: "linear-gradient(135deg, #6366f1, #a855f7)",
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    boxShadow: "0 0 40px rgba(99,102,241,0.3), 0 0 80px rgba(168,85,247,0.15)",
+                    boxShadow: isDark
+                        ? "0 0 40px rgba(99,102,241,0.3), 0 0 80px rgba(168,85,247,0.15)"
+                        : "0 0 40px rgba(99,102,241,0.15), 0 0 80px rgba(168,85,247,0.08)",
                 }}>
                     <Sparkles size={28} color="white" />
                 </div>
@@ -72,7 +83,7 @@ export function WelcomeScreen() {
             }}>
                 Kith Foundry
             </h2>
-            <p style={{ color: "#71717a", fontSize: 13, marginBottom: 32, textAlign: "center", maxWidth: 260 }}>
+            <p style={{ color: isDark ? "#71717a" : "#52525b", fontSize: 13, marginBottom: 32, textAlign: "center", maxWidth: 260 }}>
                 Describe your vision. We'll build it live.
             </p>
 
@@ -90,15 +101,15 @@ export function WelcomeScreen() {
                     <div
                         key={label}
                         style={{
-                            background: "rgba(255,255,255,0.03)",
-                            border: "1px solid rgba(255,255,255,0.06)",
+                            background: isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.03)",
+                            border: isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(0,0,0,0.08)",
                             borderRadius: 10, padding: "12px 12px",
                             display: "flex", alignItems: "center", gap: 8,
                             animation: `slideUp 0.5s ease ${delay} both`,
                         }}
                     >
                         <Icon size={14} style={{ color: "#818cf8", flexShrink: 0 }} />
-                        <span style={{ color: "#a1a1aa", fontSize: 11, lineHeight: 1.3 }}>{label}</span>
+                        <span style={{ color: isDark ? "#a1a1aa" : "#52525b", fontSize: 11, lineHeight: 1.3 }}>{label}</span>
                     </div>
                 ))}
             </div>
@@ -106,8 +117,8 @@ export function WelcomeScreen() {
             {/* Rotating tip */}
             <div style={{
                 display: "flex", alignItems: "center", gap: 6,
-                background: "rgba(99,102,241,0.06)",
-                border: "1px solid rgba(99,102,241,0.12)",
+                background: isDark ? "rgba(99,102,241,0.06)" : "rgba(99,102,241,0.08)",
+                border: isDark ? "1px solid rgba(99,102,241,0.12)" : "1px solid rgba(99,102,241,0.15)",
                 borderRadius: 8, padding: "8px 14px",
                 maxWidth: 300,
             }}>
@@ -115,7 +126,7 @@ export function WelcomeScreen() {
                 <p
                     key={activeTip}
                     style={{
-                        color: "#71717a", fontSize: 11, fontStyle: "italic",
+                        color: isDark ? "#71717a" : "#52525b", fontSize: 11, fontStyle: "italic",
                         animation: "fadeInUp 0.4s ease",
                         margin: 0,
                     }}
@@ -134,7 +145,7 @@ export function WelcomeScreen() {
                     background: "#6366f1",
                     animation: "pulse 2s ease-in-out infinite",
                 }} />
-                <span style={{ color: "#3f3f46", fontSize: 11 }}>
+                <span style={{ color: isDark ? "#3f3f46" : "#a1a1aa", fontSize: 11 }}>
                     Ready when you are
                 </span>
             </div>

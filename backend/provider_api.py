@@ -19,6 +19,26 @@ router = APIRouter()
 _aes_key_cache: bytes | None = None
 
 
+def _lm_studio_openai_base(base_url: str | None) -> str:
+    """Return LM Studio base URL normalized for OpenAI-compatible endpoints."""
+    base = (base_url or "http://localhost:1234").rstrip("/")
+    if base.endswith("/api/v1"):
+        base = base[:-7] + "/v1"
+    elif not base.endswith("/v1"):
+        base = base + "/v1"
+    return base
+
+
+def _lm_studio_rest_base(base_url: str | None) -> str:
+    """Return LM Studio base URL normalized for REST API v1 endpoints."""
+    base = (base_url or "http://localhost:1234").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3] + "/api/v1"
+    elif not base.endswith("/api/v1"):
+        base = base + "/api/v1"
+    return base
+
+
 def _get_aes_key() -> bytes:
     global _aes_key_cache
     if _aes_key_cache is None:
@@ -285,12 +305,15 @@ async def test_provider(provider_id: int, user: User = Depends(get_current_user)
                             return {"success": False, "message": f"HTTP {resp.status}"}
 
                 elif provider == "lm_studio":
-                    url = (base_url or "http://localhost:1234") + "/v1/models"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                        if resp.status == 200:
-                            return {"success": True, "message": "Connection successful — LM Studio is reachable."}
-                        else:
-                            return {"success": False, "message": f"HTTP {resp.status}"}
+                    # Prefer OpenAI-compatible API used by LiteLLM, then fall back to
+                    # LM Studio REST API v1 for instances configured in that mode.
+                    openai_url = _lm_studio_openai_base(base_url) + "/models"
+                    rest_url = _lm_studio_rest_base(base_url) + "/models"
+                    for url in (openai_url, rest_url):
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                            if resp.status == 200:
+                                return {"success": True, "message": "Connection successful — LM Studio is reachable."}
+                    return {"success": False, "message": "LM Studio unreachable on both /v1/models and /api/v1/models"}
 
                 else:
                     # Generic OpenAI-compatible test
@@ -380,13 +403,32 @@ async def fetch_provider_models(provider_id: int, user: User = Depends(get_curre
                         return {"models": [], "error": f"HTTP {resp.status}"}
 
                 elif provider == "lm_studio":
-                    url = (base_url or "http://localhost:1234") + "/v1/models"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    openai_url = _lm_studio_openai_base(base_url) + "/models"
+                    rest_url = _lm_studio_rest_base(base_url) + "/models"
+
+                    # OpenAI-compatible shape: { data: [{ id: "..." }] }
+                    async with session.get(openai_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            models = sorted([m["id"] for m in data.get("data", [])])
+                            models = sorted([m["id"] for m in data.get("data", []) if m.get("id")])
                             return {"models": models, "provider": key.name}
-                        return {"models": [], "error": f"HTTP {resp.status}"}
+
+                    # LM Studio REST API v1 shape can differ; normalize to string IDs.
+                    async with session.get(rest_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            raw_models = data.get("data") or data.get("models") or []
+                            models: list[str] = []
+                            for m in raw_models:
+                                if isinstance(m, dict):
+                                    mid = m.get("id") or m.get("model") or m.get("name")
+                                    if mid:
+                                        models.append(str(mid))
+                                elif isinstance(m, str):
+                                    models.append(m)
+                            return {"models": sorted(set(models)), "provider": key.name}
+
+                    return {"models": [], "error": "LM Studio model endpoint unavailable on /v1/models and /api/v1/models"}
 
                 elif provider == "cohere":
                     url = (base_url or "https://api.cohere.ai") + "/v1/models"

@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
+import { useTheme } from "../../contexts/ThemeContext";
 import { getApiBaseUrl } from "../../lib/runtimeConfig";
 import { motion } from "framer-motion";
 import {
     FileText, Palette, Code2, Rocket,
     Crown, BarChart3, Users, Lightbulb, Map, Layers,
-    FileCode, Target, Loader2, Sparkles, ChevronDown
+    FileCode, Target, Loader2, Sparkles, ChevronDown, RefreshCw
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -52,11 +53,13 @@ const ARTIFACT_META: Record<string, { label: string; icon: any; color: string; d
 export default function ProjectDashboardPage() {
     const { projectId } = useParams<{ projectId: string }>();
     const { getAccessToken } = useAuth();
+    const { theme } = useTheme();
 
     const [project, setProject] = useState<ProjectInfo | null>(null);
     const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
     const [loading, setLoading] = useState(true);
     const [generating, setGenerating] = useState(false);
+    const [regenerating, setRegenerating] = useState(false);
     const [bootstrapData, setBootstrapData] = useState<BootstrapPromptData | null>(null);
     const [bootstrapLoading, setBootstrapLoading] = useState(false);
     const [copied, setCopied] = useState(false);
@@ -158,6 +161,54 @@ export default function ProjectDashboardPage() {
         }
     };
 
+    const handleRegenerateAllArtifacts = async () => {
+        setRegenerating(true);
+        setError(null);
+        try {
+            const token = await getAccessToken();
+            const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/artifacts/regenerate-all`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!resp.ok) throw new Error("Failed to start regeneration");
+            // Poll for updates
+            const poll = setInterval(async () => {
+                const artsResp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/artifacts`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (artsResp.ok) {
+                    const artsData = await artsResp.json();
+                    setArtifacts(artsData.artifacts || []);
+                    // Stop when all artifacts are complete
+                    const stillRunning = artsData.artifacts?.some(
+                        (a: ArtifactInfo) => a.status === "pending" || a.status === "generating"
+                    );
+                    const hasComplete = artsData.artifacts?.some((a: ArtifactInfo) => a.status === "complete");
+                    if (!stillRunning && hasComplete) {
+                        clearInterval(poll);
+                        setRegenerating(false);
+                        // Auto-build bootstrap prompt via POST (idempotent) so it's ready immediately
+                        try {
+                            const bsResp = await fetch(
+                                `${getApiBaseUrl()}/api/v1/projects/${projectId}/bootstrap-prompt`,
+                                { method: "POST", headers: { Authorization: `Bearer ${token}` } }
+                            );
+                            if (bsResp.ok) {
+                                const bsData = await bsResp.json();
+                                if (bsData?.prompt) setBootstrapData(bsData);
+                            }
+                        } catch {
+                            // Non-fatal; user can still click Generate manually
+                        }
+                    }
+                }
+            }, 3000);
+        } catch (e: any) {
+            setError(e.message);
+            setRegenerating(false);
+        }
+    };
+
     const handleGenerateBootstrapPrompt = async () => {
         setBootstrapLoading(true);
         setError(null);
@@ -194,14 +245,30 @@ export default function ProjectDashboardPage() {
         );
     }
 
-    const completedArtifacts = artifacts.filter(a => a.status === "complete").length;
+    const completedArtifacts = artifacts.filter(a => a.status === "complete" || a.status === "generating").length;
     const totalArtifacts = Object.keys(ARTIFACT_META).length;
-    const allArtifactsComplete = totalArtifacts > 0 && completedArtifacts === totalArtifacts;
+    const allArtifactsComplete = totalArtifacts > 0 && completedArtifacts >= totalArtifacts;
     const bootstrapReady = Boolean(bootstrapData?.prompt);
     const canGenerateBootstrap = allArtifactsComplete;
     const canAccessBuildFlow = bootstrapReady;
     const nextStep = !allArtifactsComplete ? "artifacts" : !bootstrapReady ? "bootstrap" : null;
     const lockedActionClass = "opacity-45 saturate-50 cursor-not-allowed pointer-events-none";
+    const isDark = theme === "dark";
+    const headingClass = isDark ? "text-white" : "text-zinc-900";
+    const bodyClass = isDark ? "text-zinc-400" : "text-zinc-700";
+    const mutedClass = isDark ? "text-zinc-500" : "text-zinc-500";
+    const cardClass = isDark
+        ? "bg-[#12121A] border border-zinc-800/50"
+        : "bg-white border border-zinc-200 shadow-sm shadow-zinc-200/70";
+    const elevatedSurfaceClass = isDark
+        ? "bg-[#0E0E16] border border-zinc-800"
+        : "bg-zinc-50 border border-zinc-200";
+    const secondaryButtonClass = isDark
+        ? "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+        : "border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-100";
+    const disabledButtonClass = isDark
+        ? "bg-zinc-800/60 text-zinc-500"
+        : "bg-zinc-100 text-zinc-400 border border-zinc-200";
     const pulseAnimation = {
         boxShadow: [
             "0 0 0 rgba(168,85,247,0)",
@@ -218,8 +285,8 @@ export default function ProjectDashboardPage() {
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-10">
                 <div className="flex items-start justify-between">
                     <div>
-                        <h1 className="text-3xl font-bold text-white mb-1">{project?.name}</h1>
-                        <p className="text-zinc-400 max-w-2xl">{project?.description}</p>
+                        <h1 className={`text-3xl font-bold mb-1 ${headingClass}`}>{project?.name}</h1>
+                        <p className={`max-w-2xl ${bodyClass}`}>{project?.description}</p>
                     </div>
                     <div className="flex items-center gap-3">
                         {canAccessBuildFlow ? (
@@ -248,7 +315,7 @@ export default function ProjectDashboardPage() {
                                 </Link>
                             </motion.div>
                         ) : (
-                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-800 bg-zinc-900/40 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
+                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl text-sm font-medium ${disabledButtonClass} ${lockedActionClass}`}>
                                 <Palette className="w-4 h-4" />
                                 Design Studio
                             </div>
@@ -275,7 +342,7 @@ export default function ProjectDashboardPage() {
                                 </Link>
                             </motion.div>
                         ) : (
-                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl bg-zinc-800/60 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
+                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl text-sm font-medium ${disabledButtonClass} ${lockedActionClass}`}>
                                 <Code2 className="w-4 h-4" />
                                 Open Editor
                             </div>
@@ -286,9 +353,9 @@ export default function ProjectDashboardPage() {
                 {/* Score badge */}
                 {project?.overall_score != null && (
                     <div className="flex items-center gap-4 mt-4">
-                        <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#12121A] border border-zinc-800/50">
+                        <div className={`flex items-center gap-2 px-4 py-2 rounded-xl ${cardClass}`}>
                             <Crown className="w-4 h-4 text-amber-400" />
-                            <span className="text-sm text-zinc-300">C-Suite Score:</span>
+                            <span className={`text-sm ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>C-Suite Score:</span>
                             <span className="text-lg font-bold text-purple-400">{project.overall_score}/100</span>
                         </div>
                         {project.overall_verdict && (
@@ -305,7 +372,7 @@ export default function ProjectDashboardPage() {
                                 Improve
                             </Link>
                         ) : (
-                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900/40 border border-zinc-800 text-zinc-500 text-sm font-medium ${lockedActionClass}`}>
+                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium ${disabledButtonClass} ${lockedActionClass}`}>
                                 <Rocket className="w-3.5 h-3.5" />
                                 Improve
                             </div>
@@ -338,8 +405,8 @@ export default function ProjectDashboardPage() {
                             >
                                 <Sparkles className="w-4 h-4 text-purple-400 flex-shrink-0" />
                             </motion.div>
-                            <span className="text-sm text-purple-300 font-medium">
-                                Your project is ready — click <strong className="text-purple-200">Design Studio</strong> to generate screens or <strong className="text-purple-200">Open Editor</strong> to build with AI.
+                                <span className={`text-sm font-medium ${isDark ? "text-purple-300" : "text-purple-700"}`}>
+                                    Your project is ready — click <strong className={isDark ? "text-purple-200" : "text-purple-900"}>Design Studio</strong> to generate screens or <strong className={isDark ? "text-purple-200" : "text-purple-900"}>Open Editor</strong> to build with AI.
                             </span>
                             <motion.div
                                 animate={{ x: [0, 5, 0] }}
@@ -355,11 +422,11 @@ export default function ProjectDashboardPage() {
 
             {/* Bootstrap prompt section */}
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-                <div className={`bg-[#12121A] border border-zinc-800/50 rounded-xl p-5 transition-opacity ${canGenerateBootstrap ? "opacity-100" : "opacity-60"}`}>
+                <div className={`${cardClass} rounded-xl p-5 transition-opacity ${canGenerateBootstrap ? "opacity-100" : "opacity-60"}`}>
                     <div className="flex items-center justify-between gap-3 mb-3">
                         <div>
-                            <h2 className="text-lg font-bold text-white">AI Bootstrap Prompt</h2>
-                            <p className="text-xs text-zinc-400 mt-1">
+                            <h2 className={`text-lg font-bold ${headingClass}`}>AI Bootstrap Prompt</h2>
+                            <p className={`text-xs mt-1 ${bodyClass}`}>
                                 {bootstrapReady
                                     ? "The AI bootstrap prompt is ready. You can copy it, open Design Studio, or jump into the editor."
                                     : allArtifactsComplete
@@ -381,7 +448,7 @@ export default function ProjectDashboardPage() {
                             <button
                                 onClick={handleCopyPrompt}
                                 disabled={!bootstrapData?.prompt}
-                                className="h-9 px-4 rounded-lg border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 disabled:opacity-50"
+                                className={`h-9 px-4 rounded-lg text-sm font-medium disabled:opacity-50 ${secondaryButtonClass}`}
                             >
                                 {copied ? "Copied" : "Copy Prompt"}
                             </button>
@@ -393,7 +460,7 @@ export default function ProjectDashboardPage() {
                                     Build with Kith
                                 </Link>
                             ) : (
-                                <div className={`h-9 px-4 rounded-lg bg-zinc-800/60 text-zinc-500 text-sm font-medium flex items-center ${lockedActionClass}`}>
+                                <div className={`h-9 px-4 rounded-lg text-sm font-medium flex items-center ${disabledButtonClass} ${lockedActionClass}`}>
                                     Build with Kith
                                 </div>
                             )}
@@ -402,16 +469,16 @@ export default function ProjectDashboardPage() {
 
                     {bootstrapData ? (
                         <>
-                            <div className="flex items-center gap-4 text-xs text-zinc-400 mb-3">
+                            <div className={`flex items-center gap-4 text-xs mb-3 ${bodyClass}`}>
                                 <span>{bootstrapData.word_count} words</span>
                                 <span>~{bootstrapData.token_estimate} tokens</span>
                             </div>
-                            <div className="max-h-44 overflow-y-auto rounded-lg border border-zinc-800 bg-[#0E0E16] p-3 text-xs text-zinc-300 whitespace-pre-wrap">
+                            <div className={`max-h-44 overflow-y-auto rounded-lg p-3 text-xs whitespace-pre-wrap ${elevatedSurfaceClass} ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
                                 {bootstrapData.prompt}
                             </div>
                         </>
                     ) : (
-                        <div className="rounded-lg border border-zinc-800 bg-[#0E0E16] p-3 text-xs text-zinc-500">
+                        <div className={`rounded-lg p-3 text-xs ${elevatedSurfaceClass} ${mutedClass}`}>
                             No bootstrap prompt generated yet.
                         </div>
                     )}
@@ -421,30 +488,44 @@ export default function ProjectDashboardPage() {
             {/* Artifacts section */}
             <div className="mb-6 flex items-center justify-between">
                 <div>
-                    <h2 className="text-xl font-bold text-white">Project Artifacts</h2>
-                    <p className="text-sm text-zinc-400 mt-1">{completedArtifacts}/{totalArtifacts} generated</p>
+                    <h2 className={`text-xl font-bold ${headingClass}`}>Project Artifacts</h2>
+                    <p className={`text-sm mt-1 ${bodyClass}`}>
+                        {artifacts.length === 0 ? "No artifacts yet" : `${completedArtifacts}/${totalArtifacts} generated`}
+                    </p>
                 </div>
-                {completedArtifacts < totalArtifacts && (
-                    <motion.button
-                        onClick={handleGenerateArtifacts}
-                        disabled={generating}
-                        animate={nextStep === "artifacts" && !generating ? pulseAnimation : undefined}
-                        transition={nextStep === "artifacts" && !generating ? pulseTransition : undefined}
-                        className="flex items-center gap-2 h-10 px-5 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
-                    >
-                        {generating ? (
-                            <>
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                                Generating...
-                            </>
-                        ) : (
-                            <>
-                                <Lightbulb className="w-4 h-4" />
-                                Generate All Artifacts
-                            </>
-                        )}
-                    </motion.button>
-                )}
+                <div className="flex items-center gap-2">
+                    {(completedArtifacts < totalArtifacts || artifacts.length === 0) && (
+                        <motion.button
+                            onClick={handleGenerateArtifacts}
+                            disabled={generating}
+                            animate={nextStep === "artifacts" && !generating ? pulseAnimation : undefined}
+                            transition={nextStep === "artifacts" && !generating ? pulseTransition : undefined}
+                            className="flex items-center gap-2 h-10 px-5 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
+                        >
+                            {generating ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    Generating...
+                                </>
+                            ) : (
+                                <>
+                                    <Lightbulb className="w-4 h-4" />
+                                    Generate All Artifacts
+                                </>
+                            )}
+                        </motion.button>
+                    )}
+                    {completedArtifacts > 0 && (
+                        <button
+                            onClick={handleRegenerateAllArtifacts}
+                            disabled={regenerating || generating}
+                            className={`flex items-center gap-2 h-10 px-5 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 ${secondaryButtonClass}`}
+                        >
+                            <RefreshCw className={`w-4 h-4 ${regenerating ? "animate-spin" : ""}`} />
+                            Regenerate All Artifacts
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Artifact grid */}
@@ -457,7 +538,7 @@ export default function ProjectDashboardPage() {
                     const Icon = meta.icon;
                     const isExpanded = expandedArtifact === type;
                     const preview = isComplete && artifact?.content
-                        ? artifact.content.slice(0, 120).replace(/\n/g, " ").trim() + (artifact.content.length > 120 ? "..." : "")
+                        ? artifact.content.slice(0, 120).replace(/\n/g, " ").trim() + (artifact.content.length > 120 ? ".\.\." : "")
                         : null;
 
                     return (
@@ -466,23 +547,27 @@ export default function ProjectDashboardPage() {
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: i * 0.04 }}
-                            className={`bg-[#12121A] border rounded-xl overflow-hidden transition-all ${
-                                isComplete && allArtifactsComplete
-                                    ? "border-zinc-700/50 hover:border-purple-500/30 cursor-pointer"
+                            className={`${cardClass} rounded-xl overflow-hidden transition-all ${
+                                isComplete
+                                    ? isDark ? "border-zinc-700/50 hover:border-purple-500/30 cursor-pointer" : "border-zinc-200 hover:border-purple-300 cursor-pointer"
                                     : isGenerating
                                         ? "border-purple-500/30"
-                                        : "border-zinc-800/30"
+                                        : isDark ? "border-zinc-800/30" : "border-zinc-200"
                             }`}
-                            onClick={() => isComplete && allArtifactsComplete && setExpandedArtifact(isExpanded ? null : type)}
+                            onClick={() => {
+                                if (isComplete) {
+                                    setExpandedArtifact(isExpanded ? null : type);
+                                }
+                            }}
                         >
                             <div className="p-5">
                                 <div className="flex items-center gap-3 mb-1">
-                                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${isComplete ? "bg-zinc-800/80" : "bg-zinc-800/40"}`}>
+                                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${isComplete ? (isDark ? "bg-zinc-800/80" : "bg-zinc-100") : (isDark ? "bg-zinc-800/40" : "bg-zinc-100/60")}`}>
                                         <Icon className={`w-4.5 h-4.5 ${isComplete ? meta.color : "text-zinc-600"}`} />
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                        <h3 className={`text-sm font-bold ${isComplete ? "text-white" : "text-zinc-500"}`}>{meta.label}</h3>
-                                        <p className="text-xs text-zinc-500">{meta.description}</p>
+                                        <h3 className={`text-sm font-bold ${isComplete ? headingClass : mutedClass}`}>{meta.label}</h3>
+                                        <p className={`text-xs ${bodyClass}`}>{meta.description}</p>
                                     </div>
                                     {isComplete && (
                                         <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform flex-shrink-0 ${isExpanded ? "rotate-180" : ""}`} />
@@ -492,7 +577,7 @@ export default function ProjectDashboardPage() {
 
                                 {/* Content preview for completed artifacts */}
                                 {isComplete && preview && !isExpanded && (
-                                    <p className="mt-2 text-[11px] text-zinc-400 leading-relaxed line-clamp-2 ml-12">
+                                    <p className={`mt-2 text-[11px] leading-relaxed line-clamp-2 ml-12 ${bodyClass}`}>
                                         {preview}
                                     </p>
                                 )}
@@ -531,7 +616,7 @@ export default function ProjectDashboardPage() {
                                                 }, 2000);
                                             } catch { /* ignore */ }
                                         }}
-                                        className="mt-2 ml-12 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[11px] font-medium hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                        className="mt-2 ml-12 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-500 text-[11px] font-medium hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
                                         <Sparkles className="w-3 h-3" />
                                         Generate
@@ -544,9 +629,9 @@ export default function ProjectDashboardPage() {
                                 <motion.div
                                     initial={{ height: 0, opacity: 0 }}
                                     animate={{ height: "auto", opacity: 1 }}
-                                    className="border-t border-zinc-800/50 px-5 py-4 max-h-96 overflow-y-auto"
+                                    className={`px-5 py-4 max-h-96 overflow-y-auto ${isDark ? "border-t border-zinc-800/50" : "border-t border-zinc-200"}`}
                                 >
-                                    <div className="prose prose-sm prose-invert max-w-none text-zinc-300 text-xs leading-relaxed whitespace-pre-wrap">
+                                    <div className={`max-w-none text-xs leading-relaxed whitespace-pre-wrap ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
                                         {artifact.content}
                                     </div>
                                 </motion.div>

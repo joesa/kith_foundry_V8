@@ -63,6 +63,11 @@ export function useFoundry(projectId?: string) {
     const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
     const ws = useRef<WebSocket | null>(null);
 
+    // Conversation streaming state
+    const [assistantStreaming, setAssistantStreaming] = useState(false);
+    const [streamingAssistantMessage, setStreamingAssistantMessage] = useState("");
+    const assistantMessageRef = useRef("");
+
     // Auto-fix: debounced error collection from preview iframe
     const pendingErrors = useRef<Array<{ source: string, message: string, stack?: string }>>([]);
     const errorFlushTimer = useRef<number | null>(null);
@@ -251,6 +256,17 @@ export function useFoundry(projectId?: string) {
                     setMessages(prev => [...prev, { role: "system", content: data.message }]);
                 }
                 // "skipped" and "failed" are silent
+            } else if (data.type === "chat_token") {
+                if (!assistantStreaming) setAssistantStreaming(true);
+                assistantMessageRef.current += data.token;
+                setStreamingAssistantMessage(assistantMessageRef.current);
+            } else if (data.type === "chat_complete") {
+                setAssistantStreaming(false);
+                assistantMessageRef.current = "";
+                setStreamingAssistantMessage("");
+                if (data.message) {
+                    setMessages(prev => [...prev, { role: "assistant", content: data.message }]);
+                }
             } else if (data.type === "error") {
                 if (data.message === "Authentication failed") {
                     // Token may have expired — force refresh and reconnect
@@ -264,6 +280,9 @@ export function useFoundry(projectId?: string) {
                 setMessages(prev => [...prev, { role: "system", content: `Error: ${data.message}` }]);
                 setIsStreaming(false);
                 setStreamingFile(null);
+                setAssistantStreaming(false);
+                assistantMessageRef.current = "";
+                setStreamingAssistantMessage("");
             }
             }; // end socket.onmessage
         }; // end connect()
@@ -302,7 +321,9 @@ export function useFoundry(projectId?: string) {
         messages,
         sendCommand,
         streamingFile,
-        isStreaming
+        isStreaming,
+        assistantStreaming,
+        streamingAssistantMessage
     };
 }
 

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useApiFetch } from "../../hooks/useApiFetch";
 import { useAuth } from "../../contexts/AuthContext";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, ArrowRight, ArrowLeft, Star, Check, Bookmark, BookmarkCheck, Shield, Users } from "lucide-react";
+import { Sparkles, ArrowRight, ArrowLeft, Star, Check, Bookmark, BookmarkCheck, Shield } from "lucide-react";
 
 // ── Questionnaire Data ──────────────────────────────────────────────────────
 
@@ -139,7 +139,7 @@ export default function DiscoverIdeaPage() {
             try {
                 const idea = await requestUniqueIdea(apiFetch, uniqueIdeaCacheKey);
                 if (!cancelled) {
-                    setUniqueIdea(current => current ?? idea);
+                    setUniqueIdea((current: UniqueIdea | null) => current ?? idea);
                 }
             } catch (e) {
                 if (!cancelled) {
@@ -230,7 +230,7 @@ export default function DiscoverIdeaPage() {
         }
     };
 
-    const setAnswer = (qId: number, value: any) => {
+    const setAnswer = (qId: number, value: Answers[number]) => {
         setAnswers(prev => ({ ...prev, [qId]: value }));
     };
 
@@ -256,53 +256,53 @@ export default function DiscoverIdeaPage() {
                     <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 border border-purple-500/10 mb-6">
                         <Sparkles className="w-8 h-8 text-purple-400" />
                     </div>
-                    <h1 className="text-3xl font-bold text-white mb-2">Your One-Time Unique Idea</h1>
-                    <p className="text-zinc-400 mb-10">This idea is generated exclusively for you and will never be shown to anyone else.</p>
+                    <h1 className="text-3xl font-bold text-[var(--kf-text)] mb-2">Your One-Time Unique Idea</h1>
+                    <p className="text-[var(--kf-text-secondary)] mb-10">This idea is generated exclusively for you and will never be shown to anyone else.</p>
 
                     {uniqueLoading ? (
-                        <div className="bg-[#12121A] border border-zinc-800/50 rounded-2xl p-12 flex flex-col items-center">
+                        <div className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-12 flex flex-col items-center">
                             <div className="w-10 h-10 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mb-4" />
-                            <p className="text-zinc-400 text-sm">Generating your unique idea...</p>
+                            <p className="text-[var(--kf-text-secondary)] text-sm">Generating your unique idea...</p>
                         </div>
                     ) : uniqueIdea ? (
                         <motion.div
                             initial={{ opacity: 0, scale: 0.95 }}
                             animate={{ opacity: 1, scale: 1 }}
-                            className="bg-[#12121A] border border-zinc-800/50 rounded-2xl p-8 text-left"
+                            className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-8 text-left"
                         >
                             <div className="flex items-center gap-3 mb-4">
                                 <Star className="w-5 h-5 text-amber-400 fill-amber-400" />
-                                <h2 className="text-xl font-bold text-white">{uniqueIdea.name}</h2>
+                                <h2 className="text-xl font-bold text-[var(--kf-text)]">{uniqueIdea.name}</h2>
                                 {uniqueIdea.score && (
                                     <span className="ml-auto text-sm font-bold px-3 py-1 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/20">
                                         {uniqueIdea.score}/100
                                     </span>
                                 )}
                             </div>
-                            <p className="text-zinc-300 mb-6 leading-relaxed">{uniqueIdea.description}</p>
+                            <p className="text-[var(--kf-text-secondary)] mb-6 leading-relaxed">{uniqueIdea.description}</p>
 
                             {uniqueIdea.target_market && (
-                                <div className="text-sm text-zinc-400 mb-2"><strong className="text-zinc-300">Target:</strong> {uniqueIdea.target_market}</div>
+                                <div className="text-sm text-[var(--kf-text-secondary)] mb-2"><strong className="text-[var(--kf-text-secondary)]">Target:</strong> {uniqueIdea.target_market}</div>
                             )}
                             {uniqueIdea.revenue_potential && (
-                                <div className="text-sm text-zinc-400 mb-2"><strong className="text-zinc-300">Revenue:</strong> {uniqueIdea.revenue_potential}</div>
+                                <div className="text-sm text-[var(--kf-text-secondary)] mb-2"><strong className="text-[var(--kf-text-secondary)]">Revenue:</strong> {uniqueIdea.revenue_potential}</div>
                             )}
                             {uniqueIdea.why_now && (
-                                <div className="text-sm text-zinc-400 mb-6"><strong className="text-zinc-300">Why Now:</strong> {uniqueIdea.why_now}</div>
+                                <div className="text-sm text-[var(--kf-text-secondary)] mb-6"><strong className="text-[var(--kf-text-secondary)]">Why Now:</strong> {uniqueIdea.why_now}</div>
                             )}
 
                             <div className="flex items-center gap-3 justify-end">
                                 <button
                                     onClick={() => handleSaveIdea({ ...uniqueIdea, source: "unique_gen" })}
                                     disabled={savedIds.has(uniqueIdea.name) || savingId === uniqueIdea.name}
-                                    className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                                    className="flex items-center gap-2 h-10 px-5 rounded-xl border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors disabled:opacity-50"
                                 >
                                     {savedIds.has(uniqueIdea.name) ? <BookmarkCheck className="w-4 h-4 text-green-400" /> : <Bookmark className="w-4 h-4" />}
                                     {savedIds.has(uniqueIdea.name) ? "Saved" : "Save for Later"}
                                 </button>
                                 <button
                                     onClick={handleFindSomethingElse}
-                                    className="h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors"
+                                    className="h-10 px-5 rounded-xl border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors"
                                 >
                                     Help me find something else
                                 </button>
@@ -317,8 +317,8 @@ export default function DiscoverIdeaPage() {
                             </div>
                         </motion.div>
                     ) : (
-                        <div className="bg-[#12121A] border border-zinc-800/50 rounded-2xl p-8 text-center">
-                            <p className="text-zinc-400 mb-4">Couldn't generate a unique idea right now.</p>
+                        <div className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-8 text-center">
+                            <p className="text-[var(--kf-text-secondary)] mb-4">Couldn't generate a unique idea right now.</p>
                             <button
                                 onClick={handleFindSomethingElse}
                                 className="h-10 px-6 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors"
@@ -338,8 +338,8 @@ export default function DiscoverIdeaPage() {
             <div className="max-w-3xl mx-auto px-6 py-32 text-center">
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                     <div className="w-16 h-16 border-3 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-6" />
-                    <h2 className="text-2xl font-bold text-white mb-2">Generating Your Ideas</h2>
-                    <p className="text-zinc-400">Our AI is producing 3 globally unique ideas tailored to your answers. Please be patient, this can take up to 2 minutes.</p>
+                    <h2 className="text-2xl font-bold text-[var(--kf-text)] mb-2">Generating Your Ideas</h2>
+                    <p className="text-[var(--kf-text-secondary)]">Our AI is producing 3 globally unique ideas tailored to your answers. Please be patient, this can take up to 2 minutes.</p>
                 </motion.div>
             </div>
         );
@@ -351,8 +351,8 @@ export default function DiscoverIdeaPage() {
             <div className="max-w-4xl mx-auto px-6 py-12">
                 <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
                     <div className="text-center mb-10">
-                        <h1 className="text-3xl font-bold text-white mb-2">Your Personalized Ideas</h1>
-                        <p className="text-zinc-400">3 unique ideas crafted from your profile. Select one to proceed to C-Suite validation.</p>
+                        <h1 className="text-3xl font-bold text-[var(--kf-text)] mb-2">Your Personalized Ideas</h1>
+                        <p className="text-[var(--kf-text-secondary)]">3 unique ideas crafted from your profile. Select one to proceed to C-Suite validation.</p>
                     </div>
 
                     {/* Exclusivity Info Banner */}
@@ -362,14 +362,14 @@ export default function DiscoverIdeaPage() {
                                 <Shield className="w-5 h-5 text-purple-400" />
                             </div>
                             <div className="space-y-2 text-sm">
-                                <h4 className="font-semibold text-white">How Idea Exclusivity Works</h4>
-                                <div className="flex items-start gap-2 text-zinc-400">
+                                <h4 className="font-semibold text-[var(--kf-text)]">How Idea Exclusivity Works</h4>
+                                <div className="flex items-start gap-2 text-[var(--kf-text-secondary)]">
                                     <Bookmark className="w-4 h-4 shrink-0 mt-0.5 text-zinc-500" />
-                                    <span><strong className="text-zinc-300">Save for Later</strong> — idea remains visible to all users. Save it to your profile and build when you're ready.</span>
+                                    <span><strong className="text-[var(--kf-text-secondary)]">Save for Later</strong> — idea remains visible to all users. Save it to your profile and build when you're ready.</span>
                                 </div>
-                                <div className="flex items-start gap-2 text-zinc-400">
+                                <div className="flex items-start gap-2 text-[var(--kf-text-secondary)]">
                                     <Sparkles className="w-4 h-4 shrink-0 mt-0.5 text-purple-400" />
-                                    <span><strong className="text-zinc-300">Build This</strong> — idea becomes <strong className="text-purple-300">exclusively yours</strong>. No other user will ever see or be able to build this idea.</span>
+                                    <span><strong className="text-[var(--kf-text-secondary)]">Build This</strong> — idea becomes <strong className="text-purple-300">exclusively yours</strong>. No other user will ever see or be able to build this idea.</span>
                                 </div>
                             </div>
                         </div>
@@ -382,12 +382,12 @@ export default function DiscoverIdeaPage() {
                                 initial={{ opacity: 0, y: 20 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 transition={{ delay: i * 0.15 }}
-                                className="bg-[#12121A] border border-zinc-800/50 rounded-2xl p-6"
+                                className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-6"
                             >
                                 <div className="flex items-start justify-between mb-3">
                                     <div className="flex items-center gap-3">
                                         <span className="text-lg font-bold text-purple-400">#{i + 1}</span>
-                                        <h3 className="text-lg font-bold text-white">{idea.name}</h3>
+                                        <h3 className="text-lg font-bold text-[var(--kf-text)]">{idea.name}</h3>
                                     </div>
                                     {idea.score && (
                                         <span className="text-sm font-bold px-3 py-1 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/20">
@@ -396,7 +396,7 @@ export default function DiscoverIdeaPage() {
                                     )}
                                 </div>
 
-                                <p className="text-zinc-300 text-sm mb-4 leading-relaxed">{idea.description}</p>
+                                <p className="text-[var(--kf-text-secondary)] text-sm mb-4 leading-relaxed">{idea.description}</p>
 
                                 {/* Detail fields */}
                                 {["target_market", "tam", "revenue_model", "monthly_revenue_potential", "how_it_works", "why_now", "go_to_market", "pricing_model", "strategic_moat", "launch_plan_90_day"].map(field => {
@@ -404,8 +404,8 @@ export default function DiscoverIdeaPage() {
                                     if (!val) return null;
                                     const label = field.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
                                     return (
-                                        <div key={field} className="text-sm text-zinc-400 mb-2">
-                                            <strong className="text-zinc-300">{label}:</strong> {val}
+                                        <div key={field} className="text-sm text-[var(--kf-text-secondary)] mb-2">
+                                            <strong className="text-[var(--kf-text-secondary)]">{label}:</strong> {val}
                                         </div>
                                     );
                                 })}
@@ -414,7 +414,7 @@ export default function DiscoverIdeaPage() {
                                     <button
                                         onClick={() => handleSaveIdea({ ...idea, source: "questionnaire" })}
                                         disabled={savedIds.has(idea.name) || savingId === idea.name}
-                                        className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                                        className="flex items-center gap-2 h-10 px-5 rounded-xl border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors disabled:opacity-50"
                                     >
                                         {savedIds.has(idea.name) ? <BookmarkCheck className="w-4 h-4 text-green-400" /> : <Bookmark className="w-4 h-4" />}
                                         {savedIds.has(idea.name) ? "Saved" : "Save for Later"}
@@ -435,7 +435,7 @@ export default function DiscoverIdeaPage() {
                     <div className="flex justify-center mt-8">
                         <button
                             onClick={() => { setPhase("questionnaire"); setStep(0); }}
-                            className="text-sm text-zinc-500 hover:text-white transition-colors"
+                            className="text-sm text-zinc-500 hover:text-[var(--kf-text)] transition-colors"
                         >
                             Start over with different answers
                         </button>
@@ -453,18 +453,18 @@ export default function DiscoverIdeaPage() {
                     <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/10 mb-4">
                         <Sparkles className="w-6 h-6 text-purple-400" />
                     </div>
-                    <h1 className="text-2xl font-bold text-white mb-1">Discover Your Idea</h1>
-                    <p className="text-zinc-400 text-sm">Answer {QUESTIONS.length} questions to generate 3 personalized ideas</p>
+                    <h1 className="text-2xl font-bold text-[var(--kf-text)] mb-1">Discover Your Idea</h1>
+                    <p className="text-[var(--kf-text-secondary)] text-sm">Answer {QUESTIONS.length} questions to generate 3 personalized ideas</p>
                 </div>
 
                 {/* Card */}
-                <div className="bg-[#12121A] border border-zinc-800/50 rounded-2xl p-8">
+                <div className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-8">
                     {/* Progress */}
                     <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs text-zinc-400 font-medium">Progress</span>
+                        <span className="text-xs text-[var(--kf-text-secondary)] font-medium">Progress</span>
                         <span className="text-xs font-bold text-purple-400">{progress}%</span>
                     </div>
-                    <div className="h-1.5 bg-zinc-800 rounded-full mb-6 overflow-hidden">
+                    <div className="h-1.5 bg-[var(--kf-badge-bg)] rounded-full mb-6 overflow-hidden">
                         <motion.div
                             className="h-full bg-gradient-to-r from-purple-600 to-purple-400 rounded-full"
                             initial={false}
@@ -487,11 +487,11 @@ export default function DiscoverIdeaPage() {
                             exit={{ opacity: 0, x: -30 }}
                             transition={{ duration: 0.2 }}
                         >
-                            <h2 className="text-lg font-bold text-white mt-4 mb-6">{currentQ.question}</h2>
+                            <h2 className="text-lg font-bold text-[var(--kf-text)] mt-4 mb-6">{currentQ.question}</h2>
 
                             {currentQ.type === "rating" && (
                                 <div className="flex items-center gap-4 justify-center my-6">
-                                    <span className="text-sm text-zinc-400">Low</span>
+                                    <span className="text-sm text-[var(--kf-text-secondary)]">Low</span>
                                     <div className="flex gap-3">
                                         {[1, 2, 3, 4, 5].map(n => (
                                             <button
@@ -499,14 +499,14 @@ export default function DiscoverIdeaPage() {
                                                 onClick={() => setAnswer(currentQ.id, n)}
                                                 className={`w-12 h-12 rounded-full text-sm font-bold transition-all ${answers[currentQ.id] === n
                                                     ? "bg-purple-600 text-white scale-110 shadow-lg shadow-purple-500/30"
-                                                    : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                                                    : "bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
                                                     }`}
                                             >
                                                 {n}
                                             </button>
                                         ))}
                                     </div>
-                                    <span className="text-sm text-zinc-400">High</span>
+                                    <span className="text-sm text-[var(--kf-text-secondary)]">High</span>
                                 </div>
                             )}
 
@@ -520,11 +520,11 @@ export default function DiscoverIdeaPage() {
                                                 onClick={() => toggleMulti(currentQ.id, option)}
                                                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-left transition-all ${selected
                                                     ? "bg-purple-600/20 border-purple-500/40 text-white border"
-                                                    : "bg-zinc-800/50 border-zinc-700/50 text-zinc-300 border hover:border-zinc-600"
+                                                    : "bg-[var(--kf-badge-bg)] border-[var(--kf-border)] text-[var(--kf-text-secondary)] border hover:border-[var(--kf-border-muted)]"
                                                     }`}
                                             >
                                                 <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${selected ? "bg-purple-600 border-purple-500" : "border-zinc-600"}`}>
-                                                    {selected && <Check className="w-3 h-3 text-white" />}
+                                                    {selected && <Check className="w-3 h-3 text-[var(--kf-text)]" />}
                                                 </div>
                                                 {option}
                                             </button>
@@ -538,7 +538,7 @@ export default function DiscoverIdeaPage() {
                                     value={(answers[currentQ.id] as string) || ""}
                                     onChange={(e) => setAnswer(currentQ.id, e.target.value)}
                                     placeholder="Type your answer..."
-                                    className="w-full min-h-[120px] p-4 bg-zinc-800/50 border border-zinc-700/50 rounded-xl text-white placeholder-zinc-600 resize-none focus:outline-none focus:border-purple-500/50 transition-colors"
+                                    className="w-full min-h-[120px] p-4 bg-[var(--kf-badge-bg)] border border-[var(--kf-border)] rounded-xl text-[var(--kf-text)] placeholder-[var(--kf-text-faint)] resize-none focus:outline-none focus:border-purple-500/50 transition-colors"
                                 />
                             )}
                         </motion.div>
@@ -549,7 +549,7 @@ export default function DiscoverIdeaPage() {
                         <button
                             onClick={() => setStep(Math.max(0, step - 1))}
                             disabled={step === 0}
-                            className="flex items-center gap-2 h-10 px-5 rounded-xl border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                            className="flex items-center gap-2 h-10 px-5 rounded-xl border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                             <ArrowLeft className="w-4 h-4" />
                             Back

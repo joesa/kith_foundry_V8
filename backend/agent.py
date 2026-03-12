@@ -1,7 +1,7 @@
 import json
 import re
 from models import Message, File
-from prompts import ARCHITECT_PROMPT, SURGEON_PROMPT
+from prompts import ARCHITECT_PROMPT, SURGEON_PROMPT, ROUTER_PROMPT, CONVERSATIONAL_PROMPT
 import asyncio
 from design_context import get_design_context, get_design_context_compact, get_design_contract_css
 import litellm
@@ -115,36 +115,219 @@ async def read_all_project_files(db, project_id: str) -> dict:
     return {fp: content for fp, content in contents.items() if content}
 
 
-async def process_user_request(prompt: str, project_id: int, model_id: str, db=None, images: list = None, user_id: str = None):
-    """
-    Executes a streaming LLM call to generate multi-file modifications.
-    Parses the JSON in-flight to stream individual file contents to the editor.
-    Reads project state from the database — no sandbox needed.
-    """
-    # Resolve model via user's routing config if no specific model requested
+async def _resolve_llm_credentials(model_id: str, user_id: str = None):
+    """Resolve model ID and API credentials from user's routing config."""
     api_key = None
     api_base = None
-    if user_id and (not model_id or model_id == "default"):
+    resolved_via_routing = False
+    effective_model = model_id
+
+    if user_id:
         from model_resolver import resolve_model_for_task
         mc = resolve_model_for_task(user_id, "code_gen")
         if mc.get("error"):
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail=mc["error"])
-        model_id = mc["model"]
+        routed_model = mc["model"]
+        selected_model = (model_id or "").strip()
+        if not selected_model or selected_model == "default":
+            effective_model = routed_model
+        else:
+            if "/" in selected_model:
+                effective_model = selected_model
+            elif isinstance(routed_model, str) and "/" in routed_model:
+                routed_prefix = routed_model.split("/", 1)[0]
+                effective_model = f"{routed_prefix}/{selected_model}"
+            else:
+                effective_model = selected_model
         api_key = mc.get("api_key")
         api_base = mc.get("api_base")
-        print(f"\U0001f4bb Code Gen using: {model_id} via {mc['provider_name']}")
+        resolved_via_routing = True
 
-    yield {"status": "analyzing", "message": f"Analyzing request using {model_id}..."}
-    
+    # Look up configured provider credentials
+    llm_kwargs = {}
+    if api_key:
+        llm_kwargs["api_key"] = api_key
+    if api_base:
+        llm_kwargs["api_base"] = api_base
+
+    try:
+        from provider_api import get_db, decrypt_key
+        from models import ProviderKey
+        db_lookup = get_db()
+        provider_key = None
+        if not resolved_via_routing:
+            query = db_lookup.query(ProviderKey).filter(ProviderKey.is_active == True)
+            if user_id:
+                query = query.filter(ProviderKey.user_id == user_id)
+            provider_key = query.filter(ProviderKey.is_default == True).first()
+            if not provider_key:
+                provider_key = query.first()
+        if provider_key:
+            api_key = decrypt_key(provider_key.api_key_encrypted)
+            llm_kwargs["api_key"] = api_key
+            if provider_key.base_url:
+                llm_kwargs["api_base"] = provider_key.base_url
+            ptype = provider_key.provider.lower()
+            if ptype == "lm_studio":
+                base = llm_kwargs.get("api_base", "http://localhost:1234")
+                if not base.rstrip("/").endswith("/v1"):
+                    llm_kwargs["api_base"] = base.rstrip("/") + "/v1"
+                if not effective_model.startswith("openai/"):
+                    effective_model = f"openai/{effective_model}"
+            elif ptype in ("openai_compatible", "azure_openai"):
+                if not effective_model.startswith("openai/"):
+                    effective_model = f"openai/{effective_model}"
+            elif ptype == "ollama":
+                if not effective_model.startswith("ollama/"):
+                    effective_model = f"ollama/{effective_model}"
+            elif ptype == "anthropic":
+                if not effective_model.startswith("anthropic/"):
+                    effective_model = f"anthropic/{effective_model}"
+            elif ptype == "google_ai":
+                if not effective_model.startswith("gemini/"):
+                    effective_model = f"gemini/{effective_model}"
+            elif ptype == "cohere":
+                if not effective_model.startswith("cohere/"):
+                    effective_model = f"cohere/{effective_model}"
+            from datetime import datetime
+            provider_key.last_used_at = datetime.utcnow()
+            db_lookup.commit()
+        db_lookup.close()
+    except Exception as e:
+        print(f"Provider lookup failed, falling back to env vars: {e}")
+
+    return effective_model, llm_kwargs
+
+
+async def classify_intent(prompt: str, model_id: str, llm_kwargs: dict) -> str:
+    """Classify user intent as 'code' or 'conversation' using a fast LLM call."""
+    try:
+        response = await litellm.acompletion(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": ROUTER_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            max_tokens=10,
+            stream=False,
+            **llm_kwargs
+        )
+        result = response.choices[0].message.content.strip().lower()
+        if "code" in result:
+            return "code"
+        if "conversation" in result or "convers" in result:
+            return "conversation"
+        # Default to code for safety (preserves existing behavior)
+        print(f"[intent] Ambiguous classification: {result!r}, defaulting to code")
+        return "code"
+    except Exception as e:
+        print(f"[intent] Classification failed ({e}), defaulting to code")
+        return "code"
+
+
+async def process_conversation(prompt: str, project_id: int, model_id: str, llm_kwargs: dict, db=None, images: list = None):
+    """Stream a conversational (non-code) response using the CONVERSATIONAL_PROMPT."""
+    # Build project context for informed discussion
+    all_files = {}
+    file_tree_str = ""
+    if db:
+        all_files = await read_all_project_files(db, project_id)
+        tree_nodes = [{"name": os.path.basename(p), "path": p, "type": "file"} for p in sorted(all_files.keys())]
+        file_tree_str = json.dumps(tree_nodes, indent=2)
+
+    project_context = ""
+    if all_files:
+        # For conversation, include a summary (file list + key files) rather than ALL content
+        project_context += "\n**Current project files:**\n"
+        for path in sorted(all_files.keys()):
+            project_context += f"- `{path}`\n"
+        # Include content of key architectural files only
+        key_files = [p for p in all_files if any(k in p for k in ("App.tsx", "App.css", "main.tsx"))]
+        if key_files:
+            project_context += "\n**Key file contents:**\n"
+            for path in key_files:
+                ext = path.rsplit('.', 1)[-1] if '.' in path else 'txt'
+                lang = {'tsx': 'tsx', 'ts': 'typescript', 'css': 'css'}.get(ext, ext)
+                content = all_files[path]
+                # Truncate very large files for conversation context
+                if len(content) > 3000:
+                    content = content[:3000] + "\n... (truncated)"
+                project_context += f"\n--- {path} ---\n```{lang}\n{content}\n```\n"
+    else:
+        project_context = "\n(No existing files — this is a fresh project)\n"
+
+    user_content_text = f"""User message: {prompt}
+
+Project context:{project_context}"""
+
+    # Build user content (with optional images)
+    if images:
+        user_content: list = []
+        for data_url in images:
+            user_content.append({"type": "image_url", "image_url": {"url": data_url}})
+        user_content.append({"type": "text", "text": user_content_text})
+    else:
+        user_content = user_content_text
+
+    try:
+        response = await litellm.acompletion(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": CONVERSATIONAL_PROMPT},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=0.7,
+            stream=True,
+            **llm_kwargs
+        )
+
+        full_message = ""
+        async for chunk in response:
+            delta = chunk.choices[0].delta
+            if not delta.content:
+                continue
+            token = delta.content
+            full_message += token
+            yield {"status": "chat_token", "token": token}
+
+        yield {"status": "chat_complete", "message": full_message}
+
+    except Exception as e:
+        print(f"[conversation] Error: {e}")
+        yield {"status": "chat_complete", "message": f"I encountered an issue: {str(e)}. Please try again."}
+
+
+async def process_user_request(prompt: str, project_id: int, model_id: str, db=None, images: list = None, user_id: str = None):
+    """
+    Routes user requests to either conversation mode or code generation mode.
+    Performs intent classification first, then delegates accordingly.
+    """
+    # Resolve model and credentials
+    effective_model, llm_kwargs = await _resolve_llm_credentials(model_id, user_id)
+    print(f"\U0001f680 Using model: {effective_model}, api_base={llm_kwargs.get('api_base', 'default')}")
+
+    # Classify intent
+    yield {"status": "analyzing", "message": f"Analyzing request using {effective_model}..."}
+    intent = await classify_intent(prompt, effective_model, llm_kwargs)
+    print(f"\U0001f9e0 Intent classified as: {intent}")
+
+    # Route to conversation mode
+    if intent == "conversation":
+        async for step in process_conversation(prompt, project_id, effective_model, llm_kwargs, db=db, images=images):
+            yield step
+        return
+
+    # ── Code generation mode (existing behavior) ──
+    yield {"status": "reading", "message": "Reading current project files..."}
+
     # 1. Read the FULL project state from DB
     all_files = {}
     file_tree_str = ""
     
     if db:
-        yield {"status": "reading", "message": "Reading current project files..."}
         all_files = await read_all_project_files(db, project_id)
-        # Build a simple tree from the file paths for context
         tree_nodes = [{"name": os.path.basename(p), "path": p, "type": "file"} for p in sorted(all_files.keys())]
         file_tree_str = json.dumps(tree_nodes, indent=2)
     
@@ -161,10 +344,7 @@ async def process_user_request(prompt: str, project_id: int, model_id: str, db=N
     else:
         project_context = "\n(No existing files — this is a fresh project)\n"
     
-    # 2b. Fetch design context (CDO design system + screen inventory)
-    # Use compact by default to keep prompt within model context limits.
-    # Only pull full HTML mockups when the prompt explicitly references
-    # design / visual / mockup work — those tokens easily exceed 10k chars.
+    # 2b. Fetch design context
     design_ref = ""
     try:
         _design_keywords = ("design", "mockup", "visual", "style", "color", "layout",
@@ -175,7 +355,6 @@ async def process_user_request(prompt: str, project_id: int, model_id: str, db=N
             design_ref = await asyncio.to_thread(get_design_context, project_id)
         if not design_ref:
             design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
-        # Safety cap: if the combined prompt would be huge, fall back to compact
         if design_ref and len(design_ref) > 12_000:
             compact = await asyncio.to_thread(get_design_context_compact, project_id)
             design_ref = compact or design_ref[:12_000]
@@ -197,74 +376,13 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
 
     yield {"status": "generating", "message": "Generating code..."}
 
-    # Pre-initialize streaming state so the except block can always reference them
-    # even if an exception fires before we reach the state machine setup below.
+    # Pre-initialize streaming state
     current_file: str | None = None
     content_accumulator: str = ""
     streamed_files: dict = {}
     edits: list = []
 
     try:
-        # 4. Look up configured provider credentials
-        llm_kwargs = {}
-        effective_model = model_id
-        try:
-            from provider_api import get_db, decrypt_key
-            from models import ProviderKey
-            db = get_db()
-            # Find the default active provider, or first active one
-            provider_key = db.query(ProviderKey).filter(
-                ProviderKey.is_active == True,
-                ProviderKey.is_default == True
-            ).first()
-            if not provider_key:
-                provider_key = db.query(ProviderKey).filter(
-                    ProviderKey.is_active == True
-                ).first()
-            if provider_key:
-                api_key = decrypt_key(provider_key.api_key_encrypted)
-                llm_kwargs["api_key"] = api_key
-                if provider_key.base_url:
-                    llm_kwargs["api_base"] = provider_key.base_url
-                
-                # Auto-prefix model ID for litellm routing based on provider type
-                ptype = provider_key.provider.lower()
-                if ptype == "lm_studio":
-                    # LM Studio expects /v1/chat/completions; litellm appends /chat/completions
-                    # so we need api_base to end with /v1
-                    base = llm_kwargs.get("api_base", "http://localhost:1234")
-                    if not base.rstrip("/").endswith("/v1"):
-                        llm_kwargs["api_base"] = base.rstrip("/") + "/v1"
-                    if not effective_model.startswith("openai/"):
-                        effective_model = f"openai/{effective_model}"
-                elif ptype in ("openai_compatible", "azure_openai"):
-                    if not effective_model.startswith("openai/"):
-                        effective_model = f"openai/{effective_model}"
-                elif ptype == "ollama":
-                    if not effective_model.startswith("ollama/"):
-                        effective_model = f"ollama/{effective_model}"
-                elif ptype == "anthropic":
-                    if not effective_model.startswith("anthropic/"):
-                        effective_model = f"anthropic/{effective_model}"
-                elif ptype == "google_ai":
-                    if not effective_model.startswith("gemini/"):
-                        effective_model = f"gemini/{effective_model}"
-                elif ptype == "cohere":
-                    if not effective_model.startswith("cohere/"):
-                        effective_model = f"cohere/{effective_model}"
-
-                # Update last_used_at
-                from datetime import datetime
-                provider_key.last_used_at = datetime.utcnow()
-                db.commit()
-                print(f"🔑 Using provider: {provider_key.name} ({ptype}), model: {effective_model}, base: {provider_key.base_url}")
-            db.close()
-        except Exception as e:
-            print(f"Provider lookup failed, falling back to env vars: {e}")
-
-        print(f"🚀 LiteLLM call: model={effective_model}, api_base={llm_kwargs.get('api_base', 'default')}")
-
-        # 5. Call LiteLLM with streaming
         # Build user message — include images as vision blocks if provided
         if images:
             user_content: list = []

@@ -11,8 +11,9 @@ FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 INNGEST_PORT="${INNGEST_PORT:-8288}"
 PREFERRED_CONDA_ENV="${KITH_CONDA_ENV:-kith_venv}"
 FALLBACK_CONDA_ENV="${KITH_FALLBACK_CONDA_ENV:-base}"
-CONDA_EXE="${KITH_CONDA_EXE:-/c/Users/treas/miniconda3/Scripts/conda.exe}"
-CONDA_ENVS_DIR="${KITH_CONDA_ENVS_DIR:-/c/Users/treas/miniconda3/envs}"
+CONDA_EXE="${KITH_CONDA_EXE:-$(command -v conda 2>/dev/null || true)}"
+CONDA_ENVS_DIR="${KITH_CONDA_ENVS_DIR:-${HOME}/.conda/envs}"
+BACKEND_PYTHON_EXE="${KITH_BACKEND_PYTHON:-/home/joe/miniconda3/envs/kith_venv/bin/python}"
 USE_INNGEST_DEV_SERVER="${KITH_USE_INNGEST_DEV_SERVER:-1}"
 FLYCTL_EXE="${KITH_FLYCTL_EXE:-$(command -v flyctl 2>/dev/null || true)}"
 
@@ -80,14 +81,78 @@ log() {
   printf '[kith-dev] %s\n' "$*"
 }
 
+get_port_listener_pids() {
+  local port="$1"
+  local output=""
+
+  if command -v lsof >/dev/null 2>&1; then
+    output="$(lsof -t -iTCP:"$port" -sTCP:LISTEN -Pn 2>/dev/null | sort -u || true)"
+    printf '%s\n' "$output" | sed '/^$/d'
+    return
+  fi
+
+  if command -v fuser >/dev/null 2>&1; then
+    output="$(fuser -n tcp "$port" 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u || true)"
+    printf '%s\n' "$output" | sed '/^$/d'
+    return
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    output="$(ss -ltnp 2>/dev/null | awk -v port=":$port" '
+      $4 ~ port {
+        while (match($0, /pid=[0-9]+/)) {
+          pid = substr($0, RSTART + 4, RLENGTH - 4)
+          print pid
+          $0 = substr($0, RSTART + RLENGTH)
+        }
+      }
+    ' | sort -u || true)"
+    printf '%s\n' "$output" | sed '/^$/d'
+    return
+  fi
+
+  if command -v netstat >/dev/null 2>&1; then
+    output="$(netstat -ltnp 2>/dev/null | awk -v port=":$port" '$4 ~ port { sub(".*/","",$7); if ($7 != "-") print $7 }' | sort -u || true)"
+    printf '%s\n' "$output" | sed '/^$/d'
+  fi
+}
+
 port_listener_count() {
   local port="$1"
-  powershell -NoProfile -Command "try { (@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)).Count } catch { 0 }" | tr -d '\r'
+  if command -v powershell >/dev/null 2>&1; then
+    powershell -NoProfile -Command "try { (@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)).Count } catch { 0 }" | tr -d '\r'
+    return
+  fi
+
+  # Linux / macOS fallback: prefer ss, then lsof, then netstat
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :$port" 2>/dev/null | tail -n +2 | wc -l | tr -d ' '
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$port" -sTCP:LISTEN -Pn 2>/dev/null | tail -n +2 | wc -l | tr -d ' '
+  else
+    netstat -ltn 2>/dev/null | grep -c ":$port[[:space:]]" || true
+  fi
 }
 
 stop_port_listeners() {
   local port="$1"
-  powershell -NoProfile -Command "try { \$listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; foreach (\$listener in \$listeners) { try { Stop-Process -Id \$listener.OwningProcess -Force -ErrorAction Stop } catch {} } } catch {}" >/dev/null || true
+  if command -v powershell >/dev/null 2>&1; then
+    powershell -NoProfile -Command "try { \$listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; foreach (\$listener in \$listeners) { try { Stop-Process -Id \$listener.OwningProcess -Force -ErrorAction Stop } catch {} } } catch {}" >/dev/null || true
+  else
+    local pids
+    pids="$(get_port_listener_pids "$port")"
+    if [[ -n "$pids" ]]; then
+      for pid in $pids; do
+        pkill -TERM -P "$pid" >/dev/null 2>&1 || true
+        kill -TERM "$pid" >/dev/null 2>&1 || true
+      done
+      sleep 2
+      for pid in $pids; do
+        pkill -KILL -P "$pid" >/dev/null 2>&1 || true
+        kill -KILL "$pid" >/dev/null 2>&1 || true
+      done
+    fi
+  fi
 
   sleep 2
 
@@ -107,8 +172,18 @@ kill_pid_file() {
     local pid
     pid="$(tr -d '\r\n' < "$pid_file" || true)"
     if [[ -n "${pid:-}" ]]; then
+      # Try POSIX signals first, then fallback to PowerShell if available
+      pkill -TERM -P "$pid" >/dev/null 2>&1 || true
       kill "$pid" >/dev/null 2>&1 || true
-      powershell -NoProfile -Command "try { Stop-Process -Id $pid -Force -ErrorAction Stop } catch {}" >/dev/null || true
+      if command -v powershell >/dev/null 2>&1; then
+        powershell -NoProfile -Command "try { Stop-Process -Id $pid -Force -ErrorAction Stop } catch {}" >/dev/null || true
+      else
+        sleep 1
+        pkill -KILL -P "$pid" >/dev/null 2>&1 || true
+        kill -0 "$pid" >/dev/null 2>&1 && kill -TERM "$pid" >/dev/null 2>&1 || true
+        sleep 1
+        kill -0 "$pid" >/dev/null 2>&1 && kill -KILL "$pid" >/dev/null 2>&1 || true
+      fi
     fi
     rm -f "$pid_file"
     log "Stopped $label from pid file"
@@ -153,6 +228,30 @@ resolve_fly_api_token() {
   printf '%s\n' ""
 }
 
+resolve_backend_python() {
+  if [[ -x "$BACKEND_PYTHON_EXE" ]]; then
+    printf '%s\n' "$BACKEND_PYTHON_EXE"
+    return
+  fi
+
+  if [[ -d "$CONDA_ENVS_DIR/$PREFERRED_CONDA_ENV" && -x "$CONDA_ENVS_DIR/$PREFERRED_CONDA_ENV/bin/python" ]]; then
+    printf '%s\n' "$CONDA_ENVS_DIR/$PREFERRED_CONDA_ENV/bin/python"
+    return
+  fi
+
+  if [[ -d "/home/joe/miniconda3/envs/$PREFERRED_CONDA_ENV" && -x "/home/joe/miniconda3/envs/$PREFERRED_CONDA_ENV/bin/python" ]]; then
+    printf '%s\n' "/home/joe/miniconda3/envs/$PREFERRED_CONDA_ENV/bin/python"
+    return
+  fi
+
+  if [[ -x "${CONDA_EXE:-}" ]]; then
+    printf '%s\n' "$CONDA_EXE run -n $(resolve_conda_env) python"
+    return
+  fi
+
+  command -v python
+}
+
 wait_for_url() {
   local url="$1"
   local label="$2"
@@ -174,15 +273,25 @@ wait_for_url() {
 start_backend() {
   local env_name
   local fly_api_token
+  local backend_python
   env_name="$(resolve_conda_env)"
   fly_api_token="$(resolve_fly_api_token)"
+  backend_python="$(resolve_backend_python)"
   log "Starting backend with conda env: $env_name"
   (
-    cd "$ROOT_DIR"
+    cd "$ROOT_DIR/backend"
     if [[ -n "$fly_api_token" ]]; then
-      nohup env FLY_API_TOKEN="$fly_api_token" "$CONDA_EXE" run -n "$env_name" python backend/main.py > "$BACKEND_LOG" 2>&1 &
+      if [[ "$backend_python" == *" run -n "* ]]; then
+        nohup env PYTHONPATH=. FLY_API_TOKEN="$fly_api_token" $backend_python -m uvicorn main:app --host 0.0.0.0 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+      else
+        nohup env PYTHONPATH=. FLY_API_TOKEN="$fly_api_token" "$backend_python" -m uvicorn main:app --host 0.0.0.0 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+      fi
     else
-      nohup "$CONDA_EXE" run -n "$env_name" python backend/main.py > "$BACKEND_LOG" 2>&1 &
+      if [[ "$backend_python" == *" run -n "* ]]; then
+        nohup env PYTHONPATH=. $backend_python -m uvicorn main:app --host 0.0.0.0 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+      else
+        nohup env PYTHONPATH=. "$backend_python" -m uvicorn main:app --host 0.0.0.0 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+      fi
     fi
     echo $! > "$BACKEND_PID_FILE"
   )

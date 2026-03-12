@@ -11,7 +11,15 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL is required. Set it in .env to your Nhost Postgres connection string (Dashboard → Settings → Database).")
+    # For local development, fall back to a file-based SQLite DB so `python main.py`
+    # works without requiring an external Postgres instance. In production
+    # require `DATABASE_URL` to be set explicitly.
+    if os.getenv("ENVIRONMENT", "development") != "production":
+        sqlite_path = os.path.join(os.path.dirname(__file__), "dev.db")
+        DATABASE_URL = f"sqlite:///{sqlite_path}"
+        print("[models] WARNING: DATABASE_URL not set — using local SQLite for development:", DATABASE_URL)
+    else:
+        raise ValueError("DATABASE_URL is required. Set it in .env to your Nhost Postgres connection string (Dashboard → Settings → Database).")
 # SQLAlchemy requires postgresql:// not postgres://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)

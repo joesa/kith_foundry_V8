@@ -99,21 +99,21 @@ export function FileExplorer({ tree, activeFile, onFileSelect, streamingFile }: 
 
     return (
         <div
-            className="h-full flex flex-col bg-[#12121A] select-none"
+            className="h-full flex flex-col bg-[var(--kf-surface)] select-none"
             onClick={() => setContextMenu(null)}
         >
             {/* Header */}
-            <div className="px-3 py-2.5 border-b border-zinc-800 flex items-center justify-between">
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Explorer</span>
+            <div className="px-3 py-2.5 border-b border-[var(--kf-border)] flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-[var(--kf-text-secondary)] uppercase tracking-wider">Explorer</span>
                 <div className="flex items-center gap-1">
                     <button
-                        className="p-1 rounded hover:bg-zinc-700/50 text-zinc-500 hover:text-zinc-300 transition-colors"
+                        className="p-1 rounded hover:bg-[var(--kf-hover-bg)]/50 text-zinc-500 hover:text-[var(--kf-text-secondary)] transition-colors"
                         title="New File"
                     >
                         <FilePlus className="w-3.5 h-3.5" />
                     </button>
                     <button
-                        className="p-1 rounded hover:bg-zinc-700/50 text-zinc-500 hover:text-zinc-300 transition-colors"
+                        className="p-1 rounded hover:bg-[var(--kf-hover-bg)]/50 text-zinc-500 hover:text-[var(--kf-text-secondary)] transition-colors"
                         title="New Folder"
                     >
                         <FolderPlus className="w-3.5 h-3.5" />
@@ -122,15 +122,15 @@ export function FileExplorer({ tree, activeFile, onFileSelect, streamingFile }: 
             </div>
 
             {/* Search */}
-            <div className="px-2 py-1.5 border-b border-zinc-800/50">
-                <div className="flex items-center gap-1.5 bg-[#1A1A24] rounded px-2 py-1">
+            <div className="px-2 py-1.5 border-b border-[var(--kf-border)]">
+                <div className="flex items-center gap-1.5 bg-[var(--kf-surface-alt)] rounded px-2 py-1">
                     <Search className="w-3 h-3 text-zinc-600" />
                     <input
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Search files..."
-                        className="bg-transparent text-xs text-zinc-300 placeholder:text-zinc-600 outline-none w-full"
+                        className="bg-transparent text-xs text-[var(--kf-text-secondary)] placeholder:text-[var(--kf-text-faint)] outline-none w-full"
                     />
                 </div>
             </div>
@@ -158,7 +158,7 @@ export function FileExplorer({ tree, activeFile, onFileSelect, streamingFile }: 
             {/* Context Menu */}
             {contextMenu && (
                 <div
-                    className="fixed z-50 bg-[#1E1E2A] border border-zinc-700 rounded-md shadow-xl py-1 min-w-[160px]"
+                    className="fixed z-50 bg-[#1E1E2A] border border-[var(--kf-border-muted)] rounded-md shadow-xl py-1 min-w-[160px]"
                     style={{ left: contextMenu.x, top: contextMenu.y }}
                 >
                     <ContextMenuItem icon={<FilePlus className="w-3.5 h-3.5" />} label="New File" />
@@ -175,7 +175,7 @@ function ContextMenuItem({ icon, label, danger, onClick }: { icon: React.ReactNo
     return (
         <button
             onClick={onClick}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-zinc-700/50 transition-colors ${danger ? "text-red-400 hover:text-red-300" : "text-zinc-300 hover:text-white"
+            className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-[var(--kf-hover-bg)]/50 transition-colors ${danger ? "text-red-400 hover:text-red-300" : "text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"
                 }`}
         >
             {icon}
@@ -210,7 +210,7 @@ function TreeView({ nodes, depth, expandedDirs, toggleDir, activeFile, onFileSel
                             <button
                                 onClick={() => toggleDir(node.path)}
                                 onContextMenu={(e) => onContextMenu(e, node)}
-                                className="w-full flex items-center gap-1.5 py-[3px] hover:bg-zinc-800/60 transition-colors group"
+                                className="w-full flex items-center gap-1.5 py-[3px] hover:bg-[var(--kf-hover-bg)] transition-colors group"
                                 style={{ paddingLeft }}
                             >
                                 {isExpanded ? (
@@ -223,7 +223,7 @@ function TreeView({ nodes, depth, expandedDirs, toggleDir, activeFile, onFileSel
                                 ) : (
                                     <Folder className="w-3.5 h-3.5 text-amber-400/60 shrink-0" />
                                 )}
-                                <span className="text-[12px] text-zinc-400 group-hover:text-zinc-200 truncate">
+                                <span className="text-[12px] text-[var(--kf-text-secondary)] group-hover:text-[var(--kf-text)] truncate">
                                     {node.name}
                                 </span>
                             </button>
@@ -250,7 +250,7 @@ function TreeView({ nodes, depth, expandedDirs, toggleDir, activeFile, onFileSel
                         onContextMenu={(e) => onContextMenu(e, node)}
                         className={`w-full flex items-center gap-1.5 py-[3px] transition-colors group ${isActive
                             ? "bg-indigo-500/10 text-indigo-300"
-                            : "hover:bg-zinc-800/60 text-zinc-400 hover:text-zinc-200"
+                            : "hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"
                             }`}
                         style={{ paddingLeft: paddingLeft + 14 }}
                     >
