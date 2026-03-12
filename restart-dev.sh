@@ -12,8 +12,17 @@ INNGEST_PORT="${INNGEST_PORT:-8288}"
 PREFERRED_CONDA_ENV="${KITH_CONDA_ENV:-kith_venv}"
 FALLBACK_CONDA_ENV="${KITH_FALLBACK_CONDA_ENV:-base}"
 CONDA_EXE="${KITH_CONDA_EXE:-$(command -v conda 2>/dev/null || true)}"
-CONDA_ENVS_DIR="${KITH_CONDA_ENVS_DIR:-${HOME}/.conda/envs}"
-BACKEND_PYTHON_EXE="${KITH_BACKEND_PYTHON:-/home/joe/miniconda3/envs/kith_venv/bin/python}"
+# Auto-detect miniconda3/anaconda3 under $HOME; fall back to .conda/envs
+if [[ -n "${KITH_CONDA_ENVS_DIR:-}" ]]; then
+  CONDA_ENVS_DIR="$KITH_CONDA_ENVS_DIR"
+elif [[ -d "${HOME}/miniconda3/envs" ]]; then
+  CONDA_ENVS_DIR="${HOME}/miniconda3/envs"
+elif [[ -d "${HOME}/anaconda3/envs" ]]; then
+  CONDA_ENVS_DIR="${HOME}/anaconda3/envs"
+else
+  CONDA_ENVS_DIR="${HOME}/.conda/envs"
+fi
+BACKEND_PYTHON_EXE="${KITH_BACKEND_PYTHON:-${CONDA_ENVS_DIR}/${PREFERRED_CONDA_ENV}/bin/python}"
 USE_INNGEST_DEV_SERVER="${KITH_USE_INNGEST_DEV_SERVER:-1}"
 FLYCTL_EXE="${KITH_FLYCTL_EXE:-$(command -v flyctl 2>/dev/null || true)}"
 
@@ -239,11 +248,6 @@ resolve_backend_python() {
     return
   fi
 
-  if [[ -d "/home/joe/miniconda3/envs/$PREFERRED_CONDA_ENV" && -x "/home/joe/miniconda3/envs/$PREFERRED_CONDA_ENV/bin/python" ]]; then
-    printf '%s\n' "/home/joe/miniconda3/envs/$PREFERRED_CONDA_ENV/bin/python"
-    return
-  fi
-
   if [[ -x "${CONDA_EXE:-}" ]]; then
     printf '%s\n' "$CONDA_EXE run -n $(resolve_conda_env) python"
     return
@@ -257,6 +261,7 @@ wait_for_url() {
   local label="$2"
   local attempts="${3:-30}"
   local delay="${4:-1}"
+  local log_file="${5:-}"
 
   for ((i=1; i<=attempts; i++)); do
     if curl -fsS "$url" >/dev/null 2>&1; then
@@ -266,8 +271,12 @@ wait_for_url() {
     sleep "$delay"
   done
 
-  log "$label did not become ready at $url"
-  return 1
+  log "WARNING: $label did not become ready at $url"
+  if [[ -n "$log_file" && -f "$log_file" ]]; then
+    log "Last 20 lines of $log_file:"
+    tail -n 20 "$log_file" | sed 's/^/  /'
+  fi
+  return 0
 }
 
 start_backend() {
@@ -362,13 +371,13 @@ start_services() {
   stop_port_listeners "$INNGEST_PORT"
 
   start_backend
-  wait_for_url "http://127.0.0.1:$BACKEND_PORT/docs" "Backend" 45 1
+  wait_for_url "http://127.0.0.1:$BACKEND_PORT/docs" "Backend" 45 1 "$BACKEND_LOG"
   start_inngest
   if [[ "$USE_INNGEST_DEV_SERVER" == "1" ]]; then
-    wait_for_url "http://127.0.0.1:$INNGEST_PORT/" "Inngest" 45 1
+    wait_for_url "http://127.0.0.1:$INNGEST_PORT/" "Inngest" 45 1 "$INNGEST_LOG"
   fi
   start_frontend
-  wait_for_url "http://127.0.0.1:$FRONTEND_PORT/" "Frontend" 45 1
+  wait_for_url "http://127.0.0.1:$FRONTEND_PORT/" "Frontend" 45 1 "$FRONTEND_LOG"
 
   log "Restart complete"
   status_services

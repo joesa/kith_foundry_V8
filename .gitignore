@@ -28,3 +28,10 @@ vendor/ui-ux-pro-max-skill/
 
 # Misc
 *.log
+.run/
+.logs/
+restart-dev.sh
+restart-dev.cmd
+restart-dev.cmd
+restart-dev.cmd
+restart-dev.ps1
