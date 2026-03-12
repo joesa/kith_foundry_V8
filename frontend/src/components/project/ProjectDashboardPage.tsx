@@ -9,6 +9,7 @@ import {
     Crown, BarChart3, Users, Lightbulb, Map, Layers,
     FileCode, Target, Loader2, Sparkles, ChevronDown, RefreshCw
 } from "lucide-react";
+import { ExportMenu } from "../shared/ExportMenu";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -525,6 +526,13 @@ export default function ProjectDashboardPage() {
                             Regenerate All Artifacts
                         </button>
                     )}
+                    {allArtifactsComplete && projectId && (
+                        <ExportMenu
+                            projectId={projectId}
+                            target="artifacts"
+                            label="Download All"
+                        />
+                    )}
                 </div>
             </div>
 
@@ -571,6 +579,16 @@ export default function ProjectDashboardPage() {
                                     </div>
                                     {isComplete && (
                                         <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform flex-shrink-0 ${isExpanded ? "rotate-180" : ""}`} />
+                                    )}
+                                    {isComplete && projectId && (
+                                        <span onClick={(e) => e.stopPropagation()}>
+                                            <ExportMenu
+                                                projectId={projectId}
+                                                target={`artifact/${type}`}
+                                                size="sm"
+                                                label=""
+                                            />
+                                        </span>
                                     )}
                                     {isGenerating && <Loader2 className="w-4 h-4 text-purple-400 animate-spin flex-shrink-0" />}
                                 </div>

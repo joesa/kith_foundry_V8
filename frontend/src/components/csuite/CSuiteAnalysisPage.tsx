@@ -8,6 +8,7 @@ import {
     CheckCircle2, Loader2, XCircle, ArrowRight, Info,
     Sparkles, Zap, ChevronDown, ChevronUp, RotateCcw, X
 } from "lucide-react";
+import { ExportMenu } from "../shared/ExportMenu";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -438,6 +439,14 @@ export default function CSuiteAnalysisPage() {
                         ) : agents.some(a => a.score != null) ? (
                             <span className="text-lg font-bold text-[var(--kf-text-secondary)]">{Math.round(avgScore)}/100 avg so far</span>
                         ) : null}
+                        {allDone && projectId && (
+                            <ExportMenu
+                                projectId={projectId}
+                                target="csuite"
+                                label="Download Report"
+                                size="sm"
+                            />
+                        )}
                         {allDone && overallScore != null && overallScore < 85 && (
                             <button
                                 onClick={() => handleImprove()}

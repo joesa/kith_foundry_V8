@@ -225,6 +225,8 @@ app.include_router(projects_api.router)
 app.include_router(ideation_api.router)
 app.include_router(csuite_api.router)
 app.include_router(artifacts_api.router)
+import export_api
+app.include_router(export_api.router)
 import routing_api
 app.include_router(routing_api.router)
 
