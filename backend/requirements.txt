@@ -48,5 +48,11 @@ stripe>=10.0.0
 # Distributed state + pub/sub
 redis>=5.0.0
 
+# AST parsing for patch safety (Phase 5)
+tree-sitter>=0.23.0
+tree-sitter-typescript>=0.23.0
+tree-sitter-css>=0.23.0
+tree-sitter-javascript>=0.23.0
+
 # Async Postgres driver (async SQLAlchemy)
 asyncpg>=0.29.0

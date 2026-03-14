@@ -233,6 +233,11 @@ class Project(Base):
     csuite_analyses = relationship("CSuiteAnalysis", back_populates="project", cascade="all, delete-orphan")
     artifacts = relationship("Artifact", back_populates="project", cascade="all, delete-orphan")
     design_mockups = relationship("DesignMockup", back_populates="project", cascade="all, delete-orphan")
+    pages = relationship("ProjectPage", back_populates="project", cascade="all, delete-orphan")
+    components = relationship("ProjectComponent", back_populates="project", cascade="all, delete-orphan")
+    features = relationship("ProjectFeature", back_populates="project", cascade="all, delete-orphan")
+    decisions = relationship("ProjectDecision", back_populates="project", cascade="all, delete-orphan")
+    embeddings = relationship("ProjectEmbedding", back_populates="project", cascade="all, delete-orphan")
 
 
 class Idea(Base):
@@ -479,4 +484,136 @@ class UsagePack(Base):
     stripe_payment_intent = Column(String, nullable=True)
     purchased_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)  # None = never expires
+
+
+# ── Project Brain ──────────────────────────────────────────────────────────────
+
+class PageStatus(str, enum.Enum):
+    planned = "planned"
+    scaffolded = "scaffolded"
+    implemented = "implemented"
+    revised = "revised"
+
+
+class FeatureStatus(str, enum.Enum):
+    planned = "planned"
+    in_progress = "in_progress"
+    implemented = "implemented"
+    deferred = "deferred"
+
+
+class DecisionType(str, enum.Enum):
+    layout = "layout"
+    component = "component"
+    routing = "routing"
+    styling = "styling"
+    data_model = "data_model"
+    library = "library"
+    architecture = "architecture"
+
+
+class ContentType(str, enum.Enum):
+    file = "file"
+    page = "page"
+    component = "component"
+    section = "section"
+    decision = "decision"
+    message = "message"
+
+
+class ProjectPage(Base):
+    __tablename__ = "project_pages"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_name = Column(String, nullable=False)
+    route = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    layout_json = Column(JSON, nullable=True)
+    status = Column(SAEnum(PageStatus), default=PageStatus.planned, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="pages")
+    sections = relationship("ProjectSection", back_populates="page", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "route", name="uq_project_route"),
+    )
+
+
+class ProjectComponent(Base):
+    __tablename__ = "project_components"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    component_name = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    props_schema_json = Column(JSON, nullable=True)
+    dependencies_json = Column(JSON, nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="components")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "file_path", name="uq_project_component_path"),
+    )
+
+
+class ProjectSection(Base):
+    __tablename__ = "project_sections"
+    id = Column(String, primary_key=True, index=True)
+    page_id = Column(String, ForeignKey("project_pages.id", ondelete="CASCADE"), nullable=False, index=True)
+    section_name = Column(String, nullable=False)
+    section_type = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    component_refs_json = Column(JSON, nullable=True)
+    sort_order = Column(Integer, default=0, nullable=False)
+
+    page = relationship("ProjectPage", back_populates="sections")
+
+
+class ProjectFeature(Base):
+    __tablename__ = "project_features"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    feature_name = Column(String, nullable=False)
+    status = Column(SAEnum(FeatureStatus), default=FeatureStatus.planned, nullable=False)
+    description = Column(Text, nullable=True)
+    files_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", back_populates="features")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "feature_name", name="uq_project_feature"),
+    )
+
+
+class ProjectDecision(Base):
+    __tablename__ = "project_decisions"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    decision_type = Column(SAEnum(DecisionType), nullable=False)
+    decision_json = Column(JSON, nullable=False)
+    rationale = Column(Text, nullable=True)
+    agent_role = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    project = relationship("Project", back_populates="decisions")
+
+
+class ProjectEmbedding(Base):
+    __tablename__ = "project_embeddings"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    content_type = Column(SAEnum(ContentType), nullable=False)
+    content_ref_id = Column(String, nullable=True)
+    content_text = Column(Text, nullable=False)
+    # embedding column is vector(1536) — managed via raw SQL in migration;
+    # SQLAlchemy reads/writes are handled via brain_service using pgvector helpers
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    project = relationship("Project", back_populates="embeddings")
 

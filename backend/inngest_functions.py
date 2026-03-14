@@ -297,7 +297,8 @@ async def chat_message_fn(ctx: inngest.Context) -> dict:
     print(f"🚀 Inngest chat-message job={job_id[:8]} project={project_id[:8]}")
 
     from models import SessionLocal
-    from agent import process_user_request
+    from agent import classify_intent, _resolve_llm_credentials, process_conversation
+    from agent_pipeline import run_multi_agent_pipeline
     from redis_state import ws_job_channel
     from redis_client import get_async_redis
 
@@ -305,10 +306,20 @@ async def chat_message_fn(ctx: inngest.Context) -> dict:
     r = get_async_redis()
     db = SessionLocal()
     try:
-        async for step in process_user_request(
-            user_prompt, project_id, model_id, db=db, images=images, user_id=user_id
-        ):
-            await r.publish(channel, json.dumps(step))
+        effective_model, llm_kwargs = await _resolve_llm_credentials(model_id, user_id)
+        intent_class = await classify_intent(user_prompt, effective_model, llm_kwargs)
+
+        if intent_class == "conversation":
+            async for step in process_conversation(
+                user_prompt, project_id, effective_model, llm_kwargs, db=db, images=images
+            ):
+                await r.publish(channel, json.dumps(step))
+        else:
+            async for step in run_multi_agent_pipeline(
+                user_prompt, project_id, effective_model, llm_kwargs, db,
+                images=images, user_id=user_id,
+            ):
+                await r.publish(channel, json.dumps(step))
     finally:
         db.close()
 

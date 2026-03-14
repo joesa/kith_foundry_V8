@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 
-from models import get_async_db, Project, ProjectStatus, User
+from models import get_async_db, SessionLocal, Project, ProjectStatus, User
 from auth import get_current_user
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -206,3 +206,83 @@ async def delete_project(
     if not deleted:
         raise HTTPException(status_code=404, detail="Project not found")
     return {"deleted": True}
+
+
+# ── Context Compression / Reindex ─────────────────────────────────────────────
+
+@router.post("/{project_id}/reindex")
+async def reindex_project_embeddings(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Re-embed all project source files and brain entities for semantic search.
+
+    This populates the project_embeddings table (pgvector) used by the
+    context compression system to select relevant code for LLM prompts.
+    """
+    import asyncio as _aio
+    from agent import read_all_project_files
+    from embedding_service import reindex_project as _reindex
+    from brain_service import delete_project_embeddings
+
+    # Verify ownership
+    def _check(s: Session):
+        return s.query(Project).filter(
+            Project.id == project_id, Project.user_id == user.id
+        ).first()
+
+    project = await db.run_sync(_check)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Read all source files using a sync session for compatibility
+    sync_session = SessionLocal()
+    try:
+        all_files = await read_all_project_files(sync_session, project_id)
+
+        if not all_files:
+            return {"status": "empty", "message": "No source files to index"}
+
+        # Clear stale embeddings and re-index
+        delete_project_embeddings(sync_session, project_id)
+        sync_session.commit()
+
+        stats = await _reindex(sync_session, project_id, all_files)
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    return {
+        "status": "complete",
+        "files_indexed": stats.get("files_indexed", 0),
+        "components_indexed": stats.get("components_indexed", 0),
+        "decisions_indexed": stats.get("decisions_indexed", 0),
+        "errors": stats.get("errors", 0),
+    }
+
+
+@router.get("/{project_id}/embeddings/status")
+async def get_embedding_status(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Check the current embedding index status for a project."""
+    from brain_service import embedding_count, has_embeddings
+
+    def _check(s: Session):
+        proj = s.query(Project).filter(
+            Project.id == project_id, Project.user_id == user.id
+        ).first()
+        if not proj:
+            return None
+        return {
+            "has_embeddings": has_embeddings(s, project_id),
+            "embedding_count": embedding_count(s, project_id),
+        }
+
+    result = await db.run_sync(_check)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result

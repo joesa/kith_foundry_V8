@@ -27,7 +27,7 @@ import atexit
 import socket
 import subprocess
 from datetime import datetime
-from agent import process_user_request
+from agent import classify_intent, _resolve_llm_credentials, process_conversation
 from error_resolver import attempt_fix, reset_fix_cycle
 
 from fly_service import get_or_create_worker, release_worker
@@ -762,8 +762,29 @@ async def _step_stream(
     # Chat/code generation always runs inline — Inngest is only used for
     # long-running background jobs (C-Suite, Design, Artifacts), not for
     # real-time WebSocket streaming (no handler exists for chat/message.requested).
-    async for step in process_user_request(
-        user_prompt, project_id, model_id, db=db, images=images, user_id=user_id
+    #
+    # Phase 2: Route code generation through the multi-agent pipeline
+    # (Intent → Layout → Component → Code), while conversation stays
+    # on the fast path.
+
+    # 1. Resolve credentials + classify intent
+    effective_model, llm_kwargs = await _resolve_llm_credentials(model_id, user_id)
+
+    intent_class = await classify_intent(user_prompt, effective_model, llm_kwargs)
+
+    if intent_class == "conversation":
+        # Conversation mode — fast path (no pipeline needed)
+        async for step in process_conversation(
+            user_prompt, project_id, effective_model, llm_kwargs, db=db, images=images
+        ):
+            yield step
+        return
+
+    # 2. Code generation — run multi-agent pipeline
+    from agent_pipeline import run_multi_agent_pipeline
+    async for step in run_multi_agent_pipeline(
+        user_prompt, project_id, effective_model, llm_kwargs, db,
+        images=images, user_id=user_id,
     ):
         yield step
 
@@ -1030,6 +1051,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                     elif step["status"] == "stream_end":
                         await _send_json(websocket, {"type": "stream_end"})
+                    elif step["status"] == "validation_warning":
+                        # AST Patch Safety results (Phase 5)
+                        await _send_json(websocket, {
+                            "type": "validation_warning",
+                            "message": step.get("message", ""),
+                            "errors": step.get("errors", []),
+                        })
                     elif step["status"] == "chat_token":
                         await _send_json(websocket, {
                             "type": "chat_token", "token": step["token"]
@@ -1157,6 +1185,16 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "type": "status", "status": "warning",
                                     "message": "⚠️ Files loaded in preview, but cloud save hit a network issue. Your work is in the editor — try saving again shortly."
                                 })
+
+                            # 6. Populate Project Brain (non-blocking, non-fatal)
+                            try:
+                                from agent_pipeline import populate_brain_from_edits
+                                await asyncio.to_thread(
+                                    populate_brain_from_edits,
+                                    db, project_id, write_edits,
+                                )
+                            except Exception as _be:
+                                print(f"[brain] Post-gen population skipped: {_be}")
                     else:
                         await _send_json(websocket, {
                             "type": "agent_status", "data": step

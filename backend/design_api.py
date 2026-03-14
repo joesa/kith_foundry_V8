@@ -4547,3 +4547,77 @@ async def delete_mockup(
     db.delete(mockup)
     db.commit()
     return {"status": "deleted", "mockup_id": mockup_id}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GPT Design Engine endpoints (Phase 1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/{project_id}/design/engine/brief")
+async def generate_engine_brief(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Generate a design intelligence brief using the GPT Design Engine."""
+    from design_engine import generate_design_brief
+
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    mc = _resolve_design_model(user.id, db)
+    brief = await generate_design_brief(project, db, mc["model"], mc.get("llm_kwargs", {}))
+    if not brief:
+        raise HTTPException(status_code=500, detail="Design brief generation failed")
+
+    return {"status": "complete", "brief": brief}
+
+
+@router.post("/{project_id}/design/engine/generate")
+async def generate_engine_design_system(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Run the full GPT Design Engine pipeline (brief → design system)."""
+    from design_engine import run_full_design_pipeline
+
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    mc = _resolve_design_model(user.id, db)
+    result = await run_full_design_pipeline(
+        project, db, mc["model"], mc.get("llm_kwargs", {}),
+    )
+
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    return {
+        "status": "complete",
+        "design_system": result.get("design_system"),
+        "brief": result.get("brief"),
+        "builder_prompt": result.get("builder_prompt", ""),
+    }
+
+
+@router.get("/{project_id}/design/engine/system")
+async def get_engine_design_system(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve a previously generated GPT Design Engine system."""
+    from design_engine import get_design_system_from_artifacts
+
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ds = get_design_system_from_artifacts(db, project_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="No design system found. Run the engine first.")
+
+    return {"status": "found", "design_system": ds}
