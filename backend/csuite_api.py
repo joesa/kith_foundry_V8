@@ -4,8 +4,9 @@ C-Suite API — Run parallel C-Suite agent analysis on a project.
 import uuid
 import os
 import inngest
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
+from rate_limiter import limiter
 from pydantic import BaseModel
 
 from models import (
@@ -13,8 +14,9 @@ from models import (
     CSuiteRole, AgentStatus,
 )
 from auth import get_current_user
-from csuite_agent import run_all_agents_background, run_selected_agents_background, generate_improvement_plan
+from csuite_agent import run_all_agents_background, run_selected_agents_background, generate_improvement_plan, mark_cancelled_project, mark_cancelled_analysis
 from inngest_client import client as inngest_client, use_inngest
+import billing_api as billing
 router = APIRouter(prefix="/api/v1/csuite", tags=["csuite"])
 
 
@@ -34,7 +36,9 @@ class ApplyImprovementRequest(BaseModel):
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.post("/{project_id}/run")
+@limiter.limit("30/minute")
 async def run_csuite(
+    request: Request,
     project_id: str,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
@@ -44,6 +48,22 @@ async def run_csuite(
     project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Enforce monthly C-Suite run limit (raises 402 if over limit)
+    billing.enforce_csuite_limit(db, user)
+
+    # Guard: don't re-run if agents are already in-flight
+    # (prevents the frontend race where all-pending status triggers a duplicate POST /run)
+    active_count = db.query(CSuiteAnalysis).filter(
+        CSuiteAnalysis.project_id == project_id,
+        CSuiteAnalysis.status.in_([AgentStatus.pending, AgentStatus.running]),
+    ).count()
+    if active_count > 0:
+        project_name = db.query(Project).filter(Project.id == project_id).first()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "already_running", "project_name": project_name.name if project_name else ""},
+        )
 
     # Clean up any existing analyses for re-runs
     db.query(CSuiteAnalysis).filter(CSuiteAnalysis.project_id == project_id).delete()
@@ -62,13 +82,16 @@ async def run_csuite(
     project.status = ProjectStatus.csuite_pending
     db.commit()
 
+    # Record usage
+    billing.record_csuite_run(db, user.id)
+
     # Run agents — via Inngest when USE_INNGEST=1, else FastAPI BackgroundTasks
     if use_inngest():
         try:
             result = await inngest_client.send(
                 inngest.Event(
                     name="csuite/run.requested",
-                    data={"project_id": project_id},
+                    data={"project_id": project_id, "user_id": user.id},
                 )
             )
             print(f"📨 Inngest event sent: csuite/run.requested for {project_id[:8]} → {result}")
@@ -82,6 +105,74 @@ async def run_csuite(
         background_tasks.add_task(run_all_agents_background, project_id)
 
     return {"status": "started", "project_name": project.name}
+
+
+@router.post("/{project_id}/stop")
+async def stop_all_csuite(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Immediately stop all pending/running agents for a project."""
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Signal in-flight coroutines not to write their results
+    mark_cancelled_project(project_id)
+
+    # Mark all non-complete agents as stopped in the DB
+    db.query(CSuiteAnalysis).filter(
+        CSuiteAnalysis.project_id == project_id,
+        CSuiteAnalysis.status.in_([AgentStatus.pending, AgentStatus.running]),
+    ).update(
+        {"status": AgentStatus.error, "error_message": "Stopped by user"},
+        synchronize_session=False,
+    )
+    project.status = ProjectStatus.csuite_complete
+    db.commit()
+    return {"status": "stopped"}
+
+
+@router.post("/{project_id}/stop/{role}")
+async def stop_single_csuite(
+    project_id: str,
+    role: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stop a single agent by role name."""
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        role_enum = CSuiteRole(role)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
+
+    analysis = db.query(CSuiteAnalysis).filter(
+        CSuiteAnalysis.project_id == project_id,
+        CSuiteAnalysis.agent_role == role_enum,
+        CSuiteAnalysis.status.in_([AgentStatus.pending, AgentStatus.running]),
+    ).first()
+
+    if analysis:
+        mark_cancelled_analysis(analysis.id)
+        analysis.status = AgentStatus.error
+        analysis.error_message = "Stopped by user"
+        db.commit()
+
+    # If all agents are now done, mark project complete
+    remaining = db.query(CSuiteAnalysis).filter(
+        CSuiteAnalysis.project_id == project_id,
+        CSuiteAnalysis.status.in_([AgentStatus.pending, AgentStatus.running]),
+    ).count()
+    if remaining == 0:
+        project.status = ProjectStatus.csuite_complete
+        db.commit()
+
+    return {"status": "stopped", "role": role}
 
 
 @router.get("/{project_id}/status")
@@ -180,7 +271,9 @@ async def csuite_results(
 
 
 @router.post("/{project_id}/refine")
+@limiter.limit("30/minute")
 async def refine_csuite(
+    request: Request,
     project_id: str,
     body: RefineRequest,
     background_tasks: BackgroundTasks,
@@ -212,7 +305,7 @@ async def refine_csuite(
             await inngest_client.send(
                 inngest.Event(
                     name="csuite/refine.requested",
-                    data={"project_id": project_id, "correction_notes": body.corrections},
+                    data={"project_id": project_id, "correction_notes": body.corrections, "user_id": user.id},
                 )
             )
             print(f"📨 Inngest event sent: csuite/refine.requested for {project_id[:8]}")
@@ -226,7 +319,9 @@ async def refine_csuite(
 
 
 @router.post("/{project_id}/improve")
+@limiter.limit("30/minute")
 async def improve_csuite(
+    request: Request,
     project_id: str,
     body: ImproveRequest,
     user: User = Depends(get_current_user),
@@ -237,6 +332,20 @@ async def improve_csuite(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if use_inngest():
+        job_id = str(uuid.uuid4())
+        await inngest_client.send(inngest.Event(
+            name="csuite/improve.requested",
+            data={
+                "job_id": job_id,
+                "project_id": project_id,
+                "roles": body.roles,
+                "user_id": user.id,
+            }
+        ))
+        return {"status": "pending", "job_id": job_id}
+
+    # Dev fallback — run inline when Inngest is not available
     plan = await generate_improvement_plan(project_id, body.roles)
     if "error" in plan:
         raise HTTPException(status_code=400, detail=plan["error"])
@@ -244,8 +353,31 @@ async def improve_csuite(
     return plan
 
 
+@router.get("/{project_id}/improve-plan/{job_id}")
+async def get_improve_plan_endpoint(
+    project_id: str,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Poll for an improvement plan generated asynchronously via Inngest."""
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from redis_state import get_improve_plan
+    plan = await get_improve_plan(job_id)
+    if plan is None:
+        return {"status": "pending"}
+    if "error" in plan:
+        raise HTTPException(status_code=400, detail=plan["error"])
+    return {"status": "ready", **plan}
+
+
 @router.post("/{project_id}/improve/apply")
+@limiter.limit("30/minute")
 async def apply_improvement(
+    request: Request,
     project_id: str,
     body: ApplyImprovementRequest,
     background_tasks: BackgroundTasks,
@@ -285,6 +417,7 @@ async def apply_improvement(
                         "project_id": project_id,
                         "roles": body.roles,
                         "enhanced_context": body.enhanced_context,
+                        "user_id": user.id,
                     },
                 )
             )

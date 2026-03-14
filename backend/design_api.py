@@ -7,10 +7,11 @@ import os
 import asyncio
 import re
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+from rate_limiter import limiter
 
 import litellm
 
@@ -36,14 +37,11 @@ from design_intelligence import (
 
 import inngest
 from inngest_client import client as inngest_client, use_inngest
+import billing_api as billing
+from redis_state import add_cancelled_mockup, is_mockup_cancelled, discard_cancelled_mockup
 
 litellm.drop_params = True
 router = APIRouter(prefix="/api/v1/projects", tags=["design"])
-
-# ── Cancellation registry ─────────────────────────────────────────────────────
-# Mockup IDs added here will be skipped / aborted by the generation functions.
-# Entries are discarded once the generation function notices them.
-_cancelled_mockups: set[str] = set()
 
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
@@ -95,6 +93,10 @@ def _should_retry_design_with_env_fallback(exc: Exception) -> bool:
     return any(marker in text for marker in retry_markers)
 
 
+# Limit concurrent LLM calls per-worker for design generation
+_DESIGN_SEMAPHORE = asyncio.Semaphore(10)
+
+
 async def _design_acompletion(
     model_config: dict,
     messages: list,
@@ -130,7 +132,8 @@ async def _design_acompletion(
 
     primary_kwargs = _build_litellm_kwargs(model_config, messages, **extra)
     try:
-        return await litellm.acompletion(**primary_kwargs)
+        async with _DESIGN_SEMAPHORE:
+            return await litellm.acompletion(**primary_kwargs)
     except Exception as exc:
         if not user_id or not _should_retry_design_with_env_fallback(exc):
             raise
@@ -156,12 +159,13 @@ async def _design_acompletion(
             f"Retrying with {fallback_name}."
         )
         fallback_kwargs = _build_litellm_kwargs(fallback_model, messages, **extra)
-        return await litellm.acompletion(**fallback_kwargs)
+        async with _DESIGN_SEMAPHORE:
+            return await litellm.acompletion(**fallback_kwargs)
 
 
 # ── Deterministic brand palette selector ─────────────────────────────────────
 
-_PALETTES = [
+_PALETTES_DARK = [
     # 0 — Ocean Teal (research / academic / science)
     {"name": "Ocean Teal", "bg": "#08111a", "surface": "#0d1f2d", "border": "#1a3a50",
      "primary": "#0ea5c9", "accent": "#34d399", "text": "#e2f4fb", "muted": "#7ab8d4"},
@@ -193,6 +197,42 @@ _PALETTES = [
     {"name": "Emerald Gold", "bg": "#060f08", "surface": "#0d1f12", "border": "#1a3a20",
      "primary": "#10b981", "accent": "#d4af37", "text": "#ecfdf5", "muted": "#5a9a75"},
 ]
+
+_PALETTES_LIGHT = [
+    # 0 — Ocean Teal Light
+    {"name": "Ocean Teal", "bg": "#f0f9ff", "surface": "#ffffff", "border": "#bae6fd",
+     "primary": "#0284c7", "accent": "#059669", "text": "#0c4a6e", "muted": "#64748b"},
+    # 1 — Forest Green Light
+    {"name": "Forest Green", "bg": "#f0fdf4", "surface": "#ffffff", "border": "#bbf7d0",
+     "primary": "#16a34a", "accent": "#4ade80", "text": "#14532d", "muted": "#6b7280"},
+    # 2 — Amber Gold Light
+    {"name": "Amber Gold", "bg": "#fffbeb", "surface": "#ffffff", "border": "#fde68a",
+     "primary": "#d97706", "accent": "#f59e0b", "text": "#78350f", "muted": "#92400e"},
+    # 3 — Rose Pink Light
+    {"name": "Rose Pink", "bg": "#fdf2f8", "surface": "#ffffff", "border": "#fbcfe8",
+     "primary": "#db2777", "accent": "#ec4899", "text": "#831843", "muted": "#9f1239"},
+    # 4 — Electric Blue Light
+    {"name": "Electric Blue", "bg": "#eff6ff", "surface": "#ffffff", "border": "#bfdbfe",
+     "primary": "#2563eb", "accent": "#3b82f6", "text": "#1e3a5f", "muted": "#475569"},
+    # 5 — Crimson Red Light
+    {"name": "Crimson Red", "bg": "#fef2f2", "surface": "#ffffff", "border": "#fecaca",
+     "primary": "#dc2626", "accent": "#ef4444", "text": "#7f1d1d", "muted": "#991b1b"},
+    # 6 — Slate + Cyan Light
+    {"name": "Slate Cyan", "bg": "#ecfeff", "surface": "#ffffff", "border": "#a5f3fc",
+     "primary": "#0891b2", "accent": "#06b6d4", "text": "#164e63", "muted": "#475569"},
+    # 7 — Warm Coral Light
+    {"name": "Warm Coral", "bg": "#fff7ed", "surface": "#ffffff", "border": "#fed7aa",
+     "primary": "#ea580c", "accent": "#f97316", "text": "#7c2d12", "muted": "#9a3412"},
+    # 8 — Violet-Indigo Light
+    {"name": "Indigo", "bg": "#eef2ff", "surface": "#ffffff", "border": "#c7d2fe",
+     "primary": "#4f46e5", "accent": "#6366f1", "text": "#312e81", "muted": "#4338ca"},
+    # 9 — Emerald + Gold Light
+    {"name": "Emerald Gold", "bg": "#ecfdf5", "surface": "#ffffff", "border": "#a7f3d0",
+     "primary": "#059669", "accent": "#c4a52d", "text": "#064e3b", "muted": "#065f46"},
+]
+
+# Legacy alias — used by _pick_palette and existing code
+_PALETTES = _PALETTES_DARK
 
 
 def _pick_palette(project_context: str) -> dict:
@@ -493,21 +533,21 @@ _LAYOUT_ARCHETYPES = [
 ]
 
 
-def _derive_design_dna(project_context: str) -> dict:
+def _derive_design_dna(project_context: str, theme_preference: str = "auto") -> dict:
     """Deterministically derive a full 8-dimension design DNA from the project.
 
     Returns a dict with all design specs. Same project → same DNA every time.
     Different projects get visually distinct identities.
 
-    The hash seed incorporates product name, description, AND target audience
-    so two projects with the same name but different purposes get completely
-    different visual identities.
+    theme_preference: "light", "dark", or "auto".
+    When "auto", checks for a "Theme Preference:" line in project_context.
     """
     import hashlib
 
     product_name = ""
     description = ""
     audience = ""
+    context_theme = ""
     for line in (project_context or "").splitlines():
         low = line.lower()
         if low.startswith("product:"):
@@ -516,13 +556,28 @@ def _derive_design_dna(project_context: str) -> dict:
             description = line.split(":", 1)[-1].strip()
         elif low.startswith("target audience:"):
             audience = line.split(":", 1)[-1].strip()
+        elif low.startswith("theme preference:"):
+            context_theme = line.split(":", 1)[-1].strip().lower()
+
+    # Resolve effective theme: explicit param > context line > default dark
+    tp = (theme_preference or "auto").lower().strip()
+    if tp == "auto" and context_theme in ("light", "dark"):
+        tp = context_theme
+    if tp == "auto":
+        tp = "dark"  # backward compat default
+
+    if tp == "light":
+        palette_list = _PALETTES_LIGHT
+    else:
+        palette_list = _PALETTES_DARK
+
     # Combine all three fields so even identically-named projects with
     # different descriptions / audiences get distinct design DNA
     seed = f"{product_name}|{description}|{audience}".lower().strip() if product_name else "default"
     h = hashlib.md5(seed.encode()).hexdigest()
 
     # Use different byte ranges so each dimension is independent
-    palette_idx      = int(h[0:4],  16) % len(_PALETTES)
+    palette_idx      = int(h[0:4],  16) % len(palette_list)
     component_idx    = int(h[4:6],  16) % len(_COMPONENT_STYLES)
     typography_idx   = int(h[6:8],  16) % len(_TYPOGRAPHY_SPECS)
     nav_idx          = int(h[8:10], 16) % len(_NAV_PATTERNS)
@@ -532,7 +587,7 @@ def _derive_design_dna(project_context: str) -> dict:
 
     return {
         "product_name": product_name or "Product",
-        "palette":      _PALETTES[palette_idx],
+        "palette":      palette_list[palette_idx],
         "component":    _COMPONENT_STYLES[component_idx],
         "typography":   _TYPOGRAPHY_SPECS[typography_idx],
         "nav":          _NAV_PATTERNS[nav_idx],
@@ -717,12 +772,79 @@ def _pick_palette(project_context: str) -> dict:
     return _derive_design_dna(project_context)["palette"]
 
 
+def _build_artifact_summary(project_id: str, db) -> str:
+    """Pull completed artifacts and extract screen-relevant content for discovery.
+
+    Reads PRD, user personas, roadmap, tech architecture, API docs, exec summary,
+    and design components — all of which describe features/screens the product needs.
+    """
+    if db is None:
+        return ""
+
+    # Artifact types most likely to mention screens/features/pages
+    SCREEN_RELEVANT_TYPES = [
+        ArtifactType.product_requirements,
+        ArtifactType.user_personas,
+        ArtifactType.roadmap,
+        ArtifactType.tech_architecture,
+        ArtifactType.api_docs,
+        ArtifactType.exec_summary,
+        ArtifactType.design_components,
+        ArtifactType.gtm_plan,
+    ]
+
+    artifacts = db.query(Artifact).filter(
+        Artifact.project_id == project_id,
+        Artifact.artifact_type.in_(SCREEN_RELEVANT_TYPES),
+        Artifact.status == AgentStatus.complete,
+    ).all()
+
+    if not artifacts:
+        return ""
+
+    LABELS = {
+        ArtifactType.product_requirements: "Product Requirements (PRD)",
+        ArtifactType.user_personas: "User Personas",
+        ArtifactType.roadmap: "Product Roadmap",
+        ArtifactType.tech_architecture: "Technical Architecture",
+        ArtifactType.api_docs: "API Documentation",
+        ArtifactType.exec_summary: "Executive Summary",
+        ArtifactType.design_components: "Design Components",
+        ArtifactType.gtm_plan: "Go-to-Market Plan",
+    }
+
+    sections = []
+    for art in artifacts:
+        label = LABELS.get(art.artifact_type, art.artifact_type.value)
+        if isinstance(art.content, dict):
+            text = art.content.get("text") or art.content.get("master") or json.dumps(art.content)
+        elif isinstance(art.content, str):
+            text = art.content
+        else:
+            text = str(art.content) if art.content else ""
+
+        text = text.strip()
+        if not text:
+            continue
+
+        # Truncate very long artifacts to keep context manageable
+        if len(text) > 3000:
+            text = text[:3000] + "\n... [truncated]"
+        sections.append(f"### {label}\n{text}")
+
+    if not sections:
+        return ""
+
+    return "\n\n".join(sections)
+
+
 def _build_project_context(
     project: Project, 
     cdo_analysis: CSuiteAnalysis | None, 
     db=None,
     direction: str | None = None,
     reference_images: list[str] | None = None,
+    include_artifacts: bool = False,
 ) -> str:
     idea_context = ""
     if project.idea and project.idea.content:
@@ -751,14 +873,32 @@ def _build_project_context(
                 raw = str(dsf.content)
             if raw and raw.strip():
                 design_system_text = raw.strip()
-    return compose_project_context(
+
+    base_context = compose_project_context(
         product_name=project.name,
         description=project.description,
         target_audience=project.target_audience,
         idea=idea_context,
         cdo_analysis=cdo_suggestions,
         design_system_text=design_system_text,
+        direction=direction,
+        reference_images=reference_images,
     )
+
+    # Inject theme preference from project's design_preferences so
+    # _derive_design_dna can pick the right palette list automatically.
+    prefs = project.design_preferences or {}
+    theme_pref = prefs.get("theme", "auto") if isinstance(prefs, dict) else "auto"
+    if theme_pref and theme_pref != "auto":
+        base_context += f"\nTheme Preference: {theme_pref}"
+
+    # Optionally enrich with artifact summaries for screen discovery
+    if include_artifacts and db is not None:
+        artifact_summary = _build_artifact_summary(project.id, db)
+        if artifact_summary:
+            base_context += f"\n\n══ PROJECT ARTIFACTS (features, user flows, API endpoints, roadmap) ══\n{artifact_summary}\n══════════════════════════════════════════════════════"
+
+    return base_context
 
 
 async def _discover_screens_from_context(project_context: str, user_id: str | None = None) -> list[dict]:
@@ -840,6 +980,99 @@ Then add 2-4 more product-specific screens as important or nice_to_have."""
         })
 
     return [landing] + filtered
+
+
+async def _discover_screens_from_artifacts(
+    enhanced_context: str,
+    existing_names: set[str],
+    user_id: str | None = None,
+) -> list[dict]:
+    """Discover ADDITIONAL screens by analyzing project artifacts.
+
+    Unlike _discover_screens_from_context, this focuses on finding screens
+    that are implied by artifacts (PRD, user personas, roadmap, API docs, etc.)
+    but not yet in the existing mockup list.
+    """
+    system_prompt = """You are a senior product designer performing a gap analysis. You are given:
+1. A product description with its Design System and CDO recommendations
+2. Detailed project artifacts (PRD, user personas, roadmap, tech architecture, API docs, etc.)
+3. A list of screens that are ALREADY discovered
+
+Your job: identify screens/pages that are MISSING from the existing list but are clearly needed based on the artifacts.
+
+Look for:
+- Features described in the PRD that need their own screen
+- User flows/journeys from personas that require dedicated pages
+- Admin/management screens implied by the tech architecture
+- CRUD interfaces for API resources (e.g., "Manage Products", "Order Details")
+- Onboarding, profile, notifications, help/support, or analytics screens
+- Screens for different user roles (admin vs user)
+- Error/empty states, 404, maintenance pages
+
+Do NOT repeat any screen from the "EXISTING SCREENS" list.
+Do NOT include Landing Page or Login/Register if they already exist.
+
+Respond with ONLY valid JSON:
+{
+    "screens": [
+        {
+            "name": "Screen Name",
+            "description": "What this screen shows and why it's needed based on the artifacts",
+            "priority": "important",
+            "source": "Brief note on which artifact implies this screen"
+        }
+    ]
+}
+
+Priority: "critical", "important", or "nice_to_have"
+If no additional screens are needed, return: {"screens": []}"""
+
+    try:
+        mc = _resolve_design_model(user_id)
+        call_kwargs = _build_litellm_kwargs(mc, [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": enhanced_context},
+        ], temperature=0.7, max_tokens=3000)
+        resp = await litellm.acompletion(**call_kwargs)
+        text = resp.choices[0].message.content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+
+        match = re.search(r'\{[\s\S]*\}', text)
+        screens_data = json.loads(match.group() if match else text)
+        screens = screens_data.get("screens", [])
+        if not isinstance(screens, list):
+            screens = []
+    except Exception as e:
+        print(f"[design] Artifact-based screen discovery failed: {e}")
+        screens = []
+
+    # Dedup against existing names (fuzzy: lowercase + strip)
+    new_screens = []
+    for s in screens:
+        name = str(s.get("name", "")).strip()
+        if not name:
+            continue
+        if name.lower() in existing_names:
+            continue
+        # Also check for near-duplicates (e.g., "User Profile" vs "Profile")
+        name_words = set(name.lower().split())
+        is_dup = False
+        for existing in existing_names:
+            existing_words = set(existing.split())
+            # If >60% of words overlap, consider it a duplicate
+            if name_words and existing_words:
+                overlap = len(name_words & existing_words) / min(len(name_words), len(existing_words))
+                if overlap > 0.6:
+                    is_dup = True
+                    break
+        if not is_dup:
+            new_screens.append(s)
+
+    return new_screens
 
 
 def _priority_to_enum(priority: str | None) -> MockupPriority:
@@ -1239,6 +1472,121 @@ def _enforce_theme_css(html: str, dna: dict) -> str:
     return html
 
 
+# ── Drift-color normalization ─────────────────────────────────────────────────
+# Interactive blues that LLMs default to for buttons/active-states (Tailwind, Material, GitHub, Google)
+_DRIFT_INTERACTIVE_BLUES: list[str] = [
+    "#2563eb", "#3b82f6", "#1d4ed8", "#0ea5e9", "#0284c7", "#1e40af",
+    "#60a5fa", "#4e9af1", "#1a73e8", "#4285f4", "#185abc", "#0052cc",
+    "#0065ff", "#1976d2", "#2196f3", "#1565c0", "#6ea7d9", "#5992c0",
+    "#539bf5", "#58a6ff",
+]
+
+# Dark-navy colors used by LLMs as sidebar / panel backgrounds
+_DRIFT_DARK_NAVIES: list[str] = [
+    "#1e3a5f", "#1a237e", "#0d47a1", "#283593", "#1e3a8a", "#172554",
+    "#1e2d40", "#0f172a", "#0a1628", "#001f3f", "#003366", "#0a2342",
+    "#15304b", "#1b2a3b", "#162032",
+]
+
+
+def _hex_is_blue(hex_val: str) -> bool:
+    """Return True if the hex color falls in the blue/indigo/teal hue family."""
+    try:
+        h = hex_val.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        # Blue dominant: blue channel significantly exceeds red
+        return b > r + 20 and b >= g - 20
+    except Exception:
+        return False
+
+
+def _normalize_drift_colors(html: str, north_star_css: str | None) -> str:
+    """Deterministic post-generation pass: replace generic-SaaS blue drift colors.
+
+    Only replaces interactive blues (like #2563EB) with var(--primary) when the
+    northstar's own --primary is NOT blue — protecting blue-branded products.
+    Only replaces dark navy backgrounds with var(--surface) when the northstar's
+    --bg is light (luminance > 150).
+
+    Works entirely inside <style> blocks — never touches visible HTML content.
+    """
+    if not html or not north_star_css:
+        return html
+
+    ns_root_m = re.search(r':root\s*\{([^}]+)\}', north_star_css, re.DOTALL)
+    if not ns_root_m:
+        return html
+    ns_root_block = ns_root_m.group(1)
+
+    # Detect northstar primary color
+    primary_hex: str | None = None
+    for tok in ("primary", "accent", "cta", "brand", "highlight"):
+        m = re.search(
+            rf'--{tok}[^:]*:\s*(#[0-9a-fA-F]{{3,8}})', ns_root_block, re.IGNORECASE
+        )
+        if m:
+            primary_hex = m.group(1)
+            break
+
+    # Detect northstar background color
+    bg_hex: str | None = None
+    m_bg = re.search(
+        r'--(?:bg|background)\b[^:]*:\s*(#[0-9a-fA-F]{3,8})', ns_root_block, re.IGNORECASE
+    )
+    if m_bg:
+        bg_hex = m_bg.group(1)
+
+    # Guard: if northstar primary is itself blue (e.g. a blue-branded SaaS), leave it
+    fix_blues = bool(primary_hex) and not _hex_is_blue(primary_hex)
+
+    # Guard: only replace dark navies when the brand background is light
+    fix_navies = False
+    if bg_hex:
+        try:
+            h = bg_hex.lstrip("#")
+            r_c, g_c, b_c = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            fix_navies = (0.299 * r_c + 0.587 * g_c + 0.114 * b_c) > 150
+        except Exception:
+            pass
+
+    if not fix_blues and not fix_navies:
+        return html
+
+    def _replace_in_style(style_content: str) -> str:
+        result = style_content
+        if fix_blues:
+            for drift in _DRIFT_INTERACTIVE_BLUES:
+                result = re.sub(
+                    r'((?:background(?:-color)?|color|border(?:-color)?|outline(?:-color)?|fill|stroke)\s*:\s*)'
+                    + re.escape(drift)
+                    + r'\b',
+                    r'\1var(--primary)',
+                    result,
+                    flags=re.IGNORECASE,
+                )
+        if fix_navies:
+            for drift in _DRIFT_DARK_NAVIES:
+                result = re.sub(
+                    r'(background(?:-color)?\s*:\s*)' + re.escape(drift) + r'\b',
+                    r'\1var(--surface, var(--bg))',
+                    result,
+                    flags=re.IGNORECASE,
+                )
+        return result
+
+    def _handle_style_block(m: re.Match) -> str:
+        return m.group(1) + _replace_in_style(m.group(2)) + m.group(3)
+
+    return re.sub(
+        r'(<style[^>]*>)(.*?)(</style>)',
+        _handle_style_block,
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+
 def _transplant_root_vars(html: str, north_star_css: str | None) -> str:
     """Overwrite only the brand-palette and font variables in the generated HTML's :root.
 
@@ -1510,7 +1858,12 @@ def _extract_reference_palette(north_star_css: str | None, north_star_html: str 
     return {"palette": palette}
 
 
-def _resolve_theme_lock_dna(project_context: str, north_star_css: str | None, north_star_html: str | None) -> dict:
+def _resolve_theme_lock_dna(project_context: str, north_star_css: str | None, north_star_html: str | None, direction: str | None = None) -> dict:
+    if direction:
+        # If user explicitly provided a direction, we do NOT want to force the
+        # deterministic "House style" from project name. Return a blank DNA
+        # and let the direction + vendor cues guide the AI.
+        return {"palette": {}}
     return _extract_reference_palette(north_star_css, north_star_html) or _derive_design_dna(project_context)
 
 
@@ -1792,6 +2145,7 @@ class GenerateAllRequest(BaseModel):
     design_mode: str = "dna"  # "dna" | "ai_free"
     direction: Optional[str] = None  # chosen direction description/style to follow
     reference_images: list[str] | None = None  # b64 image data URLs for inspiration
+    design_preferences: dict | None = None  # {"theme": "light"/"dark", "style": ..., "color_preference": ...}
 
 class AddScreenRequest(BaseModel):
     name: str
@@ -2080,6 +2434,27 @@ North-star HTML reference:
             brand_var_lines = [m.group(0).strip() for m in _PALETTE_PAT.finditer(_ns_root_m.group(1))]
             if brand_var_lines:
                 brand_vars_text = "\n  ".join(brand_var_lines)
+                # Detect non-blue primary so we can emit an explicit forbidden-blue warning
+                _pri_m = re.search(
+                    r'--(primary|accent|cta|brand)[^:]*:\s*(#[0-9a-fA-F]{3,8})',
+                    _ns_root_m.group(1), re.IGNORECASE,
+                )
+                _primary_hex = _pri_m.group(2) if _pri_m else None
+                _explicit_blue_ban = ""
+                if _primary_hex and not _hex_is_blue(_primary_hex):
+                    _explicit_blue_ban = (
+                        f"\n\n\u26d4 AI DEFAULT OVERRIDE \u2014 CRITICAL \u26d4\n"
+                        f"AI models default to #2563EB (blue-600) for interactive elements. OVERRIDE THIS COMPLETELY.\n"
+                        f"THIS PRODUCT PRIMARY = {_primary_hex}. ANY BLUE IS WRONG FOR THIS BRAND.\n"
+                        f"FORBIDDEN hex values: #2563EB #3B82F6 #1D4ED8 #1E40AF #0EA5E9 #0284C7 (generic blues)\n"
+                        f"                      #1E3A5F #1A237E #0D47A1 #283593 (dark navy sidebar/panel backgrounds)\n"
+                        f"\u2705 .btn-primary {{ background: var(--primary); }}  \u2192 renders {_primary_hex}\n"
+                        f"\u274c .btn-primary {{ background: #2563EB; }}  \u2192 FORBIDDEN blue\n"
+                        f"\u2705 .nav-item.active {{ background: var(--primary); }}\n"
+                        f"\u274c .nav-item.active {{ background: #1E3A5F; }}  \u2192 FORBIDDEN dark navy\n"
+                        f"\u2705 .sidebar {{ background: var(--surface, var(--bg)); }}\n"
+                        f"\u274c .sidebar {{ background: #1A237E; }}  \u2192 FORBIDDEN dark navy"
+                    )
                 mandatory_root_block = (
                     "\n\n\u26a0\u26a0 MANDATORY BRAND CONTRACT \u2014 STRICTLY ENFORCED \u26a0\u26a0\n"
                     "These CSS variables ARE the locked brand identity for this product. You MUST:\n"
@@ -2089,6 +2464,7 @@ North-star HTML reference:
                     "  4. Every structural element (body, sidebar, nav, header, main, section, .card) MUST derive its background from var(--bg) or var(--surface)\n\n"
                     f"```css\n:root {{\n  {brand_vars_text}\n}}\n```\n\n"
                     "FORBIDDEN: Hardcoded dark hex values for backgrounds \u00b7 dark gradients when bg is light \u00b7 purple/navy/black surfaces when tokens define a light palette."
+                    + _explicit_blue_ban
                 )
                 # Gap 2: append shared component class names so the LLM reuses them
                 if component_class_names:
@@ -2645,7 +3021,7 @@ def _build_page_override(mockup: DesignMockup) -> str:
     )
 
 
-def _persist_design_system_hierarchy(db: Session, project_id: str) -> None:
+def _persist_design_system_hierarchy(db: Session, project_id: str, direction: str | None = None) -> None:
     artifact = db.query(Artifact).filter(
         Artifact.project_id == project_id,
         Artifact.artifact_type == ArtifactType.design_system,
@@ -2681,16 +3057,27 @@ def _persist_design_system_hierarchy(db: Session, project_id: str) -> None:
             "override": _build_page_override(mockup),
         }
 
-    artifact.content = {
-        **existing_content,
-        "text": design_system_text,
-        "master": _build_master_design_reference(design_system_text, north_star_name, north_star_html),
-        "pages": pages,
-        "north_star": {
-            "screen_name": north_star_name or "",
-            "css": north_star_css or "",
-        },
-    }
+    if direction:
+        # PIVOT: User provided a new direction. We must clear the "master" and "north_star"
+        # so they don't leak old green-theme tokens or screenshots into future generations.
+        artifact.content = {
+            **existing_content,
+            "text": design_system_text,
+            "master": None,
+            "pages": pages,
+            "north_star": None,
+        }
+    else:
+        artifact.content = {
+            **existing_content,
+            "text": design_system_text,
+            "master": _build_master_design_reference(design_system_text, north_star_name, north_star_html),
+            "pages": pages,
+            "north_star": {
+                "screen_name": north_star_name or "",
+                "css": north_star_css or "",
+            },
+        }
     artifact.updated_at = datetime.utcnow()
     db.commit()
 
@@ -2819,8 +3206,8 @@ async def _generate_mockup_with_design_brief(
 ) -> None:
     from models import SessionLocal
 
-    if mockup_id in _cancelled_mockups:
-        _cancelled_mockups.discard(mockup_id)
+    if await is_mockup_cancelled(mockup_id):
+        await discard_cancelled_mockup(mockup_id)
         return
 
     db = SessionLocal()
@@ -2829,7 +3216,7 @@ async def _generate_mockup_with_design_brief(
         if not mockup:
             return
 
-        theme_lock_dna = _resolve_theme_lock_dna(project_context, north_star_css, north_star_html)
+        theme_lock_dna = _resolve_theme_lock_dna(project_context, north_star_css, north_star_html, direction=direction)
 
         mockup.status = MockupStatus.generating
         db.commit()
@@ -2844,7 +3231,7 @@ async def _generate_mockup_with_design_brief(
                 )
                 north_star_css = north_star_css or auto_css
                 north_star_html = north_star_html or auto_html
-            theme_lock_dna = _resolve_theme_lock_dna(project_context, north_star_css, north_star_html)
+            theme_lock_dna = _resolve_theme_lock_dna(project_context, north_star_css, north_star_html, direction=direction)
 
         if direction or reference_images:
             references = []
@@ -2902,8 +3289,8 @@ async def _generate_mockup_with_design_brief(
             {"role": "user", "content": f"Product context:\n{project_context}\n\nScreen:\n{screen_desc}"},
         ], user_id=user_id, temperature=0.95 if creative_mode == "ai_free" and not north_star_css else 0.7, max_tokens=5000)
 
-        if mockup_id in _cancelled_mockups:
-            _cancelled_mockups.discard(mockup_id)
+        if await is_mockup_cancelled(mockup_id):
+            await discard_cancelled_mockup(mockup_id)
             return
 
         candidate = _ensure_html_document(
@@ -2942,6 +3329,7 @@ async def _generate_mockup_with_design_brief(
         )
 
         candidate = _transplant_root_vars(candidate, north_star_css)
+        candidate = _normalize_drift_colors(candidate, north_star_css)
         # Gap 3: second pass — enforce any tokens that all sibling screens agree on
         consensus_css = _build_cross_screen_consensus_css(
             db, mockup.project_id, exclude_mockup_id=mockup_id
@@ -2955,6 +3343,7 @@ async def _generate_mockup_with_design_brief(
         if not _is_renderable_ui_html(candidate):
             candidate = _fallback_mockup_html(product_name, screen_desc, project_context)
             candidate = _transplant_root_vars(candidate, north_star_css)
+            candidate = _normalize_drift_colors(candidate, north_star_css)
             if consensus_css:
                 candidate = _transplant_root_vars(candidate, consensus_css)
             candidate = _transplant_component_styles(candidate, north_star_html)
@@ -3188,7 +3577,7 @@ async def _generate_all_mockups_ai_free(project_id: str, direction: str | None =
             project, cdo_analysis, db=db, direction=direction, reference_images=reference_images
         )
         user_id = project.user_id
-        _persist_design_system_hierarchy(db, project_id)
+        _persist_design_system_hierarchy(db, project_id, direction=direction)
         preserved_north_star_css, preserved_north_star_html, _ = _select_north_star_reference(db, project_id)
 
         if direction:
@@ -3569,7 +3958,9 @@ async def list_mockups(
 
 
 @router.post("/{project_id}/design/generate")
+@limiter.limit("30/minute")
 async def generate_mockups(
+    request: Request,
     project_id: str,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
@@ -3600,7 +3991,9 @@ async def generate_mockups(
 
 
 @router.post("/{project_id}/design/discover")
+@limiter.limit("30/minute")
 async def discover_design_screens(
+    request: Request,
     project_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -3614,7 +4007,7 @@ async def discover_design_screens(
         CSuiteAnalysis.project_id == project_id,
         CSuiteAnalysis.agent_role == CSuiteRole.cdo,
     ).first()
-    project_context = _build_project_context(project, cdo_analysis, db=db)
+    project_context = _build_project_context(project, cdo_analysis, db=db, include_artifacts=True)
     screens = await _discover_screens_from_context(project_context, user_id=user.id)
 
     db.query(DesignMockup).filter(DesignMockup.project_id == project_id).delete()
@@ -3657,8 +4050,134 @@ async def discover_design_screens(
     }
 
 
+@router.post("/{project_id}/design/rediscover")
+@limiter.limit("30/minute")
+async def rediscover_screens_from_artifacts(
+    request: Request,
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Analyze all project artifacts to discover additional screens not yet in the mockup list.
+
+    Unlike /discover, this does NOT delete existing mockups. It only adds new ones
+    that aren't already represented.
+    """
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    cdo_analysis = db.query(CSuiteAnalysis).filter(
+        CSuiteAnalysis.project_id == project_id,
+        CSuiteAnalysis.agent_role == CSuiteRole.cdo,
+    ).first()
+
+    # Build context with full artifact content
+    project_context = _build_project_context(project, cdo_analysis, db=db, include_artifacts=True)
+
+    # Get existing screen names for dedup
+    existing_mockups = db.query(DesignMockup).filter(
+        DesignMockup.project_id == project_id
+    ).all()
+    existing_names = {m.screen_name.strip().lower() for m in existing_mockups}
+
+    # Ask LLM to discover screens with awareness of what already exists
+    existing_list = ", ".join(m.screen_name for m in existing_mockups)
+    enhanced_context = (
+        f"{project_context}\n\n"
+        f"══ EXISTING SCREENS (already discovered — DO NOT repeat these) ══\n"
+        f"{existing_list}\n"
+        f"══════════════════════════════════════════════════════\n"
+        f"Find ADDITIONAL screens that are missing from the list above. "
+        f"Focus on screens implied by the product requirements, user personas, "
+        f"API endpoints, roadmap features, and user flows described in the artifacts."
+    )
+
+    screens = await _discover_screens_from_artifacts(enhanced_context, existing_names, user_id=user.id)
+
+    if not screens:
+        return {"status": "no_new_screens", "screens": [], "message": "All necessary screens are already discovered."}
+
+    # Add new screens with sort_order continuing from existing
+    max_order = max((m.sort_order or 0 for m in existing_mockups), default=-1)
+    created = []
+    for i, screen in enumerate(screens):
+        prompt = (
+            f"Create the {screen.get('name')} screen for {project.name}. "
+            f"Follow consistent design system and navigation. "
+            f"Priority: {screen.get('priority', 'important')}."
+        )
+        mockup = DesignMockup(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            screen_name=screen.get("name", f"Screen {max_order + i + 2}"),
+            description=screen.get("description", ""),
+            priority=_priority_to_enum(screen.get("priority")),
+            prompt=prompt,
+            status=MockupStatus.pending,
+            sort_order=max_order + i + 1,
+        )
+        db.add(mockup)
+        created.append(mockup)
+    db.commit()
+
+    return {
+        "status": "discovered",
+        "new_count": len(created),
+        "screens": [
+            {
+                "id": m.id,
+                "name": m.screen_name,
+                "description": m.description,
+                "priority": m.priority.value,
+                "prompt": m.prompt,
+                "status": m.status.value,
+            }
+            for m in created
+        ]
+    }
+
+
+# ── Design Preferences ──────────────────────────────────────────────────────
+
+class DesignPreferencesRequest(BaseModel):
+    theme: str = "dark"  # "light" | "dark"
+    style: str | None = None  # e.g. "minimal", "bold", "corporate", "playful"
+    color_preference: str | None = None  # e.g. "blue", "warm", "neutral"
+    additional_notes: str | None = None
+
+
+@router.get("/{project_id}/design/preferences")
+async def get_design_preferences(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"preferences": project.design_preferences or {}}
+
+
+@router.put("/{project_id}/design/preferences")
+async def save_design_preferences(
+    project_id: str,
+    body: DesignPreferencesRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project.design_preferences = body.model_dump(exclude_none=True)
+    db.commit()
+    return {"status": "saved", "preferences": project.design_preferences}
+
+
 @router.post("/{project_id}/design/directions")
+@limiter.limit("30/minute")
 async def get_design_directions(
+    request: Request,
     project_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -3741,7 +4260,9 @@ async def add_screen(
 
 
 @router.post("/{project_id}/design/generate-all")
+@limiter.limit("30/minute")
 async def generate_all_mockups(
+    request: Request,
     project_id: str,
     background_tasks: BackgroundTasks,
     body: GenerateAllRequest = GenerateAllRequest(),
@@ -3752,6 +4273,14 @@ async def generate_all_mockups(
     project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Enforce monthly design-screen limit (raises 402 if over limit)
+    billing.enforce_design_screen_limit(db, user)
+
+    # Persist design preferences if provided (so _build_project_context picks them up)
+    if body.design_preferences:
+        project.design_preferences = body.design_preferences
+        db.commit()
 
     # Mark ALL mockups as pending IMMEDIATELY (synchronous, before the
     # background task starts).  This is critical: the frontend poller will
@@ -3814,11 +4343,17 @@ async def generate_all_mockups(
         else:
             background_tasks.add_task(_generate_all_mockups, project_id)
 
+    # Record usage: count mockups being generated (at least 1)
+    screen_count = max(1, len(existing_mockups))
+    billing.record_design_screen(db, user.id, screen_count)
+
     return {"status": "generating", "design_mode": body.design_mode}
 
 
 @router.post("/{project_id}/design/generate/{mockup_id}")
+@limiter.limit("30/minute")
 async def generate_single_mockup(
+    request: Request,
     project_id: str,
     mockup_id: str,
     background_tasks: BackgroundTasks,
@@ -3889,7 +4424,9 @@ async def approve_mockup(
 
 
 @router.post("/{project_id}/design/mockups/{mockup_id}/revise")
+@limiter.limit("30/minute")
 async def request_revision(
+    request: Request,
     project_id: str,
     mockup_id: str,
     body: RevisionRequest,
@@ -3953,7 +4490,7 @@ async def stop_all_generations(
 
     cancelled_ids = []
     for m in active:
-        _cancelled_mockups.add(m.id)
+        await add_cancelled_mockup(m.id)
         m.status = MockupStatus.pending   # leave as pending so user can re-generate
         cancelled_ids.append(m.id)
 
@@ -3980,7 +4517,7 @@ async def stop_single_generation(
     if not mockup:
         raise HTTPException(status_code=404, detail="Mockup not found")
 
-    _cancelled_mockups.add(mockup_id)
+    await add_cancelled_mockup(mockup_id)
     if mockup.status in (MockupStatus.generating, MockupStatus.pending):
         mockup.status = MockupStatus.pending
         db.commit()

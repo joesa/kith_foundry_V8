@@ -3,7 +3,9 @@ from sqlalchemy import (
     Float, Enum as SAEnum, JSON, create_engine, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from datetime import datetime
+import asyncio
 import enum, os
 from dotenv import load_dotenv
 
@@ -24,9 +26,69 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# ── PgBouncer support ─────────────────────────────────────────────────────────
+# Set PGBOUNCER=true in the environment (fly-backend.toml [env]) to route
+# connections through Nhost's built-in PgBouncer (port 6543, transaction
+# mode).  This lets us run many Fly machines without exceeding Postgres
+# max_connections: each machine's workers share a tiny pool that PgBouncer
+# multiplexes, instead of each worker claiming 60 long-lived connections.
+_is_pgbouncer = os.getenv("PGBOUNCER", "").lower() in ("1", "true", "yes")
+if _is_pgbouncer and DATABASE_URL.startswith("postgresql"):
+    # Switch to port 6543 (Nhost PgBouncer) if still on direct Postgres port 5432
+    import re as _re
+    DATABASE_URL = _re.sub(r":5432/", ":6543/", DATABASE_URL)
+    # Mark the connection as going through pgbouncer so asyncpg disables
+    # prepared-statement caching (required for transaction-mode pooling).
+    if "pgbouncer=true" not in DATABASE_URL:
+        DATABASE_URL += ("&" if "?" in DATABASE_URL else "?") + "pgbouncer=true"
+
+# Use generous connection pool for high-throughput production workloads.
+# With PgBouncer in transaction mode, each worker only needs a small pool
+# (PgBouncer does the real multiplexing).  Without it, keep the larger pool.
+# SQLite (dev fallback) does not support pool args, so skip them entirely.
+if DATABASE_URL.startswith("postgresql"):
+    _pool_kwargs = (
+        dict(pool_size=2, max_overflow=3, pool_recycle=300, pool_pre_ping=True)
+        if _is_pgbouncer else
+        dict(pool_size=20, max_overflow=40, pool_recycle=300, pool_pre_ping=True)
+    )
+else:
+    _pool_kwargs = dict(pool_pre_ping=True)
+
+engine = create_engine(DATABASE_URL, **_pool_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# ── Async engine (asyncpg) for non-blocking DB access in async handlers ───────
+if DATABASE_URL.startswith("postgresql"):
+    _async_connect_args = (
+        {"prepared_statement_cache_size": 0}  # required for PgBouncer transaction mode
+        if _is_pgbouncer else {}
+    )
+    _async_pool_kwargs = (
+        dict(pool_size=2, max_overflow=3, pool_recycle=300, pool_pre_ping=True)
+        if _is_pgbouncer else
+        dict(pool_size=20, max_overflow=40, pool_recycle=300, pool_pre_ping=True)
+    )
+    _ASYNC_DATABASE_URL = (
+        DATABASE_URL
+        # Strip pgbouncer=true param — asyncpg doesn't understand it; we handle
+        # prepared-statement caching via connect_args instead.
+        .replace("&pgbouncer=true", "").replace("?pgbouncer=true", "")
+        .replace("postgresql://", "postgresql+asyncpg://")
+        .replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+    )
+    _async_engine = create_async_engine(
+        _ASYNC_DATABASE_URL,
+        connect_args=_async_connect_args,
+        **_async_pool_kwargs,
+    )
+    AsyncSessionLocal = async_sessionmaker(_async_engine, expire_on_commit=False, class_=AsyncSession)
+else:
+    # SQLite dev fallback — async engine not available without aiosqlite.
+    # get_async_db() will raise if called, but module import succeeds.
+    _async_engine = None  # type: ignore[assignment]
+    AsyncSessionLocal = None  # type: ignore[assignment]
 
 
 def get_db():
@@ -35,6 +97,34 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+async def get_async_db():
+    """FastAPI dependency — yields an AsyncSession (non-blocking, asyncpg)."""
+    if AsyncSessionLocal is None:
+        raise RuntimeError("Async DB requires PostgreSQL (DATABASE_URL must start with postgresql://).")
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+async def run_db(fn):
+    """Run a synchronous DB operation in a thread pool.
+
+    Usage::
+
+        result = await run_db(lambda db: db.query(Project).filter(...).first())
+
+    A fresh SessionLocal is created inside the thread and closed after ``fn``
+    returns, so the caller must not access ORM objects outside the lambda or
+    convert them to plain dicts / primitives first.
+    """
+    def _wrapper():
+        db = SessionLocal()
+        try:
+            return fn(db)
+        finally:
+            db.close()
+    return await asyncio.to_thread(_wrapper)
 
 
 # ── Enums ────────────────────────────────────────────────────────────────────
@@ -110,6 +200,7 @@ class User(Base):
     id = Column(String, primary_key=True, index=True)  # Supabase auth.users.id (UUID string)
     email = Column(String, unique=True, index=True, nullable=False)
     display_name = Column(String, nullable=True)
+    is_super_admin = Column(Boolean, default=False, nullable=False, server_default="false")
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
 
@@ -130,6 +221,7 @@ class Project(Base):
     fly_sandbox_id = Column(String, nullable=True, index=True)
     preview_url = Column(String, nullable=True)
     auto_save_enabled = Column(Boolean, default=True)
+    design_preferences = Column(JSON, nullable=True)  # {theme, style, color_preference, ...}
     idea_id = Column(String, ForeignKey("ideas.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -305,3 +397,86 @@ class ModelRouting(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "task_type", name="uq_user_task_routing"),
     )
+
+
+# ── Billing / Subscription ────────────────────────────────────────────────────
+
+class SubscriptionTier(str, enum.Enum):
+    free = "free"
+    indie = "indie"
+    pro = "pro"
+    team = "team"
+    enterprise = "enterprise"
+
+
+class SubscriptionStatus(str, enum.Enum):
+    active = "active"
+    trialing = "trialing"
+    past_due = "past_due"
+    canceled = "canceled"
+    unpaid = "unpaid"
+
+
+class Subscription(Base):
+    """One active (or cancelled) subscription row per user."""
+    __tablename__ = "subscriptions"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    tier = Column(SAEnum(SubscriptionTier), default=SubscriptionTier.free, nullable=False)
+    status = Column(SAEnum(SubscriptionStatus), default=SubscriptionStatus.active, nullable=False)
+    # Stripe identifiers
+    stripe_customer_id = Column(String, nullable=True, index=True)
+    stripe_subscription_id = Column(String, nullable=True, index=True)
+    stripe_price_id = Column(String, nullable=True)
+    # Billing period
+    current_period_start = Column(DateTime, nullable=True)
+    current_period_end = Column(DateTime, nullable=True)
+    # Optional team seats (for team/enterprise tiers)
+    seat_count = Column(Integer, default=1, nullable=False)
+    # BYOK discount applied?
+    byok_discount_applied = Column(Boolean, default=False)
+    # Annual plan?
+    is_annual = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", backref="subscription")
+
+
+class UsageRecord(Base):
+    """
+    Tracks billable usage per user per calendar month.
+    One row per user+month; columns for each usage type.
+    """
+    __tablename__ = "usage_records"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    # Billing month: YYYY-MM (e.g. "2026-03")
+    billing_month = Column(String(7), nullable=False, index=True)
+    csuite_runs = Column(Integer, default=0, nullable=False)
+    design_screens = Column(Integer, default=0, nullable=False)
+    artifact_sets = Column(Integer, default=0, nullable=False)
+    project_count = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "billing_month", name="uq_user_billing_month"),
+    )
+
+
+class UsagePack(Base):
+    """
+    One-time purchased usage packs added on top of plan limits.
+    pack_type: 'csuite_runs' | 'design_screens'
+    pack_size: 25 for C-Suite runs, 50 for design screens
+    """
+    __tablename__ = "usage_packs"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    pack_type = Column(String, nullable=False)   # 'csuite_runs' | 'design_screens'
+    pack_size = Column(Integer, nullable=False)   # 25 or 50
+    remaining = Column(Integer, nullable=False)   # decrements as used
+    stripe_payment_intent = Column(String, nullable=True)
+    purchased_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)  # None = never expires
+

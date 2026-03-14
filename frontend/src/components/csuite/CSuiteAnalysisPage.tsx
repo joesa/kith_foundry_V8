@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
     Crown, Code2, TrendingUp, Megaphone, Box, Settings, Palette,
     CheckCircle2, Loader2, XCircle, ArrowRight, Info,
-    Sparkles, Zap, ChevronDown, ChevronUp, RotateCcw, X
+    Sparkles, Zap, ChevronDown, ChevronUp, RotateCcw, X, StopCircle, Square
 } from "lucide-react";
 import { ExportMenu } from "../shared/ExportMenu";
 
@@ -26,6 +26,7 @@ interface AgentResult {
     priority_actions: string[];
     competitive_note: string | null;
     verdict: "go" | "no_go" | "conditional" | null;
+    error_message?: string | null;
 }
 
 const ROLE_META: Record<string, { label: string; icon: any; color: string; gradient: string }> = {
@@ -71,9 +72,13 @@ export default function CSuiteAnalysisPage() {
     const [refining, setRefining] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [stuck, setStuck] = useState(false); // true when polling timed out with no progress
+    const [stopping, setStopping] = useState(false); // true while stop-all is in flight
+    const [stoppingRole, setStoppingRole] = useState<string | null>(null); // role being individually stopped
+    const [regeneratingRoles, setRegeneratingRoles] = useState<string[]>([]); // roles currently being regenerated
     const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const sseRef = useRef<EventSource | null>(null);
     const pollCountRef = useRef(0);
-    const POLL_TIMEOUT = 150; // ~5 min at 2s interval — stop if no progress
+    const POLL_TIMEOUT = 150; // ~5 min at 30s fallback interval — stop if no progress
 
     // ── Improvement state ────────────────────────────────────────────────
     interface ImprovementDetail {
@@ -118,17 +123,9 @@ export default function CSuiteAnalysisPage() {
                         return; // Already complete, no need to poll or re-run
                     }
 
-                    // If ALL agents are still pending (none running/complete), the
-                    // background job never started — re-trigger the run.
-                    const allPending = data.agents.every((a: AgentResult) => a.status === "pending");
-                    if (allPending) {
-                        console.warn("All agents stuck in pending — re-triggering run");
-                        // fall through to POST /run below
-                    } else {
-                        // At least one agent is running or has results — just poll
+                    // At least one agent is running or has results — just poll
                         pollResults();
                         return;
-                    }
                 }
             }
 
@@ -137,9 +134,15 @@ export default function CSuiteAnalysisPage() {
                 method: "POST",
                 headers: { Authorization: `Bearer ${token}` },
             });
+            if (resp.status === 409) {
+                // Another run is already in-flight — just start polling for its results
+                console.log("CSuite run already in progress, polling for results");
+                pollResults();
+                return;
+            }
             if (!resp.ok) {
                 const body = await resp.json().catch(() => ({}));
-                throw new Error(body.detail || "Failed to start analysis");
+                throw new Error(_extractErrorMsg(body, resp.status));
             }
             const data = await resp.json();
             setProjectName(data.project_name || "");
@@ -153,7 +156,9 @@ export default function CSuiteAnalysisPage() {
     const pollResults = async () => {
         setStuck(false);
         pollCountRef.current = 0;
-        const poll = async () => {
+
+        // Single status-refresh function reused by both SSE events and the fallback interval
+        const refreshStatus = async () => {
             try {
                 pollCountRef.current += 1;
                 const token = await getAccessToken();
@@ -202,10 +207,11 @@ export default function CSuiteAnalysisPage() {
                         return prev;
                     });
                     if (pollingRef.current) clearInterval(pollingRef.current);
+                    if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
                     return;
                 }
 
-                // Timeout: if all still pending after POLL_TIMEOUT polls, stop and show "stuck"
+                // Timeout: if all still pending after POLL_TIMEOUT fallback polls, stop and show "stuck"
                 const allPending = data.agents?.every((a: AgentResult) => a.status === "pending");
                 if (allPending && pollCountRef.current >= POLL_TIMEOUT) {
                     if (pollingRef.current) clearInterval(pollingRef.current);
@@ -213,21 +219,50 @@ export default function CSuiteAnalysisPage() {
                     setStuck(true);
                 }
             } catch (e) {
-                console.error("Poll error:", e);
+                console.error("Status refresh error:", e);
             }
         };
-        pollingRef.current = setInterval(poll, 2000);
-        poll(); // immediate first poll
+
+        // Try SSE for real-time push; fall back to a slow 30s interval if SSE fails
+        const startSSE = async () => {
+            const token = await getAccessToken();
+            if (!token || !projectId) return;
+            const url = `${getApiBaseUrl()}/api/v1/projects/${projectId}/events?token=${encodeURIComponent(token)}`;
+            const es = new EventSource(url);
+            sseRef.current = es;
+
+            es.onmessage = (evt) => {
+                try {
+                    const payload = JSON.parse(evt.data);
+                    if (payload.type === "csuite_update") {
+                        refreshStatus();
+                    }
+                } catch { /* ignore non-JSON messages */ }
+            };
+
+            es.onerror = () => {
+                // SSE failed — fall back to 30s polling if not already running
+                es.close();
+                sseRef.current = null;
+                if (!pollingRef.current) {
+                    pollingRef.current = setInterval(refreshStatus, 30_000);
+                }
+            };
+        };
+
+        refreshStatus(); // immediate first fetch
+        startSSE();      // open SSE stream (also drives subsequent refreshes)
+        // Slow fallback: poll every 30s in case SSE misses an event
+        pollingRef.current = setInterval(refreshStatus, 30_000);
     };
 
     const handleRunAgain = async () => {
-        setStuck(false);
         setError(null);
         setAllDone(false);
-        if (pollingRef.current) {
-            clearInterval(pollingRef.current);
-            pollingRef.current = null;
-        }
+        setStopping(false);
+        setStoppingRole(null);
+        if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+        if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
         try {
             const token = await getAccessToken();
             const resp = await fetch(`${getApiBaseUrl()}/api/v1/csuite/${projectId}/run`, {
@@ -236,7 +271,7 @@ export default function CSuiteAnalysisPage() {
             });
             if (!resp.ok) {
                 const body = await resp.json().catch(() => ({}));
-                throw new Error(body.detail || "Failed to start analysis");
+                throw new Error(_extractErrorMsg(body, resp.status));
             }
             setAgents(createPendingAgents());
             setOverallScore(null);
@@ -248,15 +283,12 @@ export default function CSuiteAnalysisPage() {
     };
 
     const handleRefine = async () => {
-        if (!corrections.trim()) return;
         setRefining(true);
         setAllDone(false);
         setError(null);
         try {
-            if (pollingRef.current) {
-                clearInterval(pollingRef.current);
-                pollingRef.current = null;
-            }
+            if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+            if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
             const token = await getAccessToken();
             const resp = await fetch(`${getApiBaseUrl()}/api/v1/csuite/${projectId}/refine`, {
                 method: "POST",
@@ -268,7 +300,7 @@ export default function CSuiteAnalysisPage() {
             });
             if (!resp.ok) {
                 const body = await resp.json().catch(() => ({}));
-                throw new Error(body.detail || "Failed to refine analysis");
+                throw new Error(_extractErrorMsg(body, resp.status));
             }
 
             setAgents(createPendingAgents());
@@ -280,6 +312,98 @@ export default function CSuiteAnalysisPage() {
             setError(e.message);
         } finally {
             setRefining(false);
+        }
+    };
+
+    // ── Stop handlers ────────────────────────────────────────────────────
+    // ── Regenerate handlers ──────────────────────────────────────────────
+    const _regenRoles = async (roles: string[]) => {
+        if (!projectId || roles.length === 0) return;
+        setRegeneratingRoles(prev => [...prev, ...roles]);
+        setAllDone(false);
+        setError(null);
+        if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+        if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
+        try {
+            const token = await getAccessToken();
+            const resp = await fetch(`${getApiBaseUrl()}/api/v1/csuite/${projectId}/improve/apply`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ roles, enhanced_context: "" }),
+            });
+            if (!resp.ok) {
+                const body = await resp.json().catch(() => ({}));
+                throw new Error(body.detail || "Failed to regenerate");
+            }
+            // Reset affected agents to pending in local state
+            setAgents(prev => prev.map(a =>
+                roles.includes(a.role)
+                    ? { ...a, status: "pending", score: null, recommendation: null,
+                        deep_analysis: null, strengths: [], risks: [], suggestions: [],
+                        key_metrics: [], timeline: null, priority_actions: [],
+                        competitive_note: null, verdict: null, error_message: null }
+                    : a
+            ));
+            pollResults();
+        } catch (e: any) {
+            setError(e.message);
+            setAllDone(true);
+        } finally {
+            setRegeneratingRoles(prev => prev.filter(r => !roles.includes(r)));
+        }
+    };
+
+    const handleRegenerateAll = () => {
+        const stoppedRoles = agents
+            .filter(a => a.status === "error" && a.error_message === "Stopped by user")
+            .map(a => a.role);
+        _regenRoles(stoppedRoles);
+    };
+
+    const handleRegenerateAgent = (role: string) => _regenRoles([role]);
+
+    const handleStopAll = async () => {
+        if (stopping || !projectId) return;
+        setStopping(true);
+        if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+        if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
+        try {
+            const token = await getAccessToken();
+            await fetch(`${getApiBaseUrl()}/api/v1/csuite/${projectId}/stop`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            setAgents(prev => prev.map(a =>
+                (a.status === "pending" || a.status === "running")
+                    ? { ...a, status: "error", error_message: "Stopped by user" }
+                    : a
+            ));
+            setAllDone(true);
+        } catch (e) {
+            console.error("Stop all failed:", e);
+        } finally {
+            setStopping(false);
+        }
+    };
+
+    const handleStopAgent = async (role: string) => {
+        if (stoppingRole || !projectId) return;
+        setStoppingRole(role);
+        try {
+            const token = await getAccessToken();
+            await fetch(`${getApiBaseUrl()}/api/v1/csuite/${projectId}/stop/${role}`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            setAgents(prev => prev.map(a =>
+                a.role === role && (a.status === "pending" || a.status === "running")
+                    ? { ...a, status: "error", error_message: "Stopped by user" }
+                    : a
+            ));
+        } catch (e) {
+            console.error(`Stop ${role} failed:`, e);
+        } finally {
+            setStoppingRole(null);
         }
     };
 
@@ -317,10 +441,8 @@ export default function CSuiteAnalysisPage() {
         setApplyingImprove(true);
         setError(null);
         try {
-            if (pollingRef.current) {
-                clearInterval(pollingRef.current);
-                pollingRef.current = null;
-            }
+            if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+            if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
             const roles = Object.keys(improvePlan.improvements);
             // Build combined enhanced context from all improvements
             const enhancedParts = roles.map(r => {
@@ -378,6 +500,7 @@ export default function CSuiteAnalysisPage() {
     useEffect(() => {
         return () => {
             if (pollingRef.current) clearInterval(pollingRef.current);
+            if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
         };
     }, []);
 
@@ -385,6 +508,20 @@ export default function CSuiteAnalysisPage() {
     useEffect(() => {
         if (!started) loadOrStart();
     }, []);
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+    const _extractErrorMsg = (body: any, status: number): string => {
+        const detail = body?.detail;
+        if (typeof detail === "string") return detail;
+        if (status === 402) {
+            const limit = detail?.limit ?? "";
+            const used = detail?.used ?? "";
+            return `Monthly C-Suite analysis limit reached (${used}/${limit} used). Upgrade your plan to run more.`;
+        }
+        return typeof detail === "object" && detail !== null
+            ? JSON.stringify(detail)
+            : "Failed to start analysis";
+    };
 
     const completedCount = agents.filter(a => a.status === "complete" || a.status === "error").length;
     const avgScore = agents.filter(a => a.score != null).reduce((s, a) => s + (a.score || 0), 0) / Math.max(1, agents.filter(a => a.score != null).length);
@@ -396,10 +533,12 @@ export default function CSuiteAnalysisPage() {
         return "text-zinc-500";
     };
 
-    const getStatusIcon = (status: string) => {
-        if (status === "complete") return <CheckCircle2 className="w-4 h-4 text-green-400" />;
-        if (status === "running") return <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />;
-        if (status === "error") return <XCircle className="w-4 h-4 text-red-400" />;
+    const getStatusIcon = (agent: AgentResult) => {
+        if (agent.status === "complete") return <CheckCircle2 className="w-4 h-4 text-green-400" />;
+        if (agent.status === "running") return <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />;
+        if (agent.status === "error" && agent.error_message === "Stopped by user")
+            return <Square className="w-4 h-4 text-zinc-500" />;
+        if (agent.status === "error") return <XCircle className="w-4 h-4 text-red-400" />;
         return <div className="w-4 h-4 rounded-full border-2 border-zinc-600" />;
     };
 
@@ -446,6 +585,39 @@ export default function CSuiteAnalysisPage() {
                                 label="Download Report"
                                 size="sm"
                             />
+                        )}
+                        {allDone && (
+                            <button
+                                onClick={handleRunAgain}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-600/50 text-zinc-400 text-xs font-medium hover:border-purple-500/40 hover:text-purple-300 hover:bg-purple-500/10 transition-all"
+                            >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                Re-run
+                            </button>
+                        )}
+                        {!allDone && agents.some(a => a.status === "pending" || a.status === "running") && (
+                            <button
+                                onClick={handleStopAll}
+                                disabled={stopping}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-600/50 text-zinc-400 text-xs font-medium hover:border-red-500/40 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                            >
+                                {stopping
+                                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    : <StopCircle className="w-3.5 h-3.5" />}
+                                Stop All
+                            </button>
+                        )}
+                        {allDone && agents.some(a => a.status === "error" && a.error_message === "Stopped by user") && (
+                            <button
+                                onClick={handleRegenerateAll}
+                                disabled={regeneratingRoles.length > 0}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-600/50 text-zinc-300 text-xs font-medium hover:border-purple-500/40 hover:text-purple-300 hover:bg-purple-500/10 transition-all disabled:opacity-50"
+                            >
+                                {regeneratingRoles.length > 0
+                                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    : <RotateCcw className="w-3.5 h-3.5" />}
+                                Regenerate All
+                            </button>
                         )}
                         {allDone && overallScore != null && overallScore < 85 && (
                             <button
@@ -509,7 +681,7 @@ export default function CSuiteAnalysisPage() {
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2">
                                         <span className="font-bold text-[var(--kf-text)] text-sm">{meta.label}</span>
-                                        {getStatusIcon(agent.status)}
+                                        {getStatusIcon(agent)}
                                     </div>
                                     {agent.score != null && (
                                         <span className="text-xs font-bold text-purple-400">{agent.score}/100</span>
@@ -536,6 +708,53 @@ export default function CSuiteAnalysisPage() {
                             )}
                             {agent.status === "pending" && (
                                 <div className="text-xs text-zinc-600">Waiting...</div>
+                            )}
+                            {(agent.status === "running" || agent.status === "pending") && !stopping && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); handleStopAgent(agent.role); }}
+                                    disabled={stoppingRole === agent.role}
+                                    className="mt-1 mb-2 w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-lg border border-zinc-700/50 text-zinc-500 text-[11px] font-medium hover:border-red-500/30 hover:text-red-400 hover:bg-red-500/5 transition-colors disabled:opacity-50"
+                                >
+                                    {stoppingRole === agent.role
+                                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                                        : <StopCircle className="w-3 h-3" />}
+                                    Stop
+                                </button>
+                            )}
+                            {agent.status === "error" && agent.error_message === "Stopped by user" && (
+                                <div className="flex flex-col gap-1.5 mb-2">
+                                    <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+                                        <Square className="w-3 h-3" /> Stopped
+                                    </div>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); handleRegenerateAgent(agent.role); }}
+                                        disabled={regeneratingRoles.includes(agent.role)}
+                                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-lg border border-zinc-700/50 text-zinc-400 text-[11px] font-medium hover:border-purple-500/30 hover:text-purple-300 hover:bg-purple-500/5 transition-colors disabled:opacity-50"
+                                    >
+                                        {regeneratingRoles.includes(agent.role)
+                                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                                            : <RotateCcw className="w-3 h-3" />}
+                                        Regenerate
+                                    </button>
+                                </div>
+                            )}
+                            {agent.status === "error" && agent.error_message !== "Stopped by user" && (
+                                <div className="flex flex-col gap-1.5 mb-2">
+                                    <div className="flex items-center gap-1.5 text-xs text-red-500/80 truncate" title={agent.error_message ?? undefined}>
+                                        <XCircle className="w-3 h-3 shrink-0" />
+                                        <span className="truncate">{agent.error_message || "Failed"}</span>
+                                    </div>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); handleRegenerateAgent(agent.role); }}
+                                        disabled={regeneratingRoles.includes(agent.role)}
+                                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-lg border border-zinc-700/50 text-zinc-400 text-[11px] font-medium hover:border-purple-500/30 hover:text-purple-300 hover:bg-purple-500/5 transition-colors disabled:opacity-50"
+                                    >
+                                        {regeneratingRoles.includes(agent.role)
+                                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                                            : <RotateCcw className="w-3 h-3" />}
+                                        Retry
+                                    </button>
+                                </div>
                             )}
 
                             {/* Completed content */}
@@ -622,7 +841,7 @@ export default function CSuiteAnalysisPage() {
                                 exit={{ x: "100%" }}
                                 transition={{ type: "spring", damping: 30, stiffness: 300 }}
                                 onClick={e => e.stopPropagation()}
-                                className="fixed right-0 top-0 bottom-0 w-full max-w-2xl bg-[#0E0E16] border-l border-[var(--kf-border)] shadow-2xl flex flex-col z-50"
+                                className="fixed right-0 top-14 bottom-0 w-full max-w-2xl bg-[#0E0E16] border-l border-[var(--kf-border)] shadow-2xl flex flex-col z-50"
                             >
                                 {/* Drawer header */}
                                 <div className={`flex items-center justify-between px-6 py-5 bg-gradient-to-r ${meta.gradient} border-b border-[var(--kf-border)]/60`}>

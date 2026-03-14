@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom";
 import Editor from "@monaco-editor/react";
-import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X, ChevronDown, ChevronRight, MessageSquare, PanelLeftClose } from "lucide-react";
+import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X, ChevronDown, ChevronRight, MessageSquare, PanelLeftClose, LogOut, CreditCard, Cpu, Settings } from "lucide-react";
 import { useFoundry } from "../hooks/useFoundry";
 import { useAutoSave } from "../hooks/useAutoSave";
 import { ModelSelector } from "./ModelSelector";
@@ -125,7 +125,7 @@ export default function Workspace() {
     const { projectId } = useParams<{ projectId: string }>();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
-    const { getAccessToken } = useAuth();
+    const { getAccessToken, signOut } = useAuth();
     const { wsConnected, status, previewUrl, iframeSrc, setIframeSrc, hasExistingFiles, files, setFiles, fileTree, messages, sendCommand, isStreaming, streamingFile, assistantStreaming, streamingAssistantMessage } = useFoundry(projectId);
     const [input, setInput] = useState("");
     const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
@@ -138,6 +138,8 @@ export default function Workspace() {
     const [showActivity] = useState(true);
     const [showChat, setShowChat] = useState(true);
     const [showMessages, setShowMessages] = useState(true);
+    const [showProfileMenu, setShowProfileMenu] = useState(false);
+    const profileMenuRef = useRef<HTMLDivElement>(null);
     const [hasGenerated, setHasGenerated] = useState(false);
     const [chatWidth, setChatWidth] = useState(340);
     const [explorerWidth, setExplorerWidth] = useState(220);
@@ -162,6 +164,18 @@ export default function Workspace() {
         if (currentPreviewHref) setIframeSrc(`${currentPreviewHref}?ts=${Date.now()}`);
     }, [currentPreviewHref, setIframeSrc]);
     useAutoSave(projectId, files, 800, { onSaved: reloadPreview });
+
+    // Close profile menu on outside click
+    useEffect(() => {
+        if (!showProfileMenu) return;
+        const handler = (e: MouseEvent) => {
+            if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
+                setShowProfileMenu(false);
+            }
+        };
+        document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+    }, [showProfileMenu]);
 
     // Drag resize handler
     const onMouseDown = useCallback((e: React.MouseEvent, pane: string) => {
@@ -411,13 +425,64 @@ export default function Workspace() {
                                     <LayoutGrid className="w-3.5 h-3.5" />
                                 </button>
                                 <div className="w-px h-4 bg-zinc-700 mx-1" />
-                                <Link
-                                    to="/profile"
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
-                                    title="Profile & settings"
-                                >
-                                    <UserCircle className="w-3.5 h-3.5" />
-                                </Link>
+                                {/* Profile dropdown */}
+                                <div ref={profileMenuRef} className="relative">
+                                    <button
+                                        onClick={() => setShowProfileMenu(v => !v)}
+                                        className={`p-1.5 rounded-md transition-colors cursor-pointer ${showProfileMenu ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]'}`}
+                                        title="Profile & settings"
+                                    >
+                                        <UserCircle className="w-3.5 h-3.5" />
+                                    </button>
+                                    {showProfileMenu && (
+                                        <div className="absolute left-0 top-full mt-1.5 w-52 bg-[#1a1a24] border border-[var(--kf-border)] rounded-lg shadow-2xl shadow-black/60 z-50 py-1 overflow-hidden">
+                                            <div className="px-3 py-2 border-b border-[var(--kf-border)] mb-1">
+                                                <p className="text-[11px] font-semibold text-zinc-300">Account</p>
+                                            </div>
+                                            <Link
+                                                to="/profile"
+                                                onClick={() => setShowProfileMenu(false)}
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                            >
+                                                <UserCircle className="w-3.5 h-3.5 shrink-0" />
+                                                Profile & Settings
+                                            </Link>
+                                            <Link
+                                                to="/models"
+                                                onClick={() => setShowProfileMenu(false)}
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                            >
+                                                <Cpu className="w-3.5 h-3.5 shrink-0" />
+                                                Model Settings
+                                            </Link>
+                                            <Link
+                                                to="/billing"
+                                                onClick={() => setShowProfileMenu(false)}
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                            >
+                                                <CreditCard className="w-3.5 h-3.5 shrink-0" />
+                                                Subscription
+                                            </Link>
+                                            <Link
+                                                to="/settings"
+                                                onClick={() => setShowProfileMenu(false)}
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                            >
+                                                <Settings className="w-3.5 h-3.5 shrink-0" />
+                                                App Settings
+                                            </Link>
+                                            <div className="border-t border-[var(--kf-border)] mt-1 pt-1">
+                                                <button
+                                                    onClick={async () => { setShowProfileMenu(false); await signOut(); navigate("/login"); }}
+                                                    className="flex items-center gap-2.5 w-full px-3 py-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-950/30 transition-colors cursor-pointer"
+                                                >
+                                                    <LogOut className="w-3.5 h-3.5 shrink-0" />
+                                                    Logout
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                                 <button
                                     onClick={() => setShowChat(false)}
                                     className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
@@ -619,7 +684,7 @@ export default function Workspace() {
                     )}
                 </div>
 
-                {/* Resize Handle: Chat ↔ Explorer/Editor (hidden when chat collapsed) */}
+                {/* Resize Handle: Chat ↔ Editor/Preview (hidden when chat collapsed) */}
                 {showChat && (
                     <div
                         onMouseDown={(e) => onMouseDown(e, "chat")}
@@ -627,48 +692,6 @@ export default function Workspace() {
                     >
                         <div className="absolute inset-y-0 -left-1 -right-1" />
                     </div>
-                )}
-
-                {/* PANE 2: File Explorer + Activity Log */}
-                {showExplorer && (
-                    <>
-                        <div style={{ width: explorerWidth }} className="flex flex-col border-r border-[var(--kf-border)] shrink-0">
-                            <div className="flex-1 min-h-0 overflow-hidden">
-                                <FileExplorer
-                                    tree={fileTree}
-                                    activeFile={activeFile}
-                                    onFileSelect={handleFileSelect}
-                                    streamingFile={streamingFile}
-                                />
-                            </div>
-                            {showActivity && (() => {
-                                const activityMsgs = messages.filter(m => m.role !== 'user' && (m.content.startsWith('✓') || m.content.startsWith('Saving')));
-                                if (activityMsgs.length === 0) return null;
-                                return (
-                                    <div className="border-t border-[var(--kf-border)] max-h-[45%] flex flex-col shrink-0">
-                                        <div className="px-3 py-2 flex items-center justify-between border-b border-[var(--kf-border)]">
-                                            <span className="text-[11px] font-semibold text-[var(--kf-text-secondary)] uppercase tracking-wider">Activity</span>
-                                            <span className="text-[10px] text-zinc-600">{activityMsgs.length}</span>
-                                        </div>
-                                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                                            {activityMsgs.map((msg, i) => (
-                                                <div key={i} className="px-2 py-1 rounded text-[11px] bg-green-900/20 text-green-300/80 border border-green-900/20 truncate">
-                                                    {msg.content}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                );
-                            })()}
-                        </div>
-                        {/* Resize Handle: Explorer ↔ Editor */}
-                        <div
-                            onMouseDown={(e) => onMouseDown(e, "explorer")}
-                            className="w-1 cursor-col-resize hover:bg-indigo-500/40 active:bg-indigo-500/60 bg-transparent transition-colors shrink-0 relative"
-                        >
-                            <div className="absolute inset-y-0 -left-1 -right-1" />
-                        </div>
-                    </>
                 )}
 
                 {/* PANE 3: Editor */}
@@ -793,16 +816,18 @@ export default function Workspace() {
                     </div>
                 )}
 
-                {/* Resize Handle: Editor ↔ Preview */}
-                <div
-                    onMouseDown={(e) => onMouseDown(e, "preview")}
-                    className="w-1 cursor-col-resize hover:bg-indigo-500/40 active:bg-indigo-500/60 bg-transparent transition-colors shrink-0 relative"
-                >
-                    <div className="absolute inset-y-0 -left-1 -right-1" />
-                </div>
+                {/* Resize Handle: Editor ↔ Preview (only shown when editor is visible) */}
+                {showEditor && (
+                    <div
+                        onMouseDown={(e) => onMouseDown(e, "preview")}
+                        className="w-1 cursor-col-resize hover:bg-indigo-500/40 active:bg-indigo-500/60 bg-transparent transition-colors shrink-0 relative"
+                    >
+                        <div className="absolute inset-y-0 -left-1 -right-1" />
+                    </div>
+                )}
 
                 {/* PANE 4: Live Preview */}
-                <div style={{ width: (!showExplorer && !showEditor) ? undefined : previewWidth, flex: (!showExplorer && !showEditor) ? 1 : undefined }} className="flex flex-col border-l border-[var(--kf-border)] bg-[#0c0c14] shrink-0">
+                <div style={{ width: showEditor ? previewWidth : undefined, flex: showEditor ? undefined : 1 }} className="flex flex-col border-l border-[var(--kf-border)] bg-[#0c0c14] shrink-0">
                     <div className="h-10 bg-[var(--kf-surface)] border-b border-[var(--kf-border)] flex items-center px-3 gap-2 z-10">
                         <div className="flex gap-1.5">
                             <div className="w-2.5 h-2.5 rounded-full bg-red-400/80"></div>
@@ -890,6 +915,49 @@ export default function Workspace() {
                         )}
                     </div>
                 </div>
+
+                {/* Resize Handle: Preview ↔ Explorer (only shown when explorer is visible) */}
+                {showExplorer && (
+                    <div
+                        onMouseDown={(e) => onMouseDown(e, "explorer")}
+                        className="w-1 cursor-col-resize hover:bg-indigo-500/40 active:bg-indigo-500/60 bg-transparent transition-colors shrink-0 relative"
+                    >
+                        <div className="absolute inset-y-0 -left-1 -right-1" />
+                    </div>
+                )}
+
+                {/* PANE 5: File Explorer + Activity Log (right side) */}
+                {showExplorer && (
+                    <div style={{ width: explorerWidth }} className="flex flex-col border-l border-[var(--kf-border)] shrink-0">
+                        <div className="flex-1 min-h-0 overflow-hidden">
+                            <FileExplorer
+                                tree={fileTree}
+                                activeFile={activeFile}
+                                onFileSelect={handleFileSelect}
+                                streamingFile={streamingFile}
+                            />
+                        </div>
+                        {showActivity && (() => {
+                            const activityMsgs = messages.filter(m => m.role !== 'user' && (m.content.startsWith('✓') || m.content.startsWith('Saving')));
+                            if (activityMsgs.length === 0) return null;
+                            return (
+                                <div className="border-t border-[var(--kf-border)] max-h-[45%] flex flex-col shrink-0">
+                                    <div className="px-3 py-2 flex items-center justify-between border-b border-[var(--kf-border)]">
+                                        <span className="text-[11px] font-semibold text-[var(--kf-text-secondary)] uppercase tracking-wider">Activity</span>
+                                        <span className="text-[10px] text-zinc-600">{activityMsgs.length}</span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                                        {activityMsgs.map((msg, i) => (
+                                            <div key={i} className="px-2 py-1 rounded text-[11px] bg-green-900/20 text-green-300/80 border border-green-900/20 truncate">
+                                                {msg.content}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                    </div>
+                )}
 
             </div>
 

@@ -113,15 +113,22 @@ async def _decode_jwt_rs256(token: str) -> dict | None:
 
 async def _resolve_user(token: str) -> dict:
     """Validate token and return user info dict with 'sub' and 'email'."""
+
+    def _email_from_payload(p: dict) -> str:
+        return (
+            p.get("email")
+            or p.get("https://hasura.io/jwt/claims", {}).get("x-hasura-user-email", "")
+        )
+
     # 1. Try HS256 (Nhost default) if NHOST_JWT_SECRET is set
     payload = _decode_jwt_hs256(token)
     if payload and payload.get("sub"):
-        return {"sub": payload["sub"], "email": payload.get("email", "")}
+        return {"sub": payload["sub"], "email": _email_from_payload(payload)}
 
     # 2. Try RS256 via JWKS
     payload = await _decode_jwt_rs256(token)
     if payload and payload.get("sub"):
-        return {"sub": payload["sub"], "email": payload.get("email", "")}
+        return {"sub": payload["sub"], "email": _email_from_payload(payload)}
 
     # 3. Fall back to Nhost /user endpoint (always works if token is valid)
     user_info = await _validate_token_via_nhost_user(token)

@@ -1,14 +1,19 @@
 """
 Projects API — CRUD endpoints for user projects.
+
+Uses AsyncSession (asyncpg) for non-blocking PostgreSQL access.
+The ``run_sync`` bridge lets existing ORM query code run inside the
+async session without rewriting every query to use SQLAlchemy 2.0 syntax.
 """
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 
-from models import get_db, Project, ProjectStatus, User
+from models import get_async_db, Project, ProjectStatus, User
 from auth import get_current_user
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -81,69 +86,105 @@ def _project_to_dict(p: Project) -> dict:
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("")
-async def list_projects(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    projects = db.query(Project).filter(Project.user_id == user.id).order_by(Project.updated_at.desc()).all()
-    return {"projects": [_project_to_dict(p) for p in projects]}
+async def list_projects(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    def _query(s: Session):
+        projects = s.query(Project).filter(Project.user_id == user.id).order_by(
+            Project.updated_at.desc()
+        ).all()
+        return [_project_to_dict(p) for p in projects]
+
+    return {"projects": await db.run_sync(_query)}
 
 
 @router.post("")
-async def create_project(body: ProjectCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    project = Project(
-        id=str(uuid.uuid4()),
-        user_id=user.id,
-        name=body.name,
-        description=body.description,
-        target_audience=body.target_audience,
-        problem_statement=body.problem_statement,
-        status=ProjectStatus.ideation,
-    )
-    db.add(project)
-    db.commit()
-    db.refresh(project)
-    return _project_to_dict(project)
+async def create_project(
+    body: ProjectCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    def _create(s: Session):
+        project = Project(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            name=body.name,
+            description=body.description,
+            target_audience=body.target_audience,
+            problem_statement=body.problem_statement,
+            status=ProjectStatus.ideation,
+        )
+        s.add(project)
+        s.commit()
+        s.refresh(project)
+        return _project_to_dict(project)
+
+    return await db.run_sync(_create)
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
-    if not project:
+async def get_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    def _query(s: Session):
+        p = s.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+        if not p:
+            return None
+        return _project_to_dict(p)
+
+    result = await db.run_sync(_query)
+    if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return _project_to_dict(project)
+    return result
 
 
 @router.patch("/{project_id}")
-async def update_project(project_id: str, body: ProjectUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
-    if not project:
+async def update_project(
+    project_id: str,
+    body: ProjectUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    def _update(s: Session):
+        project = s.query(Project).filter(
+            Project.id == project_id, Project.user_id == user.id
+        ).first()
+        if not project:
+            return None
+        if body.name is not None:
+            project.name = body.name
+        if body.description is not None:
+            project.description = body.description
+        if body.target_audience is not None:
+            project.target_audience = body.target_audience
+        if body.problem_statement is not None:
+            project.problem_statement = body.problem_statement
+        if body.status is not None:
+            try:
+                project.status = ProjectStatus(body.status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
+        project.updated_at = datetime.utcnow()
+        s.commit()
+        s.refresh(project)
+        return _project_to_dict(project)
+
+    result = await db.run_sync(_update)
+    if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
-
-    if body.name is not None:
-        project.name = body.name
-    if body.description is not None:
-        project.description = body.description
-    if body.target_audience is not None:
-        project.target_audience = body.target_audience
-    if body.problem_statement is not None:
-        project.problem_statement = body.problem_statement
-    if body.status is not None:
-        try:
-            project.status = ProjectStatus(body.status)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
-
-    project.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(project)
-    return _project_to_dict(project)
+    return result
 
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    # Wipe all Supabase Storage files for this project first
+async def delete_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    # Wipe Nhost Storage files first (runs in thread via asyncio.to_thread inside)
     try:
         import asyncio
         from storage_service import delete_all_project_files_sync
@@ -151,7 +192,17 @@ async def delete_project(project_id: str, user: User = Depends(get_current_user)
     except Exception as e:
         print(f"[delete_project] Storage wipe warning (continuing): {e}")
 
-    # Delete DB row — cascades to files, messages, csuite_analyses, artifacts, design_mockups
-    db.delete(project)
-    db.commit()
+    def _delete(s: Session):
+        project = s.query(Project).filter(
+            Project.id == project_id, Project.user_id == user.id
+        ).first()
+        if not project:
+            return False
+        s.delete(project)
+        s.commit()
+        return True
+
+    deleted = await db.run_sync(_delete)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Project not found")
     return {"deleted": True}

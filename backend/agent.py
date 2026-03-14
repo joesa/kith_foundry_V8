@@ -6,6 +6,7 @@ import asyncio
 from design_context import get_design_context, get_design_context_compact, get_design_contract_css
 import litellm
 import os
+from circuit_breaker import llm_breaker, CircuitOpenError
 
 # Ensure litellm doesn't drop requests if local models are passed
 litellm.drop_params = True
@@ -202,17 +203,23 @@ async def _resolve_llm_credentials(model_id: str, user_id: str = None):
 
 async def classify_intent(prompt: str, model_id: str, llm_kwargs: dict) -> str:
     """Classify user intent as 'code' or 'conversation' using a fast LLM call."""
+    provider = llm_breaker.extract_provider(model_id)
     try:
-        response = await litellm.acompletion(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": ROUTER_PROMPT},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.0,
-            max_tokens=10,
-            stream=False,
-            **llm_kwargs
+        llm_breaker.check(provider)
+        response = await llm_breaker.call(
+            provider,
+            litellm.acompletion(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": ROUTER_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0,
+                max_tokens=10,
+                stream=False,
+                timeout=llm_breaker.default_timeout,
+                **llm_kwargs
+            )
         )
         result = response.choices[0].message.content.strip().lower()
         if "code" in result:
@@ -221,6 +228,9 @@ async def classify_intent(prompt: str, model_id: str, llm_kwargs: dict) -> str:
             return "conversation"
         # Default to code for safety (preserves existing behavior)
         print(f"[intent] Ambiguous classification: {result!r}, defaulting to code")
+        return "code"
+    except CircuitOpenError as e:
+        print(f"[intent] Circuit open for {provider}: {e}, defaulting to code")
         return "code"
     except Exception as e:
         print(f"[intent] Classification failed ({e}), defaulting to code")
@@ -271,7 +281,9 @@ Project context:{project_context}"""
     else:
         user_content = user_content_text
 
+    provider = llm_breaker.extract_provider(model_id)
     try:
+        llm_breaker.check(provider)
         response = await litellm.acompletion(
             model=model_id,
             messages=[
@@ -280,20 +292,29 @@ Project context:{project_context}"""
             ],
             temperature=0.7,
             stream=True,
+            timeout=llm_breaker.default_timeout,
             **llm_kwargs
         )
 
         full_message = ""
-        async for chunk in response:
-            delta = chunk.choices[0].delta
-            if not delta.content:
-                continue
-            token = delta.content
-            full_message += token
-            yield {"status": "chat_token", "token": token}
+        try:
+            async for chunk in response:
+                delta = chunk.choices[0].delta
+                if not delta.content:
+                    continue
+                token = delta.content
+                full_message += token
+                yield {"status": "chat_token", "token": token}
+            llm_breaker.record_success(provider)
+        except Exception as stream_err:
+            llm_breaker.record_failure(provider)
+            raise stream_err
 
         yield {"status": "chat_complete", "message": full_message}
 
+    except CircuitOpenError as e:
+        print(f"[conversation] Circuit open for {provider}: {e}")
+        yield {"status": "chat_complete", "message": f"The AI provider is temporarily unavailable. Please try again in {e.retry_after:.0f}s."}
     except Exception as e:
         print(f"[conversation] Error: {e}")
         yield {"status": "chat_complete", "message": f"I encountered an issue: {str(e)}. Please try again."}
@@ -381,6 +402,7 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
     content_accumulator: str = ""
     streamed_files: dict = {}
     edits: list = []
+    _cb_provider = llm_breaker.extract_provider(effective_model)
 
     try:
         # Build user message — include images as vision blocks if provided
@@ -396,6 +418,8 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
         else:
             user_content = user_prompt
 
+        _cb_provider = llm_breaker.extract_provider(effective_model)  # already set above
+        llm_breaker.check(_cb_provider)
         response = await litellm.acompletion(
             model=effective_model,
             messages=[
@@ -404,6 +428,7 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
             ],
             temperature=0.2,
             stream=True,
+            timeout=llm_breaker.default_timeout,
             **llm_kwargs
         )
         
@@ -534,6 +559,7 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
 
         # 6. Parse the complete JSON to get final verified content
         yield {"status": "stream_end"}
+        llm_breaker.record_success(_cb_provider)
         
         edits = []
         try:
@@ -624,9 +650,13 @@ Output a JSON object with a "files" array. Each entry has "file_path" and "conte
             print(f"No valid file outputs. Response snippet: {snippet}...")
             yield {"status": "error", "message": "No valid file outputs found in LLM response"}
                 
+    except CircuitOpenError as e:
+        print(f"[agent] Circuit open for {getattr(e, 'provider', '?')}: {e}")
+        yield {"status": "error", "message": f"AI provider temporarily unavailable. Retry in {e.retry_after:.0f}s."}
     except Exception as e:
         # Last resort: if streaming itself crashed, still try to use any files we captured
         print(f"Agent Execution Error: {e}")
+        llm_breaker.record_failure(_cb_provider)
         # Save any partially-streamed file that was in progress when the crash happened
         if current_file and content_accumulator:
             streamed_files[current_file] = content_accumulator

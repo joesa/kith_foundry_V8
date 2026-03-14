@@ -125,3 +125,36 @@ async def fetch(
             return {"status": r.status, "body": r.read().decode("utf-8", errors="replace")[:5000]}
     except Exception as e:
         return {"status": 0, "error": str(e)}
+
+
+@app.post("/check_vite_errors")
+async def check_vite_errors(
+    x_bridge_secret: str | None = Header(None, alias="X-Bridge-Secret"),
+):
+    """Probe each .tsx file in /workspace/src through Vite and return any that return HTTP 500.
+
+    Vite returns 200 on the root page even when lazy-loaded components have
+    syntax errors — those only fail when the browser actually requests the file.
+    This endpoint eagerly requests every TSX file so compilation errors are
+    detected immediately after write_files.
+    """
+    _verify_secret(x_bridge_secret)
+    errors = []
+    src_dir = WORKSPACE / "src"
+    if not src_dir.exists():
+        return {"errors": []}
+    for tsfile in sorted(src_dir.rglob("*.tsx")):
+        if "node_modules" in tsfile.parts:
+            continue
+        rel = str(tsfile.relative_to(WORKSPACE))
+        url = f"http://127.0.0.1:5173/{rel}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                pass  # 200 = compiled OK
+        except urllib.error.HTTPError as e:
+            if e.code == 500:
+                body = e.read().decode("utf-8", errors="replace")[:800]
+                errors.append({"file": rel, "error": body})
+        except Exception:
+            pass
+    return {"errors": errors}

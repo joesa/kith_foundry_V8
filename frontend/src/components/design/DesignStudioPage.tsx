@@ -18,6 +18,7 @@ import {
     Plus,
     X,
     ChevronRight,
+    ChevronLeft,
     Compass,
     Zap,
     Eye,
@@ -29,6 +30,10 @@ import {
     LayoutGrid,
     Rocket,
     ImageIcon,
+    Search,
+    Sun,
+    Moon,
+    Settings2,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -391,6 +396,10 @@ function PreviewOverlay({
     previewDevice,
     setPreviewDevice,
     onClose,
+    onNext,
+    onPrev,
+    hasNext,
+    hasPrev,
     onRegenerate,
     onApprove,
     onRevise,
@@ -401,12 +410,25 @@ function PreviewOverlay({
     previewDevice: "desktop" | "tablet" | "mobile";
     setPreviewDevice: (d: "desktop" | "tablet" | "mobile") => void;
     onClose: () => void;
+    onNext: () => void;
+    onPrev: () => void;
+    hasNext: boolean;
+    hasPrev: boolean;
     onRegenerate: () => void;
     onApprove: () => void;
     onRevise: () => void;
     onDelete: () => void;
     isRegenerating: boolean;
 }) {
+    useEffect(() => {
+        const handleKey = (e: KeyboardEvent) => {
+            if (e.key === "ArrowRight") onNext();
+            else if (e.key === "ArrowLeft") onPrev();
+            else if (e.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", handleKey);
+        return () => window.removeEventListener("keydown", handleKey);
+    }, [onNext, onPrev, onClose]);
     const deviceContainerClass: Record<string, string> = {
         desktop: "w-full max-w-[1200px]",
         tablet: "w-full max-w-[860px]",
@@ -468,6 +490,26 @@ function PreviewOverlay({
                 </div>
             </div>
 
+            {/* Prev / Next arrows */}
+            {hasPrev && (
+                <button
+                    onClick={(e) => { e.stopPropagation(); onPrev(); }}
+                    className="fixed left-4 top-1/2 -translate-y-1/2 z-[60] p-2 rounded-full bg-black/60 hover:bg-black/80 border border-white/10 text-white transition-colors"
+                    aria-label="Previous mockup"
+                >
+                    <ChevronLeft className="w-6 h-6" />
+                </button>
+            )}
+            {hasNext && (
+                <button
+                    onClick={(e) => { e.stopPropagation(); onNext(); }}
+                    className="fixed right-4 top-1/2 -translate-y-1/2 z-[60] p-2 rounded-full bg-black/60 hover:bg-black/80 border border-white/10 text-white transition-colors"
+                    aria-label="Next mockup"
+                >
+                    <ChevronRight className="w-6 h-6" />
+                </button>
+            )}
+
             {/* Preview */}
             <div className="flex-1 overflow-auto flex items-start justify-center p-6" onClick={(e) => e.stopPropagation()}>
                 {mockup.component_code ? (
@@ -479,6 +521,7 @@ function PreviewOverlay({
                             <span className="text-[11px] text-[var(--kf-text-secondary)] ml-2">{mockup.name}</span>
                         </div>
                         <iframe
+                            key={mockup.id}
                             title={`Preview: ${mockup.name}`}
                             srcDoc={mockup.component_code}
                             className="w-full bg-white"
@@ -490,6 +533,204 @@ function PreviewOverlay({
                     <div className="text-zinc-500 text-sm mt-32">No preview available</div>
                 )}
             </div>
+        </motion.div>
+    );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * DESIGN PREFERENCES MODAL
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+interface DesignPreferences {
+    theme: "light" | "dark";
+    style?: string;
+    color_preference?: string;
+    additional_notes?: string;
+}
+
+const STYLE_OPTIONS = [
+    { value: "minimal", label: "Minimal", desc: "Clean, lots of whitespace" },
+    { value: "bold", label: "Bold", desc: "Strong colors, large type" },
+    { value: "corporate", label: "Corporate", desc: "Professional, structured" },
+    { value: "playful", label: "Playful", desc: "Rounded, colorful, friendly" },
+    { value: "editorial", label: "Editorial", desc: "Typography-driven, magazine feel" },
+];
+
+const COLOR_OPTIONS = [
+    { value: "blue", label: "Blue tones", color: "#3b82f6" },
+    { value: "green", label: "Green tones", color: "#22c55e" },
+    { value: "warm", label: "Warm tones", color: "#f97316" },
+    { value: "purple", label: "Purple tones", color: "#8b5cf6" },
+    { value: "neutral", label: "Neutral", color: "#64748b" },
+    { value: "auto", label: "Auto (AI picks)", color: "transparent" },
+];
+
+function DesignPreferencesModal({
+    onConfirm,
+    onClose,
+    saving,
+}: {
+    onConfirm: (prefs: DesignPreferences) => void;
+    onClose: () => void;
+    saving: boolean;
+}) {
+    const [selectedTheme, setSelectedTheme] = useState<"light" | "dark">("dark");
+    const [selectedStyle, setSelectedStyle] = useState<string | undefined>();
+    const [selectedColor, setSelectedColor] = useState<string>("auto");
+    const [notes, setNotes] = useState("");
+
+    return (
+        <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            onClick={onClose}
+        >
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+            <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="relative w-full max-w-lg bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl shadow-2xl overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+            >
+                {/* Header */}
+                <div className="px-6 pt-5 pb-4 border-b border-[var(--kf-border)]/40">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 rounded-xl bg-purple-500/10 border border-purple-500/30">
+                                <Settings2 className="w-5 h-5 text-purple-400" />
+                            </div>
+                            <div>
+                                <h2 className="text-lg font-bold text-[var(--kf-text)]">Design Preferences</h2>
+                                <p className="text-xs text-[var(--kf-text-secondary)]">Guide the AI to generate consistent mockups</p>
+                            </div>
+                        </div>
+                        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-faint)]">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Body */}
+                <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+                    {/* Theme */}
+                    <div>
+                        <label className="text-sm font-semibold text-[var(--kf-text)] mb-2.5 block">Theme Mode</label>
+                        <div className="grid grid-cols-2 gap-3">
+                            <button
+                                onClick={() => setSelectedTheme("dark")}
+                                className={`flex items-center gap-3 p-4 rounded-xl border-2 transition-all ${
+                                    selectedTheme === "dark"
+                                        ? "border-purple-500 bg-purple-500/10"
+                                        : "border-[var(--kf-border-muted)] bg-[var(--kf-bg)] hover:border-[var(--kf-border)]"
+                                }`}
+                            >
+                                <Moon className="w-5 h-5 text-indigo-400" />
+                                <div className="text-left">
+                                    <div className="text-sm font-medium text-[var(--kf-text)]">Dark Mode</div>
+                                    <div className="text-xs text-[var(--kf-text-secondary)]">Deep, immersive backgrounds</div>
+                                </div>
+                            </button>
+                            <button
+                                onClick={() => setSelectedTheme("light")}
+                                className={`flex items-center gap-3 p-4 rounded-xl border-2 transition-all ${
+                                    selectedTheme === "light"
+                                        ? "border-purple-500 bg-purple-500/10"
+                                        : "border-[var(--kf-border-muted)] bg-[var(--kf-bg)] hover:border-[var(--kf-border)]"
+                                }`}
+                            >
+                                <Sun className="w-5 h-5 text-amber-400" />
+                                <div className="text-left">
+                                    <div className="text-sm font-medium text-[var(--kf-text)]">Light Mode</div>
+                                    <div className="text-xs text-[var(--kf-text-secondary)]">Clean, bright surfaces</div>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Style */}
+                    <div>
+                        <label className="text-sm font-semibold text-[var(--kf-text)] mb-2.5 block">Design Style</label>
+                        <div className="flex flex-wrap gap-2">
+                            {STYLE_OPTIONS.map((opt) => (
+                                <button
+                                    key={opt.value}
+                                    onClick={() => setSelectedStyle(selectedStyle === opt.value ? undefined : opt.value)}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                                        selectedStyle === opt.value
+                                            ? "border-purple-500 bg-purple-500/15 text-purple-300"
+                                            : "border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:border-[var(--kf-border)]"
+                                    }`}
+                                    title={opt.desc}
+                                >
+                                    {opt.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Color preference */}
+                    <div>
+                        <label className="text-sm font-semibold text-[var(--kf-text)] mb-2.5 block">Color Preference</label>
+                        <div className="flex flex-wrap gap-2">
+                            {COLOR_OPTIONS.map((opt) => (
+                                <button
+                                    key={opt.value}
+                                    onClick={() => setSelectedColor(opt.value)}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                                        selectedColor === opt.value
+                                            ? "border-purple-500 bg-purple-500/15 text-purple-300"
+                                            : "border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:border-[var(--kf-border)]"
+                                    }`}
+                                >
+                                    {opt.color !== "transparent" && (
+                                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: opt.color }} />
+                                    )}
+                                    {opt.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Additional notes */}
+                    <div>
+                        <label className="text-sm font-semibold text-[var(--kf-text)] mb-2.5 block">Additional Notes <span className="font-normal text-[var(--kf-text-faint)]">(optional)</span></label>
+                        <textarea
+                            value={notes}
+                            onChange={(e) => setNotes(e.target.value)}
+                            placeholder="e.g., Use glassmorphism effects, prefer rounded corners, no gradients..."
+                            className="w-full h-20 bg-[var(--kf-bg)] border border-[var(--kf-border-muted)] rounded-lg px-3 py-2 text-sm text-[var(--kf-text)] placeholder:text-[var(--kf-text-faint)] focus:outline-none focus:border-purple-500/50 resize-none"
+                        />
+                    </div>
+                </div>
+
+                {/* Footer */}
+                <div className="px-6 py-4 border-t border-[var(--kf-border)]/40 flex items-center justify-between">
+                    <button
+                        onClick={onClose}
+                        className="h-9 px-4 rounded-lg text-sm text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] transition-colors"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        onClick={() =>
+                            onConfirm({
+                                theme: selectedTheme,
+                                style: selectedStyle,
+                                color_preference: selectedColor === "auto" ? undefined : selectedColor,
+                                additional_notes: notes.trim() || undefined,
+                            })
+                        }
+                        disabled={saving}
+                        className="h-9 px-5 rounded-lg bg-gradient-to-r from-purple-600 to-violet-500 hover:from-purple-500 hover:to-violet-400 text-white text-sm font-semibold disabled:opacity-50 flex items-center gap-2 shadow-lg shadow-purple-500/20"
+                    >
+                        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                        Confirm & Generate
+                    </button>
+                </div>
+            </motion.div>
         </motion.div>
     );
 }
@@ -526,6 +767,12 @@ export default function DesignStudioPage() {
 
     // Add screen
     const [addScreenName, setAddScreenName] = useState("");
+    const [rediscovering, setRediscovering] = useState(false);
+
+    // Design preferences
+    const [showPreferences, setShowPreferences] = useState(false);
+    const [designPreferences, setDesignPreferences] = useState<DesignPreferences | null>(null);
+    const [savingPreferences, setSavingPreferences] = useState(false);
 
     // Polling
     const pollRef = useRef<number | null>(null);
@@ -616,6 +863,23 @@ export default function DesignStudioPage() {
 
         async function init() {
             const existing = await fetchMockups();
+
+            // Load saved design preferences
+            try {
+                const headers = await authHeaders();
+                if (headers) {
+                    const prefsResp = await fetch(
+                        `${getApiBaseUrl()}/api/v1/projects/${projectId}/design/preferences`,
+                        { headers }
+                    );
+                    if (prefsResp.ok) {
+                        const prefsData = await prefsResp.json();
+                        if (prefsData.preferences && prefsData.preferences.theme) {
+                            if (!cancelled) setDesignPreferences(prefsData.preferences as DesignPreferences);
+                        }
+                    }
+                }
+            } catch { /* ignore — preferences are optional */ }
 
             // If there are already completed/approved mockups, go to gallery
             const hasCompleted = existing.some(
@@ -730,9 +994,16 @@ export default function DesignStudioPage() {
 
     /* ─── Handlers ────────────────────────────────────────────────── */
 
-    const handleGenerateAll = async (overrideDirection?: string, overrideImages?: string[]) => {
+    const handleGenerateAll = async (overrideDirection?: string, overrideImages?: string[], overridePrefs?: DesignPreferences) => {
+        // Show preferences modal on first-ever generation (no prefs saved yet)
+        if (!designPreferences && !overridePrefs) {
+            setShowPreferences(true);
+            return;
+        }
+
         const directionToUse = overrideDirection !== undefined ? overrideDirection : pendingDirection;
         const imagesToUse = overrideImages !== undefined ? overrideImages : pendingReferenceImages;
+        const prefsToUse = overridePrefs || designPreferences;
         setPendingDirection(null);
         setPendingReferenceImages([]);
         setGenerating(true);
@@ -749,7 +1020,12 @@ export default function DesignStudioPage() {
             const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/design/generate-all`, {
                 method: "POST",
                 headers: { ...headers, "Content-Type": "application/json" },
-                body: JSON.stringify({ design_mode: "ai_free", direction: directionToUse, reference_images: imagesToUse, theme }),
+                body: JSON.stringify({
+                    design_mode: "ai_free",
+                    direction: directionToUse,
+                    reference_images: imagesToUse,
+                    design_preferences: prefsToUse,
+                }),
             });
             handleApi401(resp);
             if (!resp.ok) throw new Error("Failed to start design generation");
@@ -758,6 +1034,28 @@ export default function DesignStudioPage() {
             setError(e.message);
             setGenerating(false);
             setPhase("discovery");
+        }
+    };
+
+    const handleConfirmPreferences = async (prefs: DesignPreferences) => {
+        setSavingPreferences(true);
+        try {
+            // Save preferences to backend
+            const headers = await ensureAuth();
+            if (!headers) return;
+            await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/design/preferences`, {
+                method: "PUT",
+                headers: { ...headers, "Content-Type": "application/json" },
+                body: JSON.stringify(prefs),
+            });
+            setDesignPreferences(prefs);
+            setShowPreferences(false);
+            // Trigger generation with the new preferences
+            await handleGenerateAll(undefined, undefined, prefs);
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setSavingPreferences(false);
         }
     };
 
@@ -894,6 +1192,41 @@ export default function DesignStudioPage() {
             ]);
             setAddScreenName("");
         } catch (e: any) { setError(e.message); }
+    };
+
+    const handleRediscoverScreens = async () => {
+        setRediscovering(true);
+        setError(null);
+        try {
+            const headers = await ensureAuth();
+            if (!headers) return;
+            const resp = await fetch(`${getApiBaseUrl()}/api/v1/projects/${projectId}/design/rediscover`, {
+                method: "POST",
+                headers,
+            });
+            handleApi401(resp);
+            if (!resp.ok) throw new Error("Failed to discover additional screens");
+            const data = await resp.json();
+            if (data.status === "no_new_screens") {
+                setError("All necessary screens are already discovered — no new screens found.");
+            } else {
+                const newScreens = (data.screens || []).map((s: any) => ({
+                    id: s.id,
+                    name: s.name,
+                    description: s.description,
+                    priority: s.priority,
+                    status: s.status,
+                    component_code: null,
+                    revision_notes: null,
+                    created_at: "",
+                })) as Mockup[];
+                setMockups((prev) => [...prev, ...newScreens]);
+            }
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setRediscovering(false);
+        }
     };
 
     const handleOpenDirections = async () => {
@@ -1167,6 +1500,16 @@ export default function DesignStudioPage() {
 
                                 <div className="flex-1" />
 
+                                {/* Discover More Screens from artifacts */}
+                                <button
+                                    onClick={handleRediscoverScreens}
+                                    disabled={rediscovering}
+                                    className="h-9 px-4 rounded-lg border border-[var(--kf-border-muted)] hover:border-purple-500/40 text-[var(--kf-text-secondary)] hover:text-purple-300 text-xs font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+                                >
+                                    {rediscovering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                                    {rediscovering ? "Analyzing Artifacts..." : "Discover More Screens"}
+                                </button>
+
                                 {/* Pending direction/images badge */}
                                 {(pendingDirection || pendingReferenceImages.length > 0) && (
                                     <div className="flex items-center gap-2 h-9 px-3 rounded-lg bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs">
@@ -1179,6 +1522,26 @@ export default function DesignStudioPage() {
                                             <X className="w-3 h-3" />
                                         </button>
                                     </div>
+                                )}
+
+                                {/* Theme preference badge */}
+                                {designPreferences ? (
+                                    <button
+                                        onClick={() => setShowPreferences(true)}
+                                        className="flex items-center gap-2 h-9 px-3 rounded-lg bg-[var(--kf-badge-bg)] border border-[var(--kf-border-muted)] hover:border-purple-500/30 text-[var(--kf-text-secondary)] text-xs transition-colors"
+                                        title="Change design preferences"
+                                    >
+                                        {designPreferences.theme === "dark" ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
+                                        {designPreferences.theme === "dark" ? "Dark" : "Light"}
+                                        {designPreferences.style && <span className="text-[var(--kf-text-faint)]">/ {designPreferences.style}</span>}
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={() => setShowPreferences(true)}
+                                        className="flex items-center gap-2 h-9 px-3 rounded-lg border border-dashed border-[var(--kf-border-muted)] hover:border-purple-500/40 text-[var(--kf-text-faint)] hover:text-purple-300 text-xs transition-colors"
+                                    >
+                                        <Settings2 className="w-3.5 h-3.5" /> Set Preferences
+                                    </button>
                                 )}
 
                                 {/* New direction */}
@@ -1535,21 +1898,42 @@ export default function DesignStudioPage() {
                 )}
             </AnimatePresence>
 
-            {/* ── Expanded preview overlay ──────────────────────────────── */}
+            {/* ── Design preferences modal ─────────────────────────────── */}
             <AnimatePresence>
-                {expandedMockup && (
-                    <PreviewOverlay
-                        mockup={expandedMockup}
-                        previewDevice={previewDevice}
-                        setPreviewDevice={setPreviewDevice}
-                        onClose={() => setExpandedMockupId(null)}
-                        onRegenerate={() => handleRegenerateSingle(expandedMockup.id)}
-                        onApprove={() => handleApprove(expandedMockup.id)}
-                        onRevise={() => handleRequestRevision(expandedMockup.id)}
-                        onDelete={() => handleDelete(expandedMockup.id, expandedMockup.name)}
-                        isRegenerating={regeneratingIds.has(expandedMockup.id) || expandedMockup.status === "generating"}
+                {showPreferences && (
+                    <DesignPreferencesModal
+                        onConfirm={handleConfirmPreferences}
+                        onClose={() => setShowPreferences(false)}
+                        saving={savingPreferences}
                     />
                 )}
+            </AnimatePresence>
+
+            {/* ── Expanded preview overlay ──────────────────────────────── */}
+            <AnimatePresence>
+                {expandedMockup && (() => {
+                    const navigable = mockups.filter(m => m.status === "complete" || m.status === "approved");
+                    const idx = navigable.findIndex(m => m.id === expandedMockup.id);
+                    const goPrev = () => idx > 0 && setExpandedMockupId(navigable[idx - 1].id);
+                    const goNext = () => idx < navigable.length - 1 && setExpandedMockupId(navigable[idx + 1].id);
+                    return (
+                        <PreviewOverlay
+                            mockup={expandedMockup}
+                            previewDevice={previewDevice}
+                            setPreviewDevice={setPreviewDevice}
+                            onClose={() => setExpandedMockupId(null)}
+                            onPrev={goPrev}
+                            onNext={goNext}
+                            hasPrev={idx > 0}
+                            hasNext={idx < navigable.length - 1}
+                            onRegenerate={() => handleRegenerateSingle(expandedMockup.id)}
+                            onApprove={() => handleApprove(expandedMockup.id)}
+                            onRevise={() => handleRequestRevision(expandedMockup.id)}
+                            onDelete={() => handleDelete(expandedMockup.id, expandedMockup.name)}
+                            isRegenerating={regeneratingIds.has(expandedMockup.id) || expandedMockup.status === "generating"}
+                        />
+                    );
+                })()}
             </AnimatePresence>
 
             {/* ── Error toast ───────────────────────────────────────────── */}

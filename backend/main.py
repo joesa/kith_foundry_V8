@@ -9,8 +9,12 @@ for _ssl_var in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
     if _val and not os.path.exists(_val):
         del os.environ[_ssl_var]
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from rate_limiter import limiter
 import json
 import asyncio
 from pathlib import Path
@@ -202,6 +206,12 @@ storage_service.ensure_bucket_exists()
 
 app = FastAPI()
 
+# ── Rate limiting ────────────────────────────────────────────────────────────
+# limiter is defined in rate_limiter.py (shared with API routers to avoid
+# circular imports).  LLM-triggering endpoints use @limiter.limit("30/minute").
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Allow all origins in development — restricts to explicit list in production.
 # Covers localhost, WSL IPs (172.x.x.x / 192.168.x.x) and any other dev hostname.
 _PROD_ORIGINS = [
@@ -229,16 +239,92 @@ import export_api
 app.include_router(export_api.router)
 import routing_api
 app.include_router(routing_api.router)
+import billing_api
+app.include_router(billing_api.router)
 
 # ── Inngest — durable background jobs ────────────────────────────────────────
 from inngest.fast_api import serve as _inngest_serve
 import inngest_functions as _inngest_fns
 import inngest_client as _inngest_client
+from inngest_client import use_inngest
 _inngest_serve(app, _inngest_client.client, _inngest_fns.all_functions)
 
 
-@app.on_event("startup")
-async def _inngest_dev_sync():
+@app.get("/api/health")
+async def health_check():
+    """Quick liveness + Redis connectivity check. Safe to call unauthenticated."""
+    import time
+    from redis_client import get_async_redis, REDIS_URL
+    from circuit_breaker import llm_breaker
+    status = {"ok": True, "redis": False, "redis_url_prefix": REDIS_URL[:20] + "..."}
+    try:
+        r = get_async_redis()
+        probe_key = f"kith:health:{int(time.time())}"
+        await r.set(probe_key, "1", ex=5)
+        val = await r.get(probe_key)
+        await r.delete(probe_key)
+        status["redis"] = val == "1"
+    except Exception as e:
+        status["redis_error"] = str(e)
+    status["llm_circuits"] = llm_breaker.status()
+    return status
+
+
+@app.get("/api/v1/projects/{project_id}/events")
+async def project_events_sse(
+    project_id: str,
+    request: Request,
+    token: str | None = None,
+    db=Depends(get_db),
+):
+    """
+    Server-Sent Events stream for a project.  Clients subscribe once and receive
+    real-time updates instead of polling.  The stream relays any Redis pub/sub
+    message published to kith:project:{project_id}:updates.
+
+    Auth: send the JWT as ?token=... query param (EventSource can't set headers).
+    """
+    from sse_starlette.sse import EventSourceResponse
+    from redis_state import project_channel, get_async_redis
+
+    # Authenticate via query-param token (mirrors WebSocket auth)
+    if not token:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+    try:
+        from auth_supabase import _resolve_user, _ensure_user_in_db
+        user_info = await _resolve_user(token)
+        user = _ensure_user_in_db(db, user_info)
+    except Exception:
+        return JSONResponse(status_code=401, content={"detail": "Invalid token"})
+
+    # Verify the user owns the project
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        return JSONResponse(status_code=404, content={"detail": "Project not found"})
+
+    async def _event_generator():
+        r = get_async_redis()
+        pubsub = r.pubsub()
+        await pubsub.subscribe(project_channel(project_id))
+        try:
+            async for message in pubsub.listen():
+                if await request.is_disconnected():
+                    break
+                if message.get("type") == "message":
+                    raw = message["data"]
+                    yield {"data": raw.decode() if isinstance(raw, bytes) else raw}
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await pubsub.unsubscribe(project_channel(project_id))
+            await pubsub.aclose()
+
+    return EventSourceResponse(_event_generator())
+
+
+
+
+
     """Verify Inngest Dev Server can reach this app on startup."""
     import os, httpx
     if os.getenv("USE_INNGEST", "0").strip() != "1":
@@ -416,31 +502,39 @@ def _build_file_tree_from_db(db, project_id: str) -> list:
 
 async def _restore_project_state(websocket: WebSocket, db, project_id: str):
     """Send stored files and chat history to the frontend on reconnect."""
-    stored_files = db.query(File).filter(File.project_id == project_id).order_by(File.file_path.asc()).all()
-    if stored_files:
-        # Build fallback map for legacy rows that still have content in DB
-        db_fallback = {f.file_path: f.content for f in stored_files if f.content}
-        file_paths = [f.file_path for f in stored_files]
-        # Download content from Supabase Storage (falls back to DB content for legacy rows)
+
+    def _fetch_state(db, project_id):
+        sf = db.query(File).filter(
+            File.project_id == project_id
+        ).order_by(File.file_path.asc()).all()
+        all_msgs = db.query(Message).filter(
+            Message.project_id == project_id
+        ).order_by(Message.created_at.asc()).all()
+        history = []
+        for m in all_msgs:
+            if m.role == "system" and _is_transient(m.content or ""):
+                db.delete(m)
+            else:
+                history.append({"role": m.role, "content": m.content})
+        db.commit()
+        # Snapshot to plain tuples — avoids expired-ORM-state errors after async boundary
+        file_meta = [(f.file_path, f.content) for f in sf]
+        return file_meta, history
+
+    file_meta, clean_history = await asyncio.to_thread(_fetch_state, db, project_id)
+
+    if file_meta:
+        file_paths = [fp for fp, _ in file_meta]
+        db_fallback = {fp: c for fp, c in file_meta if c}
         contents = await storage_service.download_project_files(
             project_id, file_paths, db_fallback=db_fallback
         )
-        for file_row in stored_files:
+        for fp, _ in file_meta:
             await _send_json(websocket, {
                 "type": "file_written",
-                "file": file_row.file_path,
-                "content": contents.get(file_row.file_path, ""),
+                "file": fp,
+                "content": contents.get(fp, ""),
             })
-
-    # Purge stale transient messages
-    all_messages = db.query(Message).filter(Message.project_id == project_id).order_by(Message.created_at.asc()).all()
-    clean_history = []
-    for m in all_messages:
-        if m.role == "system" and _is_transient(m.content or ""):
-            db.delete(m)
-        else:
-            clean_history.append({"role": m.role, "content": m.content})
-    db.commit()
 
     await _send_json(websocket, {
         "type": "message_history",
@@ -611,6 +705,69 @@ async def save_project_files(
     return {"saved": len(edits)}
 
 
+# ── Sandbox warm-up endpoint ─────────────────────────────────────────────────
+
+@app.post("/api/v1/projects/{project_id}/sandbox/warm")
+async def warm_sandbox(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fire-and-forget: pre-provision a Fly sandbox via Inngest background job.
+
+    The client can subscribe to the WebSocket (or poll) for sandbox/ready events
+    on the Redis pub/sub channel kith:sandbox:{project_id}:events.
+    """
+    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    if not project:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if use_inngest():
+        import inngest
+        await _inngest_client.client.send(
+            inngest.Event(
+                name="sandbox/provision.requested",
+                data={"project_id": project_id},
+            )
+        )
+        return {"status": "provisioning"}
+
+    # Inngest disabled — provision synchronously in background thread (dev only)
+    async def _provision():
+        from fly_service import get_or_create_worker
+        try:
+            await asyncio.to_thread(get_or_create_worker, project_id)
+        except Exception as e:
+            print(f"[warm_sandbox] Background provision failed: {e}")
+
+    asyncio.create_task(_provision())
+    return {"status": "provisioning"}
+
+
+# ── WebSocket: fire-and-forget step source ────────────────────────────────────
+# In production (Inngest enabled) the LLM pipeline runs in an Inngest worker;
+# the WS handler subscribes to per-job Redis pub/sub and only proxies messages,
+# freeing the uvicorn worker for new connections.
+# In dev mode the pipeline runs inline as before.
+
+async def _step_stream(
+    user_prompt: str,
+    project_id: str,
+    model_id: str,
+    db,
+    images: list,
+    user_id: str | None,
+):
+    # Chat/code generation always runs inline — Inngest is only used for
+    # long-running background jobs (C-Suite, Design, Artifacts), not for
+    # real-time WebSocket streaming (no handler exists for chat/message.requested).
+    async for step in process_user_request(
+        user_prompt, project_id, model_id, db=db, images=images, user_id=user_id
+    ):
+        yield step
+
+
 # ── WebSocket: Chat + Code Gen ──────────────────────────────────────────────
 
 @app.websocket("/ws/chat")
@@ -634,8 +791,38 @@ async def websocket_endpoint(websocket: WebSocket):
         db.close()
         return
 
-    project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
+    # ── Connection rate limiting: max 3 concurrent WS sessions per user ───────
+    from redis_client import get_async_redis as _gar
+    _rl = _gar()
+    _conn_key = f"kith:ws:conn:{user.id}"
+    try:
+        _conn_n = await _rl.incr(_conn_key)
+        await _rl.expire(_conn_key, 3600)
+    except Exception:
+        _conn_n = 1  # Redis unavailable — allow through, skip rate-limiting
+    if _conn_n > 3:
+        try:
+            await _rl.decr(_conn_key)
+        except Exception:
+            pass
+        await _send_json(websocket, {
+            "type": "error",
+            "message": "Too many concurrent connections (max 3). Close another tab first."
+        })
+        await websocket.close(code=4429)
+        db.close()
+        return
+
+    project = await asyncio.to_thread(
+        lambda: db.query(Project).filter(
+            Project.id == project_id, Project.user_id == user.id
+        ).first()
+    )
     if not project:
+        try:
+            await _rl.decr(_conn_key)
+        except Exception:
+            pass
         await _send_json(websocket, {"type": "error", "message": "Project not found"})
         await websocket.close(code=4404)
         db.close()
@@ -643,7 +830,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         # Count existing files
-        file_count = db.query(File).filter(File.project_id == project_id).count()
+        file_count = await asyncio.to_thread(
+            lambda: db.query(File).filter(File.project_id == project_id).count()
+        )
 
         # Boot sandbox worker, restore files, start Vite
         worker, preview_url = await _ensure_sandbox_ready(websocket, db, project, project_id)
@@ -656,7 +845,7 @@ async def websocket_endpoint(websocket: WebSocket):
         })
 
         # Build file tree from DB and send
-        db_tree = _build_file_tree_from_db(db, project_id)
+        db_tree = await asyncio.to_thread(_build_file_tree_from_db, db, project_id)
         if db_tree:
             await _send_json(websocket, {
                 "type": "file_tree",
@@ -686,6 +875,28 @@ async def websocket_endpoint(websocket: WebSocket):
             "type": "status", "status": "idle",
             "message": f"Init issue: {str(init_err)}. You can still use the editor."
         })
+
+    # ── Redis pub/sub relay: forward cross-worker events to this WS client ──
+    async def _redis_relay():
+        from redis_state import project_channel, get_async_redis
+        r = get_async_redis()
+        pubsub = r.pubsub()
+        await pubsub.subscribe(project_channel(project_id))
+        try:
+            async for message in pubsub.listen():
+                if message.get("type") == "message":
+                    try:
+                        payload = json.loads(message["data"])
+                        await _send_json(websocket, payload)
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await pubsub.unsubscribe(project_channel(project_id))
+            await pubsub.aclose()
+
+    redis_relay_task = asyncio.create_task(_redis_relay())
 
     try:
         while True:
@@ -768,11 +979,29 @@ async def websocket_endpoint(websocket: WebSocket):
             # Reset auto-fix cycle on user-initiated edits
             reset_fix_cycle(project_id)
 
+            # ── Message rate limiting: max 30 messages/minute per user ─────────
+            _msg_key = f"kith:ws:msgs:{user.id}"
             try:
-                _persist_message(db, project_id, "user", user_prompt or f"[{len(images)} image(s)]")
+                _msg_n = await _rl.incr(_msg_key)
+                if _msg_n == 1:
+                    await _rl.expire(_msg_key, 60)
+            except Exception:
+                _msg_n = 1  # Redis unavailable — allow through
+            if _msg_n > 30:
+                await _send_json(websocket, {
+                    "type": "error",
+                    "message": "Rate limit exceeded (30 messages/min). Please wait."
+                })
+                await _send_json(websocket, {"type": "status", "status": "idle"})
+                continue
+
+            try:
+                await asyncio.to_thread(_persist_message, db, project_id, "user", user_prompt or f"[{len(images)} image(s)]")
 
                 # Refresh project
-                project = db.query(Project).filter(Project.id == project_id).first()
+                project = await asyncio.to_thread(
+                    lambda: db.query(Project).filter(Project.id == project_id).first()
+                )
 
                 preview_url = project.preview_url if project else ""
                 await _send_json(websocket, {
@@ -781,12 +1010,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 # Send file tree from DB
-                db_tree = _build_file_tree_from_db(db, project_id)
+                db_tree = await asyncio.to_thread(_build_file_tree_from_db, db, project_id)
                 if db_tree:
                     await _send_json(websocket, {"type": "file_tree", "tree": db_tree})
 
                 # Process user request — reads files from DB
-                async for step in process_user_request(user_prompt, project_id, model_id, db=db, images=images, user_id=user.id):
+                async for step in _step_stream(user_prompt, project_id, model_id, db=db, images=images, user_id=user.id):
                     if step["status"] == "file_stream_start":
                         await _send_json(websocket, {
                             "type": "file_stream_start", "file": step["file"]
@@ -809,7 +1038,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         await _send_json(websocket, {
                             "type": "chat_complete", "message": step["message"]
                         })
-                        _persist_message(db, project_id, "assistant", step["message"])
+                        await asyncio.to_thread(_persist_message, db, project_id, "assistant", step["message"])
                     elif step["status"] == "execution_complete":
                         edits = step.get("edits", [])
                         write_edits = [e for e in edits if e.get("action") == "write"]
@@ -837,7 +1066,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 })
 
                             # 3. Update file tree
-                            db_tree = _build_file_tree_from_db(db, project_id)
+                            db_tree = await asyncio.to_thread(_build_file_tree_from_db, db, project_id)
                             if db_tree:
                                 await _send_json(websocket, {"type": "file_tree", "tree": db_tree})
 
@@ -850,6 +1079,50 @@ async def websocket_endpoint(websocket: WebSocket):
                                         # Poll until @vite/client and @react-refresh both return 200
                                         await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
                                         await _send_json(websocket, {"type": "reload_preview"})
+
+                                        # wait_vite_ready only checks the root URL — React Router's
+                                        # lazy-loaded route components are only compiled when the
+                                        # browser requests them, so they can still be broken.
+                                        # Probe each TSX file now so we catch (and auto-fix) errors
+                                        # before the user sees a blank/broken preview.
+                                        try:
+                                            vite_errors = await asyncio.to_thread(worker.execute, "check_vite_errors")
+                                            if vite_errors and isinstance(vite_errors, list):
+                                                print(f"[ws] Vite compilation errors in {len(vite_errors)} file(s): {[e['file'] for e in vite_errors]}")
+                                                await _send_json(websocket, {
+                                                    "type": "status", "status": "warning",
+                                                    "message": f"⚠️ Fixing compilation error(s) in {len(vite_errors)} file(s)..."
+                                                })
+                                                error_events = [
+                                                    {
+                                                        "source": "vite",
+                                                        "message": f"Compilation error in {e['file']}: {e['error'][:400]}",
+                                                    }
+                                                    for e in vite_errors
+                                                ]
+                                                fix_result = await attempt_fix(project_id, error_events, user_id=user.id)
+                                                if fix_result and fix_result.get("files"):
+                                                    fix_edits = [
+                                                        {"file_path": f["file_path"], "content": f["content"], "action": "write"}
+                                                        for f in fix_result["files"]
+                                                    ]
+                                                    await _persist_files(db, project_id, fix_edits)
+                                                    for edit in fix_edits:
+                                                        await _send_json(websocket, {
+                                                            "type": "file_written",
+                                                            "file": edit["file_path"],
+                                                            "content": edit["content"],
+                                                        })
+                                                    await asyncio.to_thread(worker.execute, "write_files", fix_edits)
+                                                    await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 30.0)
+                                                    await _send_json(websocket, {"type": "reload_preview"})
+                                                    await _send_json(websocket, {
+                                                        "type": "auto_fix_status", "status": "fixed",
+                                                        "message": f"🔧 Auto-fixed {len(fix_edits)} file(s)"
+                                                    })
+                                        except Exception as _ce:
+                                            print(f"[ws] Vite error check (non-fatal): {_ce}")
+
                                     except Exception as sb_err:
                                         err_str = str(sb_err).lower()
                                         if "3006" in err_str or "timed out" in err_str or "thread crashed" in err_str:
@@ -890,7 +1163,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                         _TRANSIENT = {"analyzing", "reading", "generating"}
                         if step.get("message") and step.get("status") not in _TRANSIENT:
-                            _persist_message(db, project_id, "system", step["message"])
+                            await asyncio.to_thread(_persist_message, db, project_id, "system", step["message"])
 
                 await _send_json(websocket, {"type": "status", "status": "idle"})
 
@@ -900,7 +1173,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "error",
                     "message": _user_visible_error_message(loop_err)
                 })
-                _persist_message(db, project_id, "system", f"Error: {str(loop_err)}")
+                await asyncio.to_thread(_persist_message, db, project_id, "system", f"Error: {str(loop_err)}")
                 await _send_json(websocket, {
                     "type": "status", "status": "idle",
                     "message": "Waiting for input..."
@@ -911,10 +1184,21 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket Error: {e}")
     finally:
+        redis_relay_task.cancel()
+        try:
+            await redis_relay_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await _rl.decr(_conn_key)
+        except Exception:
+            pass
         # Keep sandbox alive across reconnects — only release on explicit project deletion
         db.close()
 
 
 if __name__ == "__main__":
     import uvicorn
+    # Single-worker dev mode. For production use Gunicorn:
+    #   cd backend && gunicorn main:app -c gunicorn_config.py
     uvicorn.run("main:app", host="0.0.0.0", port=_PORT, reload=True)

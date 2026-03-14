@@ -6,8 +6,9 @@ import json
 import os
 import asyncio
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
+from rate_limiter import limiter
 
 import litellm
 
@@ -20,6 +21,7 @@ from design_context import get_design_context
 
 import inngest
 from inngest_client import client as inngest_client, use_inngest
+import billing_api as billing
 
 litellm.drop_params = True
 router = APIRouter(prefix="/api/v1/projects", tags=["artifacts"])
@@ -474,8 +476,8 @@ def _resolve_artifact_model(user_id: str | None, db=None) -> dict:
     return {"model": _get_model(), "api_key": None, "api_base": None, "provider_name": "Default"}
 
 
-# Limit concurrent LLM calls to avoid API rate limits
-_ARTIFACT_SEMAPHORE = asyncio.Semaphore(3)
+# Limit concurrent LLM calls per-worker (raised from 3 for 1M/day throughput)
+_ARTIFACT_SEMAPHORE = asyncio.Semaphore(10)
 
 
 async def _generate_single_artifact(project_id: str, artifact_key: str, artifact_def: dict, context: str, user_id: str | None = None):
@@ -622,7 +624,9 @@ async def list_artifacts(
 
 
 @router.post("/{project_id}/artifacts/generate")
+@limiter.limit("30/minute")
 async def generate_artifacts(
+    request: Request,
     project_id: str,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
@@ -631,6 +635,9 @@ async def generate_artifacts(
     project = db.query(Project).filter(Project.id == project_id, Project.user_id == user.id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Enforce monthly artifact set limit (raises 402 if over limit)
+    billing.enforce_artifact_limit(db, user)
 
     # Create artifact records — only reset incomplete ones
     for key, defn in ARTIFACT_DEFS.items():
@@ -667,6 +674,7 @@ async def generate_artifacts(
     else:
         background_tasks.add_task(_generate_all_artifacts, project_id, user.id)
 
+    billing.record_artifact_set(db, user.id)
     return {"status": "generating"}
 
 
@@ -700,7 +708,9 @@ async def get_artifact(
 
 
 @router.post("/{project_id}/artifacts/generate-single/{artifact_key}")
+@limiter.limit("30/minute")
 async def generate_single_artifact_endpoint(
+    request: Request,
     project_id: str,
     artifact_key: str,
     background_tasks: BackgroundTasks,
@@ -753,7 +763,9 @@ async def generate_single_artifact_endpoint(
 
 
 @router.post("/{project_id}/artifacts/regenerate-all")
+@limiter.limit("30/minute")
 async def regenerate_all_artifacts(
+    request: Request,
     project_id: str,
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
@@ -794,7 +806,9 @@ async def regenerate_all_artifacts(
 
 
 @router.post("/{project_id}/artifacts/{artifact_id}/regenerate")
+@limiter.limit("30/minute")
 async def regenerate_artifact(
+    request: Request,
     project_id: str,
     artifact_id: str,
     background_tasks: BackgroundTasks,

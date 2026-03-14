@@ -127,6 +127,8 @@ def compose_project_context(
     idea: Any = None,
     cdo_analysis: Any = None,
     design_system_text: str | None = None,
+    direction: str | None = None,
+    reference_images: list[str] | None = None,
 ) -> str:
     idea_text = ""
     if idea:
@@ -142,11 +144,20 @@ def compose_project_context(
         except Exception:
             cdo_text = str(cdo_analysis)
 
+    direction_text = ""
+    if direction:
+        direction_text = f"\n\nNew Design Direction: {direction}"
+    
+    ref_img_text = ""
+    if reference_images:
+        ref_img_text = f"\n\nReference Images Provided: {len(reference_images)} images attached to prompt."
+
     return f"""Product: {product_name}
 Description: {description or 'N/A'}
 Target Audience: {target_audience or 'N/A'}
 
 Idea: {idea_text}
+{direction_text}{ref_img_text}
 
 CDO Design Recommendations: {cdo_text or 'None available'}
 
@@ -316,17 +327,22 @@ def build_design_brief(
     target_audience = _extract_named_block(project_context, "Target Audience")
     cdo_text = _extract_named_block(project_context, "CDO Design Recommendations")
     dsf_text = _extract_named_block(project_context, "Design System Foundation")
-    query = " ".join(
-        part for part in [
-            product_name,
-            description,
-            target_audience,
-            screen_desc or "",
-            cdo_text,
-            dsf_text,
-            direction or "",
-        ] if part
-    )
+    
+    # If a direction is provided, we weight it heavily and exclude conflicting DSF/CDO blocks
+    # from the vendor search query to prevent "Green theme" leakage.
+    if direction:
+        query = f"{direction} {direction} {product_name} {description} {target_audience} {screen_desc or ''}"
+    else:
+        query = " ".join(
+            part for part in [
+                product_name,
+                description,
+                target_audience,
+                screen_desc or "",
+                cdo_text,
+                dsf_text,
+            ] if part
+        )
 
     product_hits = _search_vendor("product", query, limit=1)
     style_hits = _search_vendor("style", query, limit=3)

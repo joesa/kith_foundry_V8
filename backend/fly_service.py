@@ -370,6 +370,11 @@ class FlySandboxWorker:
                         "protocol": "tcp",
                         "internal_port": 80,
                         "ports": [{"port": 80, "handlers": ["http"]}, {"port": 443, "handlers": ["tls", "http"]}],
+                        # Keep the machine alive — Fly's default is to stop idle machines,
+                        # which causes ERR_CONNECTION_CLOSED for users still looking at the preview.
+                        "auto_stop_machines": "off",
+                        "auto_start_machines": True,
+                        "min_machines_running": 1,
                     }
                 ],
                 "restart": {"policy": "always"},
@@ -442,6 +447,24 @@ class FlySandboxWorker:
                     f"(container boot failure)"
                 )
 
+            # Wait for public DNS to propagate so the browser iframe can load the URL.
+            # The bridge loop above uses IP-override to bypass DNS, but the user's
+            # browser resolves the hostname normally and will get NXDOMAIN for a
+            # brand-new *.fly.dev app until Fly's DNS propagates (~10-60s).
+            dns_host = f"{app_name}.fly.dev"
+            print(f"[fly] Waiting for DNS propagation of {dns_host}...")
+            dns_ok = False
+            for _ in range(30):  # up to ~60s
+                try:
+                    socket.getaddrinfo(dns_host, 443)
+                    print(f"[fly] DNS propagated for {dns_host}")
+                    dns_ok = True
+                    break
+                except socket.gaierror:
+                    time.sleep(2)
+            if not dns_ok:
+                print(f"[fly] DNS not yet propagated for {dns_host} after 60s — browser may retry")
+
             preview: str = self.preview_url  # type: ignore[assignment]
             return preview
         finally:
@@ -497,7 +520,22 @@ class FlySandboxWorker:
             time.sleep(2)
         raise RuntimeError(f"Vite not ready after {timeout:.0f}s: {last}")
 
-    def execute(self, cmd: str, args=None, timeout: float = 120.0) -> str:
+    def check_vite_errors(self) -> list:
+        """Probe all src/*.tsx files through Vite and return any that return HTTP 500.
+
+        wait_vite_ready only checks the root page, which returns 200 even when
+        lazy-loaded route components have syntax errors.  This method eagerly
+        requests every TSX file so compilation errors surface before the browser
+        loads the preview.
+        """
+        try:
+            result = self._bridge_call("/check_vite_errors", max_retries=1)
+            return result.get("errors", [])
+        except Exception as e:
+            print(f"[fly] check_vite_errors failed (non-fatal): {e}")
+            return []
+
+    def execute(self, cmd: str, args=None, timeout: float = 120.0):
         """Dispatch a command to the sandbox."""
         if cmd == "health_check":
             return self.health_check()
@@ -511,6 +549,8 @@ class FlySandboxWorker:
             return self.start_vite()
         if cmd == "wait_vite_ready":
             return self.wait_vite_ready(timeout)
+        if cmd == "check_vite_errors":
+            return self.check_vite_errors()
         raise RuntimeError(f"unknown command: {cmd}")
 
     def health_check(self) -> str:
@@ -530,6 +570,39 @@ class FlySandboxWorker:
         except Exception as e:
             return str(e)
 
+    def restart_machine(self) -> bool:
+        """Start a stopped Fly machine back up. Returns True if successfully started."""
+        if not self.app_name or not self.machine_id:
+            return False
+        try:
+            # Check current state first
+            m = self._api_request("GET", f"/apps/{self.app_name}/machines/{self.machine_id}")
+            state = m.get("state", "")
+            if state == "started":
+                return True
+            if state in ("stopped", "suspended"):
+                print(f"[fly] Restarting stopped machine {self.machine_id} (state={state})")
+                self._api_request("POST", f"/apps/{self.app_name}/machines/{self.machine_id}/start", timeout=15)
+                # Wait for it to come back up
+                for i in range(30):
+                    time.sleep(2)
+                    m = self._api_request("GET", f"/apps/{self.app_name}/machines/{self.machine_id}")
+                    if m.get("state") == "started":
+                        print(f"[fly] Machine restarted after {i * 2}s")
+                        # Wait for bridge to be reachable again (up to 30s)
+                        for _ in range(15):
+                            if self.health_check() == "ok":
+                                return True
+                            time.sleep(2)
+                        return False
+                print(f"[fly] Machine did not reach 'started' state after restart")
+                return False
+            print(f"[fly] Cannot restart machine in state: {state}")
+            return False
+        except Exception as e:
+            print(f"[fly] restart_machine failed: {e}")
+            return False
+
     def destroy(self) -> None:
         if self.app_name:
             try:
@@ -540,11 +613,42 @@ class FlySandboxWorker:
             self.machine_id = None
             self.preview_url = None
 
+    # ── Redis serialization ───────────────────────────────────────────────
+
+    def to_metadata(self) -> dict:
+        """Serialise to a Redis-safe dict for cross-worker sharing."""
+        return {
+            "project_id": self.project_id,
+            "app_name": self.app_name,
+            "machine_id": self.machine_id,
+            "preview_url": self.preview_url,
+            "public_ip": self._public_ip,
+        }
+
+    @classmethod
+    def from_metadata(cls, meta: dict) -> "FlySandboxWorker":
+        """Reconstruct a worker shell from Redis metadata (no VM creation)."""
+        w = cls(meta["project_id"])
+        w.app_name = meta.get("app_name")
+        w.machine_id = meta.get("machine_id")
+        w.preview_url = meta.get("preview_url")
+        w._public_ip = meta.get("public_ip")
+        return w
+
 
 def get_or_create_worker(project_id: str, max_retries: int = 2) -> FlySandboxWorker:
-    """Get existing Fly sandbox worker or create new one."""
+    """Get existing Fly sandbox worker or create new one.
+
+    Lookup order:
+      1. In-process ``_workers`` dict (fastest — same gunicorn worker).
+      2. Redis metadata (cross-worker — another gunicorn worker created it).
+      3. Create a new sandbox and persist metadata to Redis.
+    """
+    from redis_state import get_sandbox_meta_sync, set_sandbox_meta_sync, delete_sandbox_meta_sync
+
     project_lock = _get_project_lock(project_id)
     with project_lock:
+        # ── Step 1: check local in-process cache ───────────────────────────
         with _lock:
             existing = _workers.get(project_id)
             if existing and existing.preview_url:
@@ -553,15 +657,79 @@ def get_or_create_worker(project_id: str, max_retries: int = 2) -> FlySandboxWor
                         return existing
                 except Exception:
                     pass
+                # Try to restart a stopped machine before destroying
+                if existing.restart_machine():
+                    print(f"[fly] In-process sandbox {existing.app_name} restarted successfully")
+                    return existing
                 existing.destroy()
                 _workers.pop(project_id, None)
 
+        # ── Step 2: check Redis for metadata created by another worker ─────
+        try:
+            meta = get_sandbox_meta_sync(project_id)
+            if meta:
+                worker = FlySandboxWorker.from_metadata(meta)
+                try:
+                    if worker.health_check() == "ok":
+                        print(f"[fly] Reusing cross-worker sandbox {worker.app_name} for {project_id[:8]}")
+                        with _lock:
+                            _workers[project_id] = worker
+                        return worker
+                    else:
+                        print(f"[fly] Cross-worker sandbox {worker.app_name} unhealthy — attempting restart")
+                        if worker.restart_machine():
+                            print(f"[fly] Cross-worker sandbox {worker.app_name} restarted successfully")
+                            with _lock:
+                                _workers[project_id] = worker
+                            return worker
+                        print(f"[fly] Cross-worker sandbox {worker.app_name} restart failed, recreating")
+                        worker.destroy()
+                        delete_sandbox_meta_sync(project_id)
+                except Exception as e:
+                    print(f"[fly] Cross-worker sandbox health check failed ({e}), recreating")
+                    worker.destroy()
+                    delete_sandbox_meta_sync(project_id)
+        except Exception as redis_err:
+            print(f"[fly] Redis lookup failed (continuing without cache): {redis_err}")
+
+        # ── Step 3a: lease from pre-warm pool ─────────────────────────────
+        try:
+            from sandbox_pool import lease_machine
+            pool_meta = lease_machine()
+            if pool_meta:
+                worker = FlySandboxWorker.from_metadata(pool_meta)
+                worker.project_id = project_id  # reassign to this project
+                try:
+                    if worker.health_check() == "ok":
+                        with _lock:
+                            _workers[project_id] = worker
+                        set_sandbox_meta_sync(project_id, worker.to_metadata())
+                        print(f"[fly] Leased warm sandbox {worker.app_name} from pool for {project_id[:8]}")
+                        return worker
+                    else:
+                        print(f"[fly] Pool sandbox {worker.app_name} unhealthy, destroying and continuing")
+                        worker.destroy()
+                except Exception as e:
+                    print(f"[fly] Pool sandbox health check failed ({e}), destroying")
+                    try:
+                        worker.destroy()
+                    except Exception:
+                        pass
+        except Exception as pool_err:
+            print(f"[fly] Pool lease failed (non-fatal): {pool_err}")
+
+        # ── Step 3b: create a new sandbox ─────────────────────────────────
         for attempt in range(max_retries):
             worker = FlySandboxWorker(project_id)
             try:
                 worker.create()
                 with _lock:
                     _workers[project_id] = worker
+                # Persist metadata to Redis for cross-worker discovery
+                try:
+                    set_sandbox_meta_sync(project_id, worker.to_metadata())
+                except Exception as redis_err:
+                    print(f"[fly] Redis metadata save failed (non-fatal): {redis_err}")
                 print(f"[fly] Sandbox created for {project_id}: {worker.preview_url}")
                 return worker
             except Exception as e:
@@ -576,11 +744,17 @@ def get_or_create_worker(project_id: str, max_retries: int = 2) -> FlySandboxWor
 
 def release_worker(project_id: str) -> None:
     """Destroy and remove the Fly sandbox for a project."""
+    from redis_state import delete_sandbox_meta_sync
     with _lock:
         worker = _workers.pop(project_id, None)
     if worker:
         worker.destroy()
         print(f"[fly] Sandbox released for {project_id}")
+    # Always remove Redis metadata so other workers stop trying to reuse it
+    try:
+        delete_sandbox_meta_sync(project_id)
+    except Exception as redis_err:
+        print(f"[fly] Redis metadata delete failed (non-fatal): {redis_err}")
 
 
 def cleanup_stale_sandboxes() -> int:
@@ -601,6 +775,12 @@ def cleanup_stale_sandboxes() -> int:
 
         tracked = {w.app_name for w in _workers.values()}
         tracked.update(_creating_apps)
+        # Also include sandbox app names stored in Redis (created on other workers)
+        try:
+            from redis_state import list_sandbox_app_names_sync
+            tracked.update(list_sandbox_app_names_sync())
+        except Exception:
+            pass
         stale = []
         for app in apps:
             name = app.get("name", "") if isinstance(app, dict) else str(app)
@@ -613,6 +793,54 @@ def cleanup_stale_sandboxes() -> int:
 
         if not stale:
             print("[fly] No stale sandboxes to clean up")
+            return 0
+
+        # Cross-reference stale candidates against the database.
+        # A sandbox is still needed if any project has fly_sandbox_id pointing to it
+        # AND that project was active within the last 7 days.
+        # Projects inactive for longer get their sandbox released here — it will
+        # be lazily recreated the next time that user opens the project.
+        _SANDBOX_TTL_DAYS = 7
+        try:
+            from datetime import datetime, timedelta
+            from models import SessionLocal, Project as _Project
+            db = SessionLocal()
+            try:
+                cutoff = datetime.utcnow() - timedelta(days=_SANDBOX_TTL_DAYS)
+                active_rows = (
+                    db.query(_Project.fly_sandbox_id)
+                    .filter(
+                        _Project.fly_sandbox_id.in_(stale),
+                        _Project.updated_at >= cutoff,
+                    )
+                    .all()
+                )
+                db_tracked = set(row[0] for row in active_rows if row[0])
+
+                # For inactive projects whose sandbox is in the stale list, clear
+                # fly_sandbox_id so the next connect creates a fresh sandbox.
+                inactive_rows = (
+                    db.query(_Project.id, _Project.fly_sandbox_id)
+                    .filter(
+                        _Project.fly_sandbox_id.in_(stale),
+                        _Project.updated_at < cutoff,
+                    )
+                    .all()
+                )
+                if inactive_rows:
+                    inactive_names = [row[1] for row in inactive_rows]
+                    print(f"[fly] Releasing {len(inactive_rows)} sandbox(es) from inactive projects (>{_SANDBOX_TTL_DAYS}d): {inactive_names}")
+                    db.query(_Project).filter(
+                        _Project.fly_sandbox_id.in_(inactive_names)
+                    ).update({_Project.fly_sandbox_id: None, _Project.preview_url: None}, synchronize_session=False)
+                    db.commit()
+            finally:
+                db.close()
+            if db_tracked:
+                print(f"[fly] Keeping {len(db_tracked)} sandbox(es) for recently active projects: {db_tracked}")
+            stale = [n for n in stale if n not in db_tracked]
+        except Exception as db_err:
+            print(f"[fly] DB cross-reference failed ({db_err}) — skipping cleanup to be safe")
             return 0
 
         print(f"[fly] Cleaning up {len(stale)} stale sandbox(es): {stale}")

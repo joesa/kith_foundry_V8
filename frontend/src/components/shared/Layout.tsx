@@ -1,7 +1,7 @@
 import { Outlet, useNavigate, Link, useLocation } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTheme } from "../../contexts/ThemeContext";
-import { LogOut, Anvil, UserCircle, Bookmark } from "lucide-react";
+import { LogOut, Anvil, UserCircle, Bookmark, CreditCard } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 
 export default function Layout() {
@@ -10,6 +10,8 @@ export default function Layout() {
     const navigate = useNavigate();
     const location = useLocation();
     const onSavedIdeas = location.pathname === "/ideation/saved";
+    const onDashboard = location.pathname === "/";
+    const onIdeation = location.pathname.startsWith("/ideation");
 
     const handleSignOut = async () => {
         await signOut();
@@ -44,6 +46,33 @@ export default function Layout() {
                     </span>
                 </button>
 
+                <nav className="flex items-center gap-1 ml-6">
+                    <Link
+                        to="/"
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                            onDashboard
+                                ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                                : theme === "dark"
+                                    ? "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                                    : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100"
+                        }`}
+                    >
+                        Projects
+                    </Link>
+                    <Link
+                        to="/ideation"
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                            onIdeation
+                                ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                                : theme === "dark"
+                                    ? "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                                    : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100"
+                        }`}
+                    >
+                        Ideation
+                    </Link>
+                </nav>
+
                 <div className="flex-1" />
 
                 {user && (
@@ -62,6 +91,20 @@ export default function Layout() {
                         >
                             <Bookmark className="w-4 h-4" />
                             <span className="hidden sm:inline">Saved Ideas</span>
+                        </Link>
+                        <Link
+                            to="/billing"
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                                location.pathname === "/billing"
+                                    ? "bg-purple-500/10 text-purple-400 border border-purple-500/20"
+                                    : theme === "dark"
+                                        ? "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                                        : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100"
+                            }`}
+                            title="Billing & Usage"
+                        >
+                            <CreditCard className="w-4 h-4" />
+                            <span className="hidden sm:inline">Billing</span>
                         </Link>
                         <Link
                             to="/profile"

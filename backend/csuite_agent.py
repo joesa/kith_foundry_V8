@@ -200,6 +200,14 @@ async def run_single_agent(
         if not analysis:
             return
 
+        # Pre-flight cancellation check — an agent may have been waiting for the LLM
+        # semaphore while Stop was clicked; the stop endpoint already set status=error,
+        # so don't overwrite it back to running.
+        if analysis_id in _CANCELLED_ANALYSES or project.id in _CANCELLED_PROJECTS:
+            return
+        if analysis.status == AgentStatus.error:
+            return  # DB row was already stopped/cancelled by the stop endpoint
+
         analysis.status = AgentStatus.running
         db.commit()
 
@@ -248,6 +256,11 @@ async def run_single_agent(
             analysis = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
             if not analysis:
                 return  # row was superseded; silently discard result
+
+            # Check if this agent or its whole project was cancelled while the LLM was running
+            if analysis_id in _CANCELLED_ANALYSES or project.id in _CANCELLED_PROJECTS:
+                return  # DB row already marked error/stopped by the stop endpoint
+
             analysis.analysis = result
             analysis.score = min(100, max(0, int(result.get("score", 50))))
             analysis.status = AgentStatus.complete
@@ -265,8 +278,30 @@ async def run_single_agent(
         db.close()
 
 
-# Limit concurrent LLM calls to avoid API rate limits
-_LLM_SEMAPHORE = asyncio.Semaphore(3)
+# Limit concurrent LLM calls per-worker (3 workers × 15 slots = 45 concurrent LLM ops max)
+_LLM_SEMAPHORE = asyncio.Semaphore(15)
+
+# Per-project / per-analysis cancellation sets (in-process; cleared on each new run)
+_CANCELLED_PROJECTS: set[str] = set()
+_CANCELLED_ANALYSES: set[str] = set()
+
+
+def mark_cancelled_project(project_id: str) -> None:
+    """Signal all in-flight agents for a project to abort after their current LLM call."""
+    _CANCELLED_PROJECTS.add(project_id)
+
+
+def mark_cancelled_analysis(analysis_id: str) -> None:
+    """Signal a single in-flight agent to abort after its current LLM call."""
+    _CANCELLED_ANALYSES.add(analysis_id)
+
+
+def clear_cancellations(project_id: str) -> None:
+    """Remove any stale cancellation marks when a fresh run starts."""
+    _CANCELLED_PROJECTS.discard(project_id)
+    # analysis IDs change each run so stale entries are harmless, but prune occasionally
+    if len(_CANCELLED_ANALYSES) > 500:
+        _CANCELLED_ANALYSES.clear()
 
 # Per-project locks — prevents two concurrent runs stomping on each other's DB rows
 _PROJECT_LOCKS: dict[str, asyncio.Lock] = {}
@@ -315,6 +350,9 @@ async def run_all_agents_background(project_id: str, correction_notes: str | Non
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             return
+
+        # Clear any stale cancellation marks from a previous stop
+        clear_cancellations(project_id)
 
         project.status = ProjectStatus.csuite_running
         db.commit()

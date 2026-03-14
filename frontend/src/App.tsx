@@ -9,6 +9,7 @@ import SignUpPage from "./components/auth/SignUpPage";
 // Shared
 import Layout from "./components/shared/Layout";
 import ProtectedRoute from "./components/shared/ProtectedRoute";
+import NotFoundPage from "./components/shared/NotFoundPage";
 
 // Pages
 import DashboardPage from "./components/project/DashboardPage";
@@ -22,6 +23,8 @@ import ProjectDashboardPage from "./components/project/ProjectDashboardPage";
 import DesignStudioPage from "./components/design/DesignStudioPage";
 import Workspace from "./components/Workspace";
 import ProfilePage from "./components/profile/ProfilePage";
+import PricingPage from "./components/billing/PricingPage";
+import BillingPage from "./components/billing/BillingPage";
 
 function AppContent() {
     const { user, loading } = useAuth();
@@ -56,6 +59,8 @@ function AppContent() {
                 <Route path="/project/:projectId" element={<ProjectDashboardPage />} />
                 <Route path="/project/:projectId/design-studio" element={<DesignStudioPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
+                <Route path="/pricing" element={<PricingPage />} />
+                <Route path="/billing" element={<BillingPage />} />
             </Route>
 
             {/* Editor — full-screen, own layout (no top nav) */}
@@ -65,7 +70,10 @@ function AppContent() {
             />
 
             {/* Catch-all */}
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route
+                path="*"
+                element={user ? <ProtectedRoute><NotFoundPage /></ProtectedRoute> : <Navigate to="/login" replace />}
+            />
         </Routes>
     );
 }

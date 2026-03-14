@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { getApiBaseUrl } from "../../lib/runtimeConfig";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wand2, ArrowRight, Check, RotateCcw, Sparkles } from "lucide-react";
+import { Wand2, ArrowRight, Bookmark, BookmarkCheck, Check, RotateCcw, Sparkles } from "lucide-react";
 
 interface Enhancement {
     name: string;
@@ -20,6 +20,34 @@ export default function IdeaPromptPage() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [phase, setPhase] = useState<"input" | "enhancements">("input");
+    const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+    const [savingId, setSavingId] = useState<string | null>(null);
+
+    const handleSaveEnhancement = async (enh: Enhancement) => {
+        const key = enh.name;
+        setSavingId(key);
+        try {
+            const token = await getAccessToken();
+            const resp = await fetch(`${getApiBaseUrl()}/api/v1/ideation/save`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    name: enh.name,
+                    content: { ...enh, source: "user_prompt" },
+                    score: null,
+                    source: "user_prompt",
+                }),
+            });
+            if (resp.ok) setSavedIds(prev => new Set([...prev, key]));
+        } catch (e) {
+            console.error("Failed to save idea", e);
+        } finally {
+            setSavingId(null);
+        }
+    };
 
     const handleEnhance = async () => {
         if (!prompt.trim()) return;
@@ -220,14 +248,31 @@ export default function IdeaPromptPage() {
                                             <Sparkles className="w-3 h-3 inline mr-1" />
                                             Target: {enh.target_market}
                                         </span>
-                                        <button
-                                            onClick={() => handleAcceptEnhancement(enh)}
-                                            disabled={loading}
-                                            className="flex items-center gap-2 h-9 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
-                                        >
-                                            <Check className="w-3.5 h-3.5" />
-                                            Select
-                                        </button>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={() => handleSaveEnhancement(enh)}
+                                                disabled={savedIds.has(enh.name) || savingId === enh.name}
+                                                className="flex items-center gap-1.5 h-9 px-3.5 rounded-lg border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors disabled:opacity-50"
+                                                title="Save for later"
+                                            >
+                                                {savingId === enh.name ? (
+                                                    <div className="w-3.5 h-3.5 border border-current border-t-transparent rounded-full animate-spin" />
+                                                ) : savedIds.has(enh.name) ? (
+                                                    <BookmarkCheck className="w-3.5 h-3.5 text-green-400" />
+                                                ) : (
+                                                    <Bookmark className="w-3.5 h-3.5" />
+                                                )}
+                                                {savedIds.has(enh.name) ? "Saved" : "Save"}
+                                            </button>
+                                            <button
+                                                onClick={() => handleAcceptEnhancement(enh)}
+                                                disabled={loading}
+                                                className="flex items-center gap-2 h-9 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
+                                            >
+                                                <Check className="w-3.5 h-3.5" />
+                                                Select
+                                            </button>
+                                        </div>
                                     </div>
                                 </motion.div>
                             ))}

@@ -13,34 +13,22 @@ from datetime import datetime
 import litellm
 
 from prompts import FIX_PROMPT
+from redis_state import get_fix_state, save_fix_state, delete_fix_state
 
 litellm.drop_params = True
 
 # ── Rate limiting / loop prevention ──────────────────────────────────────────
-
-# Per-project state to prevent infinite fix loops
-_fix_state: dict[str, dict] = {}
-
-
-def _get_state(project_id: str) -> dict:
-    if project_id not in _fix_state:
-        _fix_state[project_id] = {
-            "attempt_count": 0,
-            "last_attempt_at": 0.0,
-            "last_error_hash": None,
-            "cycle_start": 0.0,
-        }
-    return _fix_state[project_id]
+# Per-project fix state is now stored in Redis so all Gunicorn workers share it.
 
 
 def reset_fix_cycle(project_id: str):
     """Call after a user-initiated edit to reset the fix attempt counter."""
-    _fix_state.pop(project_id, None)
+    delete_fix_state(project_id)
 
 
 def can_attempt_fix(project_id: str, error_hash: str) -> tuple[bool, str]:
     """Check if we should attempt an auto-fix. Returns (allowed, reason)."""
-    state = _get_state(project_id)
+    state = get_fix_state(project_id)
 
     MAX_ATTEMPTS = 3
     COOLDOWN_SECONDS = 10.0
@@ -93,10 +81,11 @@ async def attempt_fix(
         print(f"[auto-fix] Skipped: {reason}")
         return None
 
-    state = _get_state(project_id)
+    state = get_fix_state(project_id)
     state["attempt_count"] += 1
     state["last_attempt_at"] = time.time()
     state["last_error_hash"] = error_hash
+    save_fix_state(project_id, state)
 
     print(f"[auto-fix] Attempt {state['attempt_count']} for project {project_id[:8]}...")
 

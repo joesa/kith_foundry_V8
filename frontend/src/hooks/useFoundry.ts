@@ -39,6 +39,8 @@ export function useFoundry(projectId?: string) {
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const previewUrlRef = useRef<string | null>(null);
     const [iframeSrc, setIframeSrc] = useState<string | null>(null);
+    const dnsRetryTimer = useRef<number | null>(null);
+    const probeGen = useRef(0); // incremented on each new probe chain to cancel stale ones
     const [hasExistingFiles, setHasExistingFiles] = useState<boolean | null>(null); // null = unknown yet
     const [files, setFiles] = useState<Record<string, string>>({
         "src/App.tsx": DEFAULT_APP_TSX
@@ -125,6 +127,8 @@ export function useFoundry(projectId?: string) {
                 setStatus("idle");
                 // Clear stale sandbox URL — new sandbox_ready will set the fresh one.
                 // This prevents the iframe from showing a 404 from the previous session's sandbox.
+                probeGen.current++; // invalidate any in-flight probe chains
+                if (dnsRetryTimer.current) { clearTimeout(dnsRetryTimer.current); dnsRetryTimer.current = null; }
                 setIframeSrc(null);
                 previewUrlRef.current = null;
                 setPreviewUrl(null);
@@ -159,7 +163,32 @@ export function useFoundry(projectId?: string) {
                 }
                 setMessages(prev => [...prev, { role: "system", content: "Sandbox is ready and connected." }]);
                 // Backend already polled health — load preview
-                if (pUrl) setIframeSrc(`${pUrl}?ts=${Date.now()}`);
+                if (pUrl) {
+                    setIframeSrc(`${pUrl}?ts=${Date.now()}`);
+                    // DNS may not have propagated yet for brand-new sandboxes.
+                    // Use a generation counter so stale probe chains from old URLs self-cancel
+                    // when a new sandbox_ready arrives (avoids cascading retries from multiple messages).
+                    probeGen.current++;
+                    if (dnsRetryTimer.current) clearTimeout(dnsRetryTimer.current);
+                    const myGen = probeGen.current;
+                    const probe = (attempt: number) => {
+                        if (probeGen.current !== myGen) return; // cancelled by newer sandbox_ready or reconnect
+                        fetch(pUrl, { mode: "no-cors", cache: "no-store" })
+                            .then(() => {
+                                if (probeGen.current !== myGen) return;
+                                // Host is reachable — reload iframe to get clean non-stale version
+                                setIframeSrc(`${pUrl}?ts=${Date.now()}`);
+                            })
+                            .catch(() => {
+                                if (probeGen.current !== myGen) return;
+                                // DNS not yet resolved or connection failed — retry up to 6 times (~30s)
+                                if (attempt < 6) {
+                                    dnsRetryTimer.current = window.setTimeout(() => probe(attempt + 1), 5000);
+                                }
+                            });
+                    };
+                    dnsRetryTimer.current = window.setTimeout(() => probe(0), 3000);
+                }
             } else if (data.type === "file_tree") {
                 // Received the sandbox file tree
                 console.log("File tree received:", data.tree);

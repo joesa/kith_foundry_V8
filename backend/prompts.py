@@ -37,7 +37,7 @@ FORBIDDEN on every generation (these patterns signal AI output, not expert UI wo
 - Emoji characters as UI icons — always use named `lucide-react` icons instead (never 🚀 💡 ✨ 🎯 🔒 etc. in UI)
 - Hardcoded hex / rgb / hsl values for backgrounds, surfaces, or brand colors — always use CSS custom properties
 - Generic dark SaaS defaults when the product brand calls for light, warm, earthy, or neutral aesthetics
-- Empty "coming soon" placeholders — every built page must have real, structured, product-specific content
+- Empty "coming soon" placeholders — every route/page must have full, product-specific UI with real mock data. A page that says "This section is currently being architected", "Check back soon", or "Coming soon" is a build failure — never output this pattern under any circumstances
 
 REQUIRED on every generation (non-negotiable for professional output):
 - `cursor: pointer` on ALL `<button>`, `<a>`, and any element with an `onClick` handler — no exceptions
@@ -109,15 +109,33 @@ The landing page is the MOST important page. It must be jaw-droppingly beautiful
   - Metrics/KPI cards (4-6) with animated number counters and trend indicators
   - Recent activity list with staggered entrance animation
   - Quick action buttons
-  - Data table or content grid placeholder with proper structure
-- All sidebar links should navigate to real routes (even if the destination pages are minimal)
+  - Data table or content grid with proper structure and mock data rows
+- All sidebar links MUST navigate to full, real pages — every linked route gets its own complete component file
 - Responsive: sidebar collapses to hamburger menu on mobile
 
-**Page 4+ — ADDITIONAL PAGES:**
-For any other screens mentioned in the design mockups or requirements:
-- Build them as full routes with proper layout integration
-- Each page should have real, structured content — not just "coming soon" placeholders
-- Reuse the DashboardLayout wrapper for authenticated pages
+**Page 4+ — ADDITIONAL PAGES (MANDATORY — no exceptions):**
+Every route linked from the sidebar, navbar, or any navigation element MUST be a complete, fully-built page.
+
+⛔ ABSOLUTELY BANNED — any variation of these patterns will be rejected:
+- "This section is currently being architected"
+- "Coming soon" / "Check back soon"
+- "Under construction"
+- "This page is not yet available"
+- Any single-paragraph stub that contains nothing but a title and a placeholder message
+- Empty `<div>` with just a heading and a description sentence
+
+✅ EVERY inner dashboard/app page MUST contain ALL of the following:
+- A full page header with title, subtitle or breadcrumb, and at least one action button (e.g. "New Appointment", "Redeem Points", "Upload Photo")
+- A primary content section appropriate to the page type — concrete examples:
+  - **List / table page** (Appointments, Orders, Transactions, Members, etc.): a styled table or card list with 4–8 mock data rows, column headers, row hover states, status badges, action buttons per row (Edit, View, Delete)
+  - **Gallery page** (Style Gallery, Portfolio, Media, etc.): a responsive grid of at least 9 cards, each with a colored placeholder image (CSS gradient rectangle), title, subtitle, and hover overlay
+  - **Rewards / Points page**: tier status badge, animated points balance, at least 6 reward cards in a grid (each with name, points cost, and a Redeem button), a redemption history table
+  - **Profile / Settings page**: avatar display, form sections for personal info / preferences / notifications / security, Save button per section, all fields pre-filled with realistic mock data
+  - **Analytics / Reports page**: 3–4 chart placeholder cards (styled divs with axis labels), stats row, date range selector
+- Secondary content: at least one supplementary section (sidebar stats, recent-activity list, tips panel, or quick-links grid)
+- All mock data must be PRODUCT-SPECIFIC and realistic — name it after the actual product, use real job titles, real service names, real item names from the product domain
+
+Reuse the DashboardLayout wrapper for all authenticated pages.
 
 **ROUTING STRUCTURE in App.tsx:**
 ```

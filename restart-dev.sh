@@ -24,14 +24,28 @@ else
 fi
 BACKEND_PYTHON_EXE="${KITH_BACKEND_PYTHON:-${CONDA_ENVS_DIR}/${PREFERRED_CONDA_ENV}/bin/python}"
 USE_INNGEST_DEV_SERVER="${KITH_USE_INNGEST_DEV_SERVER:-1}"
-FLYCTL_EXE="${KITH_FLYCTL_EXE:-$(command -v flyctl 2>/dev/null || true)}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+FLYCTL_EXE="${KITH_FLYCTL_EXE:-$(command -v flyctl 2>/dev/null || echo '/home/joe/.fly/bin/flyctl')}"
+REDIS_DB_NAME="${KITH_REDIS_DB_NAME:-kith-redis}"
+REDIS_SERVER_EXE="${KITH_REDIS_SERVER_EXE:-}"  # auto-detected below if empty
+
+# Auto-detect redis-server in conda env or PATH
+if [[ -z "$REDIS_SERVER_EXE" ]]; then
+  if [[ -x "${CONDA_ENVS_DIR}/${PREFERRED_CONDA_ENV}/bin/redis-server" ]]; then
+    REDIS_SERVER_EXE="${CONDA_ENVS_DIR}/${PREFERRED_CONDA_ENV}/bin/redis-server"
+  else
+    REDIS_SERVER_EXE="$(command -v redis-server 2>/dev/null || true)"
+  fi
+fi
 
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 INNGEST_PID_FILE="$RUN_DIR/inngest.pid"
+REDIS_PID_FILE="$RUN_DIR/redis-proxy.pid"
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 INNGEST_LOG="$LOG_DIR/inngest.log"
+REDIS_LOG="$LOG_DIR/redis-proxy.log"
 
 ACTION="restart"
 WSL_SHUTDOWN=0
@@ -56,6 +70,8 @@ Environment overrides:
   KITH_FALLBACK_CONDA_ENV=base
   KITH_USE_INNGEST_DEV_SERVER=1
   KITH_FLYCTL_EXE=/c/Users/treas/.fly/bin/flyctl.exe
+  KITH_REDIS_DB_NAME=kith-redis
+  REDIS_PORT=6379
   BACKEND_PORT=8000
   FRONTEND_PORT=5173
   INNGEST_PORT=8288
@@ -315,6 +331,44 @@ start_frontend() {
   )
 }
 
+start_redis_proxy() {
+  # Local redis-server is preferred for dev — no WireGuard tunnel needed.
+  # Production uses the private Fly+Upstash URL set via flyctl secrets.
+  if [[ ! -x "${REDIS_SERVER_EXE:-}" ]]; then
+    log "redis-server not found — skipping (set KITH_REDIS_SERVER_EXE if needed)"
+    log "Hint: /home/joe/miniconda3/bin/conda install -n kith_venv redis-server -c conda-forge"
+    return
+  fi
+
+  # Skip if something is already listening on the Redis port
+  if [[ "$(port_listener_count "$REDIS_PORT")" != "0" ]]; then
+    log "Port $REDIS_PORT already in use — skipping local redis-server start"
+    return
+  fi
+
+  log "Starting local redis-server on port $REDIS_PORT"
+  (
+    nohup "$REDIS_SERVER_EXE" \
+      --port "$REDIS_PORT" \
+      --daemonize no \
+      --loglevel notice \
+      --save "" \
+      --appendonly no \
+      > "$REDIS_LOG" 2>&1 &
+    echo $! > "$REDIS_PID_FILE"
+  )
+
+  # Wait up to 8s for the port to open
+  for ((i=1; i<=8; i++)); do
+    if [[ "$(port_listener_count "$REDIS_PORT")" != "0" ]]; then
+      log "Redis ready on localhost:$REDIS_PORT"
+      return
+    fi
+    sleep 1
+  done
+  log "WARNING: redis-server did not open port $REDIS_PORT in 8s (check $REDIS_LOG)"
+}
+
 start_inngest() {
   if [[ "$USE_INNGEST_DEV_SERVER" != "1" ]]; then
     log "Skipping Inngest dev server"
@@ -330,14 +384,16 @@ start_inngest() {
 }
 
 stop_services() {
-  log "Stopping backend, frontend, and Inngest"
+  log "Stopping backend, frontend, Inngest, and Redis proxy"
   kill_pid_file "$BACKEND_PID_FILE" "backend"
   kill_pid_file "$FRONTEND_PID_FILE" "frontend"
   kill_pid_file "$INNGEST_PID_FILE" "inngest"
+  kill_pid_file "$REDIS_PID_FILE" "redis-proxy"
 
   stop_port_listeners "$BACKEND_PORT"
   stop_port_listeners "$FRONTEND_PORT"
   stop_port_listeners "$INNGEST_PORT"
+  # Don't aggressively stop 6379 — another Redis may be legitimately there
 
   local backend_count frontend_count inngest_count
   backend_count="$(port_listener_count "$BACKEND_PORT")"
@@ -352,17 +408,20 @@ stop_services() {
 }
 
 status_services() {
-  local backend_count frontend_count inngest_count
+  local backend_count frontend_count inngest_count redis_count
   backend_count="$(port_listener_count "$BACKEND_PORT")"
   frontend_count="$(port_listener_count "$FRONTEND_PORT")"
   inngest_count="$(port_listener_count "$INNGEST_PORT")"
+  redis_count="$(port_listener_count "$REDIS_PORT")"
 
   log "Backend listeners on $BACKEND_PORT: $backend_count"
   log "Frontend listeners on $FRONTEND_PORT: $frontend_count"
   log "Inngest listeners on $INNGEST_PORT: $inngest_count"
+  log "Redis proxy listeners on $REDIS_PORT: $redis_count"
   log "Backend log: $BACKEND_LOG"
   log "Frontend log: $FRONTEND_LOG"
   log "Inngest log: $INNGEST_LOG"
+  log "Redis proxy log: $REDIS_LOG"
 }
 
 start_services() {
@@ -370,6 +429,7 @@ start_services() {
   stop_port_listeners "$FRONTEND_PORT"
   stop_port_listeners "$INNGEST_PORT"
 
+  start_redis_proxy
   start_backend
   wait_for_url "http://127.0.0.1:$BACKEND_PORT/docs" "Backend" 45 1 "$BACKEND_LOG"
   start_inngest
