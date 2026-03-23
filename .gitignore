@@ -21,7 +21,7 @@ frontend/.env.*
 # OS
 .DS_Store
 Thumbs.db
-
+.cursor
 # Agents
 .agents/
 vendor/ui-ux-pro-max-skill/
