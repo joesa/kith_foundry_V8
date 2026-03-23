@@ -7,11 +7,8 @@ Events handled:
     csuite/refine.requested          — data: {project_id, correction_notes}
     csuite/improve.apply.requested   — data: {project_id, roles, enhanced_context}
 
-  Design / Mockups:
-    design/generate.requested        — data: {project_id}
-    design/generate-all.requested    — data: {project_id, design_mode, direction?, reference_images?}
-    design/generate-single.requested — data: {mockup_id, project_context, screen_desc, user_id?}
-    design/revision.requested        — data: {mockup_id, project_context, screen_desc, user_id?}
+  Design Engine:
+    design-engine/generate.requested — data: {project_id, user_id?, design_mode?, design_style?}
 
   Artifacts:
     artifacts/generate.requested        — data: {project_id, user_id?}
@@ -88,89 +85,43 @@ async def csuite_improve_apply_fn(ctx: inngest.Context) -> dict:
     return {"status": "complete", "project_id": project_id, "roles": roles}
 
 
-# ── Design / Mockups ─────────────────────────────────────────────────────────
-
-from design_api import (
-    _generate_all_mockups,
-    _generate_all_mockups_ai_free,
-    _generate_existing_mockups,
-    _generate_mockup_component,
-)
-
+# ── Design Engine (GPT Engine pipeline) ──────────────────────────────────────
 
 @client.create_function(
-    fn_id="design-generate",
-    trigger=inngest.TriggerEvent(event="design/generate.requested"),
-    retries=3,
-    concurrency=[inngest.Concurrency(limit=20, key="event.data.user_id")],
+    fn_id="design-engine-generate",
+    trigger=inngest.TriggerEvent(event="design/engine-generate.requested"),
+    retries=2,
+    concurrency=[inngest.Concurrency(limit=10, key="event.data.user_id")],
 )
-async def design_generate_fn(ctx: inngest.Context) -> dict:
+async def design_engine_generate_fn(ctx: inngest.Context) -> dict:
+    """Run the GPT Design Engine pipeline and persist design system artifacts."""
+    from design_engine import run_full_design_pipeline
+    from models import SessionLocal
     project_id: str = ctx.event.data["project_id"]
-    print(f"🚀 Inngest design-generate executing for {project_id[:8]}")
-    await _generate_all_mockups(project_id)
-    print(f"✅ Inngest design-generate complete for {project_id[:8]}")
-    from redis_state import publish_project_update
-    await publish_project_update(project_id, {"type": "design_update", "status": "complete"})
-    return {"status": "complete", "project_id": project_id}
-
-
-@client.create_function(
-    fn_id="design-generate-all",
-    trigger=inngest.TriggerEvent(event="design/generate-all.requested"),
-    retries=3,
-    concurrency=[inngest.Concurrency(limit=15, key="event.data.user_id")],
-)
-async def design_generate_all_fn(ctx: inngest.Context) -> dict:
-    project_id: str = ctx.event.data["project_id"]
-    design_mode: str = ctx.event.data.get("design_mode", "dna")
-    direction: str | None = ctx.event.data.get("direction")
-    reference_images: list[str] | None = ctx.event.data.get("reference_images")
-    task: str = ctx.event.data.get("task", "generate_all")  # generate_all | generate_existing | ai_free
-    print(f"🚀 Inngest design-generate-all executing for {project_id[:8]} mode={design_mode} task={task}")
-    if task == "ai_free":
-        await _generate_all_mockups_ai_free(project_id, direction, reference_images)
-    elif task == "generate_existing":
-        await _generate_existing_mockups(project_id, reference_images)
-    else:
-        await _generate_all_mockups(project_id)
-    print(f"✅ Inngest design-generate-all complete for {project_id[:8]}")
-    from redis_state import publish_project_update
-    await publish_project_update(project_id, {"type": "design_update", "status": "complete"})
-    return {"status": "complete", "project_id": project_id}
-
-
-@client.create_function(
-    fn_id="design-generate-single",
-    trigger=inngest.TriggerEvent(event="design/generate-single.requested"),
-    retries=3,
-    concurrency=[inngest.Concurrency(limit=20, key="event.data.user_id")],
-)
-async def design_generate_single_fn(ctx: inngest.Context) -> dict:
-    mockup_id: str = ctx.event.data["mockup_id"]
-    project_context: str = ctx.event.data["project_context"]
-    screen_desc: str = ctx.event.data["screen_desc"]
     user_id: str | None = ctx.event.data.get("user_id")
-    print(f"🚀 Inngest design-generate-single executing for mockup {mockup_id[:8]}")
-    await _generate_mockup_component(mockup_id, project_context, screen_desc, user_id)
-    print(f"✅ Inngest design-generate-single complete for mockup {mockup_id[:8]}")
-    return {"status": "complete", "mockup_id": mockup_id}
-
-
-@client.create_function(
-    fn_id="design-revision",
-    trigger=inngest.TriggerEvent(event="design/revision.requested"),
-    retries=3,
-    concurrency=[inngest.Concurrency(limit=20, key="event.data.user_id")],
-)
-async def design_revision_fn(ctx: inngest.Context) -> dict:
-    mockup_id: str = ctx.event.data["mockup_id"]
-    project_context: str = ctx.event.data["project_context"]
-    screen_desc: str = ctx.event.data["screen_desc"]
-    user_id: str | None = ctx.event.data.get("user_id")
-    print(f"🚀 Inngest design-revision executing for mockup {mockup_id[:8]}")
-    await _generate_mockup_component(mockup_id, project_context, screen_desc, user_id)
-    print(f"✅ Inngest design-revision complete for mockup {mockup_id[:8]}")
-    return {"status": "complete", "mockup_id": mockup_id}
+    model_id: str = ctx.event.data.get("model_id", "anthropic/claude-sonnet-4-6")
+    print(f"🚀 Inngest design-engine-generate for {project_id[:8]}")
+    db = SessionLocal()
+    try:
+        result = await run_full_design_pipeline(db, project_id, model_id=model_id)
+        print(f"✅ Inngest design-engine-generate complete for {project_id[:8]}")
+        from redis_state import publish_project_update
+        await publish_project_update(project_id, {
+            "type": "design_engine_update",
+            "status": "complete",
+        })
+        return {"status": "complete", "project_id": project_id}
+    except Exception as e:
+        print(f"❌ Inngest design-engine-generate failed for {project_id[:8]}: {e}")
+        from redis_state import publish_project_update
+        await publish_project_update(project_id, {
+            "type": "design_engine_update",
+            "status": "error",
+            "message": str(e),
+        })
+        raise
+    finally:
+        db.close()
 
 
 # ── Artifacts ────────────────────────────────────────────────────────────────
@@ -366,11 +317,8 @@ all_functions = [
     csuite_improve_fn,
     # Chat (WebSocket fire-and-forget)
     chat_message_fn,
-    # Design
-    design_generate_fn,
-    design_generate_all_fn,
-    design_generate_single_fn,
-    design_revision_fn,
+    # Design Engine
+    design_engine_generate_fn,
     # Artifacts
     artifacts_generate_fn,
     artifacts_generate_single_fn,

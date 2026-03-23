@@ -4,14 +4,172 @@ C-Suite agent orchestration and prompts.
 import json
 import os
 import asyncio
+import time
 from datetime import datetime
+import re
 
 import litellm
 from fastapi import HTTPException
+from sqlalchemy.exc import OperationalError, DisconnectionError, DBAPIError
 
 from models import Project, CSuiteAnalysis, ProjectStatus, CSuiteRole, AgentStatus
 
 litellm.drop_params = True
+
+
+def _normalize_analysis_result(result: dict, fallback_text: str = "") -> dict:
+    """Normalize/guard LLM payload so DB/UI always get a valid shape."""
+    score_raw = result.get("score", 50)
+    try:
+        score = int(float(score_raw))
+    except (TypeError, ValueError):
+        score = 50
+    score = min(100, max(0, score))
+
+    verdict_raw = str(result.get("verdict", "")).strip().lower()
+    if verdict_raw not in {"go", "conditional", "no_go"}:
+        if score >= 70:
+            verdict_raw = "go"
+        elif score >= 50:
+            verdict_raw = "conditional"
+        else:
+            verdict_raw = "no_go"
+
+    recommendation = str(result.get("recommendation") or "").strip()
+    if not recommendation:
+        recommendation = "Model output was partially malformed; generated a safe fallback summary."
+
+    deep_analysis = str(result.get("deep_analysis") or "").strip()
+    if not deep_analysis:
+        deep_analysis = (fallback_text or recommendation)[:4000]
+
+    def _as_list(value):
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
+
+    return {
+        "score": score,
+        "verdict": verdict_raw,
+        "recommendation": recommendation,
+        "deep_analysis": deep_analysis,
+        "strengths": _as_list(result.get("strengths")),
+        "risks": _as_list(result.get("risks")),
+        "suggestions": _as_list(result.get("suggestions")),
+        "key_metrics": _as_list(result.get("key_metrics")),
+        "timeline": str(result.get("timeline") or "").strip(),
+        "priority_actions": _as_list(result.get("priority_actions")),
+        "competitive_note": str(result.get("competitive_note") or "").strip(),
+    }
+
+
+def _extract_score_from_text(raw_text: str) -> int:
+    """Best-effort score extraction when model JSON is malformed."""
+    match = re.search(r'"?score"?\s*[:=]\s*(\d{1,3})', raw_text, flags=re.IGNORECASE)
+    if match:
+        try:
+            return min(100, max(0, int(match.group(1))))
+        except ValueError:
+            pass
+    return 50
+
+
+def _build_fallback_result(raw_text: str) -> dict:
+    """Last-resort payload so a role does not fail solely due to parser issues."""
+    score = _extract_score_from_text(raw_text)
+    verdict = "go" if score >= 70 else ("conditional" if score >= 50 else "no_go")
+    summary = raw_text.strip() or "No parseable analysis content returned by model."
+    return {
+        "score": score,
+        "verdict": verdict,
+        "recommendation": "Recovered partial response after JSON parse failure. Review deep_analysis for raw model output.",
+        "deep_analysis": summary[:4000],
+        "strengths": [],
+        "risks": ["Structured JSON parse failed; analysis may be incomplete."],
+        "suggestions": ["Retry this role to obtain a fully structured response."],
+        "key_metrics": [],
+        "timeline": "",
+        "priority_actions": [],
+        "competitive_note": "",
+    }
+
+
+def _write_analysis_result_with_retry(
+    analysis_id: str,
+    project_id: str,
+    result: dict,
+    max_attempts: int = 3,
+) -> None:
+    """Persist completed role result using fresh sessions to survive stale/disconnected connections."""
+    from models import SessionLocal
+
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        db = SessionLocal()
+        try:
+            analysis = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
+            if not analysis:
+                return
+
+            if analysis_id in _CANCELLED_ANALYSES or project_id in _CANCELLED_PROJECTS:
+                return
+
+            analysis.analysis = result
+            analysis.score = min(100, max(0, int(result.get("score", 50))))
+            analysis.status = AgentStatus.complete
+            analysis.error_message = None
+            analysis.completed_at = datetime.utcnow()
+            db.commit()
+            return
+        except (OperationalError, DisconnectionError, DBAPIError) as e:
+            last_error = e
+            db.rollback()
+            if attempt < max_attempts:
+                time.sleep(0.2 * attempt)
+            else:
+                raise
+        finally:
+            db.close()
+
+    if last_error:
+        raise last_error
+
+
+def _mark_analysis_error_with_retry(
+    analysis_id: str,
+    error_message: str,
+    max_attempts: int = 3,
+) -> None:
+    """Persist error status with retries on transient DB disconnects."""
+    from models import SessionLocal
+
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        db = SessionLocal()
+        try:
+            analysis = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
+            if not analysis or analysis.status == AgentStatus.complete:
+                return
+
+            analysis.status = AgentStatus.error
+            analysis.error_message = error_message
+            analysis.completed_at = datetime.utcnow()
+            db.commit()
+            return
+        except (OperationalError, DisconnectionError, DBAPIError) as e:
+            last_error = e
+            db.rollback()
+            if attempt < max_attempts:
+                time.sleep(0.2 * attempt)
+            else:
+                raise
+        finally:
+            db.close()
+
+    if last_error:
+        raise last_error
 
 
 def _repair_json(raw: str) -> dict | None:
@@ -20,7 +178,6 @@ def _repair_json(raw: str) -> dict | None:
     Common issue: max_tokens cuts off mid-string, leaving unterminated strings/arrays.
     Strategy: close open strings, arrays, objects and re-parse.
     """
-    import re
     s = raw.rstrip()
     # Close any open string literal
     # Count unescaped quotes — if odd, close the string
@@ -240,7 +397,6 @@ async def run_single_agent(
                     text = text[:-3]
                 text = text.strip()
 
-            import re
             match = re.search(r'\{[\s\S]*\}', text)
             raw_json = match.group() if match else text
             try:
@@ -249,31 +405,13 @@ async def run_single_agent(
                 # LLM output was likely truncated — attempt repair
                 result = _repair_json(raw_json)
                 if result is None:
-                    raise ValueError(f"Could not parse or repair LLM JSON for {role.value}")
+                    result = _build_fallback_result(text)
 
-            # Re-fetch after the long LLM call — the row may have been
-            # replaced by a concurrent re-run while we awaited the API.
-            analysis = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
-            if not analysis:
-                return  # row was superseded; silently discard result
-
-            # Check if this agent or its whole project was cancelled while the LLM was running
-            if analysis_id in _CANCELLED_ANALYSES or project.id in _CANCELLED_PROJECTS:
-                return  # DB row already marked error/stopped by the stop endpoint
-
-            analysis.analysis = result
-            analysis.score = min(100, max(0, int(result.get("score", 50))))
-            analysis.status = AgentStatus.complete
-            analysis.completed_at = datetime.utcnow()
+            normalized = _normalize_analysis_result(result, fallback_text=text)
+            _write_analysis_result_with_retry(analysis_id, project.id, normalized)
         except Exception as e:
             print(f"❌ C-Suite [{role.value}] crashed: {e}")
-            analysis = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
-            if analysis and analysis.status != AgentStatus.complete:
-                analysis.status = AgentStatus.error
-                analysis.error_message = str(e)
-                analysis.completed_at = datetime.utcnow()
-
-        db.commit()
+            _mark_analysis_error_with_retry(analysis_id, str(e))
     finally:
         db.close()
 
@@ -314,21 +452,11 @@ async def _throttled_agent(project, role, analysis_id, correction_notes):
             await run_single_agent(project, role, analysis_id, correction_notes)
         except Exception as e:
             print(f"❌ C-Suite [{role.value}] crashed: {e}")
-            # Mark as error so the UI doesn't hang
-            from models import SessionLocal
-            from sqlalchemy.exc import InvalidRequestError
-            err_db = SessionLocal()
             try:
-                analysis = err_db.query(CSuiteAnalysis).filter(CSuiteAnalysis.id == analysis_id).first()
-                if analysis and analysis.status != AgentStatus.complete:
-                    analysis.status = AgentStatus.error
-                    analysis.error_message = str(e)
-                    analysis.completed_at = datetime.utcnow()
-                    err_db.commit()
-            except InvalidRequestError:
+                # Mark as error so the UI doesn't hang
+                _mark_analysis_error_with_retry(analysis_id, str(e))
+            except Exception:
                 pass  # Row was deleted by a concurrent re-run — safe to ignore
-            finally:
-                err_db.close()
 
 
 async def run_all_agents_background(project_id: str, correction_notes: str | None = None):

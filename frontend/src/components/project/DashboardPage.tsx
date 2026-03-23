@@ -209,11 +209,8 @@ export default function DashboardPage() {
                             onMouseLeave={() => setHoveredId(null)}
                             onClick={() => {
                                 if (deletingId === project.id) return;
-                                if (project.status === "ideation" || project.status === "csuite_pending") {
-                                    navigate(`/csuite/${project.id}`);
-                                } else {
-                                    navigate(`/project/${project.id}`);
-                                }
+                                const isCsuiteComplete = project.status === "csuite_complete";
+                                navigate(isCsuiteComplete ? `/project/${project.id}` : `/csuite/${project.id}`);
                             }}
                             className={`relative rounded-xl p-5 transition-all cursor-pointer ${panelClass} ${isDark ? "hover:border-purple-500/30 hover:bg-[#14141E]" : "hover:border-purple-300 hover:bg-zinc-50"}`}
                         >

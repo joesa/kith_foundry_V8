@@ -354,6 +354,10 @@ async def run_multi_agent_pipeline(
             print(f"[pipeline] Context compressed: {_tok} tokens, "
                   f"{_ratio:.0%} reduction, semantic={_semantic}")
         except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             print(f"[pipeline] Context compression failed, using truncated: {e}")
 
     # Fallback: truncated full context if compression failed

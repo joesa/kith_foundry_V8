@@ -354,11 +354,14 @@ export default function Workspace() {
 
     useEffect(() => {
         const shouldAutoBuild = searchParams.get("autobuild") === "1";
+        const shouldApplyDesign = searchParams.get("applydesign") === "1";
+        const paramKey = shouldApplyDesign ? "applydesign" : "autobuild";
+
         // hasExistingFiles is null until sandbox_ready arrives — wait for it
-        if (!shouldAutoBuild || !projectId || !wsConnected || bootstrapSentRef.current || hasExistingFiles === null) return;
-        // Don't re-generate if the project already has persisted files
-        if (hasExistingFiles) {
-            // Strip the autobuild param so refreshes don't re-check unnecessarily
+        if ((!shouldAutoBuild && !shouldApplyDesign) || !projectId || !wsConnected || bootstrapSentRef.current || hasExistingFiles === null) return;
+
+        // autobuild (from project page): skip if project already has files
+        if (shouldAutoBuild && !shouldApplyDesign && hasExistingFiles) {
             const next = new URLSearchParams(searchParams);
             next.delete("autobuild");
             navigate({ search: next.toString() }, { replace: true });
@@ -376,9 +379,8 @@ export default function Workspace() {
                 const data = await resp.json();
                 if (data?.prompt) {
                     bootstrapSentRef.current = true;
-                    // Remove autobuild param from URL so page refresh won't regenerate
                     const next = new URLSearchParams(searchParams);
-                    next.delete("autobuild");
+                    next.delete(paramKey);
                     navigate({ search: next.toString() }, { replace: true });
                     sendCommand(data.prompt, selectedModel);
                 }

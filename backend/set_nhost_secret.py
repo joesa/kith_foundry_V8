@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-NHOST_SUBDOMAIN = os.getenv("NHOST_SUBDOMAIN", "kbdcjctqvdyoiolohuwc")
+NHOST_SUBDOMAIN = os.getenv("NHOST_SUBDOMAIN", "ppekvfshprgndfpisdmn")
 NHOST_PAT       = os.getenv("NHOST_PAT", "")
 ENCRYPTION_KEY  = os.getenv("PROVIDER_ENCRYPTION_KEY", "")
 

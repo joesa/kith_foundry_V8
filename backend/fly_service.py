@@ -364,7 +364,7 @@ class FlySandboxWorker:
                     "FLY_APP_NAME": self.app_name,
                     "BRIDGE_SECRET": self._bridge_secret,
                 },
-                "guest": {"cpu_kind": "shared", "cpus": 2, "memory_mb": 2048},
+                "guest": {"cpu_kind": "shared", "cpus": 2, "memory_mb": 4096},
                 "services": [
                     {
                         "protocol": "tcp",

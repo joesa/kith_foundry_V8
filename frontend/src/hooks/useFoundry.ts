@@ -92,19 +92,74 @@ export function useFoundry(projectId?: string) {
         let destroyed = false;
 
         // handleIframeError lives outside connect() so the cleanup can remove the listener
+        const queuePreviewError = (source: string, message: string, stack?: string) => {
+            if (!message) return;
+            pendingErrors.current.push({
+                source,
+                message,
+                stack,
+            });
+            if (errorFlushTimer.current) clearTimeout(errorFlushTimer.current);
+            errorFlushTimer.current = window.setTimeout(sendPreviewErrors, 500);
+        };
+
+        const isLikelyFromPreview = (text: string) => {
+            const preview = previewUrlRef.current;
+            const lower = text.toLowerCase();
+            if (preview) {
+                try {
+                    const host = new URL(preview).host.toLowerCase();
+                    if (host && lower.includes(host)) return true;
+                } catch {
+                    // ignore malformed URL edge cases
+                }
+            }
+            // Fallback patterns that usually come from sandbox runtime stack traces
+            return /(landingpage\.tsx|app\.tsx|src\/components\/|uncaught referenceerror|uncaught syntaxerror|vite\/deps\/lucide-react)/i.test(text);
+        };
+
         const handleIframeError = (event: MessageEvent) => {
             if (event.data?.type === "preview-error" && event.data?.message) {
-                pendingErrors.current.push({
-                    source: event.data.source || "browser",
-                    message: event.data.message,
-                    stack: event.data.stack,
-                });
-                // Debounce: batch errors over 500ms window
-                if (errorFlushTimer.current) clearTimeout(errorFlushTimer.current);
-                errorFlushTimer.current = window.setTimeout(sendPreviewErrors, 500);
+                queuePreviewError(
+                    event.data.source || "browser",
+                    event.data.message,
+                    event.data.stack
+                );
             }
         };
+
+        // Cross-origin previews cannot always be script-injected.
+        // Capture top-level error/rejection events as a fallback and
+        // forward likely preview-runtime failures to backend auto-fix.
+        const handleWindowError = (event: ErrorEvent) => {
+            const parts = [
+                event.message || "",
+                event.filename || "",
+                String(event.lineno || ""),
+                String(event.colno || ""),
+                event.error?.stack || "",
+            ].filter(Boolean);
+            const combined = parts.join(" ");
+            if (!isLikelyFromPreview(combined)) return;
+            queuePreviewError(
+                "runtime",
+                event.message || "Runtime error in preview",
+                event.error?.stack || `${event.filename || ""}:${event.lineno || 0}:${event.colno || 0}`
+            );
+        };
+
+        const handleWindowRejection = (event: PromiseRejectionEvent) => {
+            const reason = event.reason;
+            const msg = reason?.message || String(reason || "Unhandled promise rejection");
+            const stack = reason?.stack || "";
+            const combined = `${msg} ${stack}`;
+            if (!isLikelyFromPreview(combined)) return;
+            queuePreviewError("promise", msg, stack);
+        };
+
         window.addEventListener("message", handleIframeError);
+        window.addEventListener("error", handleWindowError);
+        window.addEventListener("unhandledrejection", handleWindowRejection);
 
         const connect = () => {
             if (destroyed) return;
@@ -323,6 +378,8 @@ export function useFoundry(projectId?: string) {
             if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
             setWsConnected(false);
             window.removeEventListener("message", handleIframeError);
+            window.removeEventListener("error", handleWindowError);
+            window.removeEventListener("unhandledrejection", handleWindowRejection);
             if (errorFlushTimer.current) clearTimeout(errorFlushTimer.current);
             if (ws.current) ws.current.close();
         };

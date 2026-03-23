@@ -66,6 +66,17 @@ def _resolve_ideation_model(user_id: str | None = None) -> dict:
     return {"model": _get_model(), "api_key": None, "api_base": None, "provider_name": "Default"}
 
 
+def _compute_idea_hash(idea: dict[str, Any]) -> str:
+    """Stable hash for deduping ideas across users and sessions."""
+    payload = {
+        "name": (idea.get("name") or "").strip().lower(),
+        "description": (idea.get("description") or "").strip().lower()[:220],
+        "target_market": (idea.get("target_market") or idea.get("target_audience") or "").strip().lower()[:140],
+        "why_now": (idea.get("why_now") or "").strip().lower()[:140],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
 def _repair_json(text: str) -> dict | None:
     """Attempt to repair truncated JSON from LLM output."""
     import re
@@ -346,32 +357,68 @@ Respond with ONLY valid JSON:
     "score": 75
 }"""
 
-    # Try up to 3 times to get a unique idea
-    for attempt in range(3):
-        result = await _llm_json(system, f"Generate attempt {attempt + 1}. Be creative and specific. Avoid common ideas like 'AI writing assistant' or 'project management tool'.", user_id=user.id)
+    # Build anti-repeat context from recent global ideas and user history.
+    recent_global = db.query(GeneratedIdeaGlobal).order_by(GeneratedIdeaGlobal.created_at.desc()).limit(120).all()
+    recent_summaries = [g.summary for g in recent_global if g.summary]
+    recent_names = [s.split(":", 1)[0].strip() for s in recent_summaries[:60]]
 
-        # Hash the idea for dedup
-        idea_hash = hashlib.sha256(
-            json.dumps({"name": result.get("name", ""), "desc": result.get("description", "")[:100]}, sort_keys=True).encode()
-        ).hexdigest()
+    user_saved = (
+        db.query(SavedIdea)
+        .filter(SavedIdea.user_id == user.id)
+        .order_by(SavedIdea.created_at.desc())
+        .limit(40)
+        .all()
+    )
+    user_projects = (
+        db.query(Project)
+        .filter(Project.user_id == user.id)
+        .order_by(Project.created_at.desc())
+        .limit(40)
+        .all()
+    )
+    user_used_names = [s.name for s in user_saved if s.name] + [p.name for p in user_projects if p.name]
 
-        existing = db.query(GeneratedIdeaGlobal).filter(GeneratedIdeaGlobal.idea_hash == idea_hash).first()
-        if existing and existing.claimed_by and existing.claimed_by != user.id:
-            # Another user is building this — try again
+    avoid_names = [n for n in (recent_names + user_used_names) if n][:80]
+    avoid_block = "\n".join(f"- {n}" for n in avoid_names)
+    seen_hashes_this_request: set[str] = set()
+    last_result: dict[str, Any] | None = None
+
+    # Try multiple times to guarantee novelty.
+    for attempt in range(8):
+        nonce = str(uuid.uuid4())[:10]
+        user_msg = (
+            f"Generate attempt {attempt + 1} (nonce={nonce}). "
+            "Be creative and specific. Avoid common ideas like 'AI writing assistant' or 'project management tool'.\n\n"
+            "Do NOT generate anything similar to these previously seen ideas:\n"
+            f"{avoid_block}"
+        )
+        result = await _llm_json(system, user_msg, user_id=user.id)
+        last_result = result
+
+        idea_hash = _compute_idea_hash(result)
+        if idea_hash in seen_hashes_this_request:
             continue
-        if not existing:
-            # It's unique! Store in global table
-            global_idea = GeneratedIdeaGlobal(
-                id=str(uuid.uuid4()),
-                idea_hash=idea_hash,
-                summary=f"{result.get('name', '')}: {result.get('description', '')[:200]}",
-            )
-            db.add(global_idea)
-            db.commit()
-            return {"idea": result}
+        seen_hashes_this_request.add(idea_hash)
+
+        # Any existing hash means this idea has been shown before; reject it.
+        existing = db.query(GeneratedIdeaGlobal).filter(GeneratedIdeaGlobal.idea_hash == idea_hash).first()
+        if existing:
+            continue
+
+        # It's globally new. Store in global table so it can never be shown again.
+        global_idea = GeneratedIdeaGlobal(
+            id=str(uuid.uuid4()),
+            idea_hash=idea_hash,
+            summary=f"{result.get('name', '')}: {result.get('description', '')[:200]}",
+        )
+        db.add(global_idea)
+        db.commit()
+        return {"idea": result}
 
     # If all attempts collided (very unlikely), still return the last one
-    return {"idea": result}
+    if last_result:
+        return {"idea": last_result}
+    raise HTTPException(status_code=500, detail="Could not generate an idea")
 
 
 @router.post("/questionnaire")

@@ -298,5 +298,9 @@ async def search_relevant(
         query_embedding = await embed_text(query, model=model)
         return search_similar(db, project_id, query_embedding, top_k=top_k)
     except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         print(f"[embedding] Semantic search failed: {e}")
         return []

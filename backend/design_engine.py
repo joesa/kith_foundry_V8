@@ -23,9 +23,10 @@ from typing import Any
 import litellm
 from sqlalchemy.orm import Session
 
+from brain_service import update_project_design_mode
+from design_mode_service import ModeClassificationResult, design_mode_service
 from models import (
     Artifact, ArtifactType, AgentStatus, Project, CSuiteAnalysis,
-    DesignMockup, MockupStatus,
 )
 from prompts import DESIGN_ARCHITECT_PROMPT, DESIGN_BRIEF_PROMPT
 from circuit_breaker import llm_breaker, CircuitOpenError
@@ -111,7 +112,124 @@ def _compose_project_context(project: Project, db: Session) -> str:
     if project.design_preferences:
         parts.append(f"\n**Design Preferences:** {json.dumps(project.design_preferences)}")
 
+    if project.product_mode or project.style_mode:
+        parts.append("\n**Persisted Design Mode:**")
+        if project.product_mode:
+            parts.append(f"- Product Mode: {project.product_mode}")
+        if project.style_mode:
+            parts.append(f"- Style Mode: {project.style_mode}")
+        if project.mode_confidence is not None:
+            parts.append(f"- Confidence: {float(project.mode_confidence):.4f}")
+        parts.append(f"- Locked By User: {'yes' if project.design_mode_locked else 'no'}")
+
     return "\n".join(parts)
+
+
+def _extract_project_features(project: Project) -> list[str]:
+    features: list[str] = []
+    if project.problem_statement:
+        features.append(project.problem_statement)
+
+    if isinstance(project.design_preferences, dict):
+        raw_features = project.design_preferences.get("features")
+        if isinstance(raw_features, list):
+            features.extend(str(item) for item in raw_features if item)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in features:
+        normalized = item.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(normalized)
+    return deduped
+
+
+async def _resolve_design_mode_selection(
+    project: Project,
+    model_id: str,
+    llm_kwargs: dict,
+    *,
+    design_mode: str | None = None,
+    design_style: str | None = None,
+) -> tuple[ModeClassificationResult, dict[str, Any], str]:
+    """Resolve design mode/style from explicit overrides, stored state, or LLM classification."""
+    if not design_mode and not design_style and project.design_mode_locked and project.product_mode and project.style_mode:
+        confidence = float(project.mode_confidence) if project.mode_confidence is not None else 1.0
+        classification = ModeClassificationResult(
+            productMode=project.product_mode,
+            styleMode=project.style_mode,
+            confidence=confidence,
+            alternatives=[],
+            reasoning={},
+        )
+        context = design_mode_service.get_mode_context(
+            classification.productMode,
+            classification.styleMode,
+            confidence=classification.confidence,
+            locked_by_user=True,
+        )
+        return classification, context, "locked"
+
+    if not design_mode and not design_style and project.product_mode and project.style_mode:
+        confidence = float(project.mode_confidence) if project.mode_confidence is not None else 1.0
+        classification = ModeClassificationResult(
+            productMode=project.product_mode,
+            styleMode=project.style_mode,
+            confidence=confidence,
+            alternatives=[],
+            reasoning={},
+        )
+        context = design_mode_service.get_mode_context(
+            classification.productMode,
+            classification.styleMode,
+            confidence=classification.confidence,
+            locked_by_user=bool(project.design_mode_locked),
+        )
+        return classification, context, "stored"
+
+    preferred_style = design_style
+    if not preferred_style and isinstance(project.design_preferences, dict):
+        style_pref = project.design_preferences.get("style")
+        if isinstance(style_pref, str) and design_mode_service.validate_style_mode(style_pref):
+            preferred_style = style_pref
+
+    classifier_prompt = "\n".join(
+        part for part in [project.name, project.description, project.problem_statement] if part
+    )
+    classification = await design_mode_service.classify_design_mode(
+        model_id=model_id,
+        llm_kwargs=llm_kwargs,
+        prompt=classifier_prompt or project.name,
+        app_name=project.name,
+        app_type=design_mode,
+        description=project.description or project.problem_statement,
+        features=_extract_project_features(project),
+        target_audience=project.target_audience,
+        preferred_style=preferred_style,
+        required_product_mode=design_mode,
+    )
+    if design_style:
+        classification.styleMode = design_style
+
+    context = design_mode_service.get_mode_context(
+        classification.productMode,
+        classification.styleMode,
+        confidence=classification.confidence,
+        locked_by_user=bool(project.design_mode_locked),
+    )
+    return classification, context, "user" if (design_mode or design_style) else "auto"
+
+
+def _format_mode_context_for_prompt(mode_context: dict[str, Any] | None) -> str:
+    if not mode_context:
+        return ""
+    return "\n" + design_mode_service.build_mode_context_block(
+        mode_context["productMode"],
+        mode_context["styleMode"],
+        confidence=mode_context.get("confidence"),
+        locked_by_user=bool(mode_context.get("lockedByUser")),
+    ) + "\n"
 
 
 async def _call_llm(
@@ -160,14 +278,38 @@ async def generate_design_brief(
     db: Session,
     model_id: str,
     llm_kwargs: dict,
+    design_mode: str | None = None,
+    design_style: str | None = None,
+    mode_context: dict[str, Any] | None = None,
 ) -> dict | None:
     """
     Step 1 of the Design Engine pipeline.
     Generates a design intelligence brief from project context.
     """
     context = _compose_project_context(project, db)
-    user_prompt = f"""Generate a design intelligence brief for this product:
 
+    if design_mode and design_style:
+        mode_style_directive = (
+            f"\n**Design Mode: {design_mode} + Style: {design_style}**\n"
+            f"Tailor all research and recommendations for a **{design_mode}** "
+            f"built in the **{design_style}** visual style.\n"
+        )
+    elif design_mode:
+        mode_style_directive = (
+            f"\n**Design Mode: {design_mode}** — tailor all recommendations "
+            f"specifically for this application type.\n"
+        )
+    elif design_style:
+        mode_style_directive = (
+            f"\n**Design Style: {design_style}** — align all color direction, "
+            f"typography, and mood recommendations with this visual style.\n"
+        )
+    else:
+        mode_style_directive = ""
+
+    user_prompt = f"""Generate a design intelligence brief for this product:
+{mode_style_directive}
+{_format_mode_context_for_prompt(mode_context)}
 {context}
 
 Output strict JSON as specified. Focus on making the design direction authentic
@@ -183,6 +325,9 @@ async def generate_design_system(
     llm_kwargs: dict,
     *,
     design_brief: dict | None = None,
+    design_mode: str | None = None,
+    design_style: str | None = None,
+    mode_context: dict[str, Any] | None = None,
 ) -> dict | None:
     """
     Step 2 of the Design Engine pipeline.
@@ -190,8 +335,38 @@ async def generate_design_system(
     interactions, builder prompt).
 
     If a design_brief is provided, it's included as additional context.
+    design_mode: structural blueprint — determines layout, pages, navigation pattern.
+    design_style: visual language — determines color palette, typography, spacing aesthetic.
+    When both are provided, Mode drives structure and Style drives visual output.
     """
     context = _compose_project_context(project, db)
+    mode_context_block = _format_mode_context_for_prompt(mode_context)
+
+    mode_style_directive = ""
+    if design_mode and design_style:
+        mode_style_directive = f"""
+
+**Design System: {design_mode} + {design_style}**
+- **Mode ({design_mode})**: Use this to determine layout framework, navigation pattern,
+  page hierarchy, primary components, and structural decisions.
+- **Style ({design_style})**: Use this to determine color palette, typography personality,
+  spacing density, border radius language, shadow depth, and UI component aesthetic.
+Set `design_framework.design_mode` to "{design_mode}" and
+`design_framework.design_style` to "{design_style}" in your output."""
+    elif design_mode:
+        mode_style_directive = f"""
+
+**Design Mode: {design_mode}**
+Optimize ALL layout patterns, navigation structure, section organization, page hierarchy,
+and component design specifically for a **{design_mode}** application.
+Set `design_framework.design_mode` to "{design_mode}" in your output."""
+    elif design_style:
+        mode_style_directive = f"""
+
+**Design Style: {design_style}**
+Apply the **{design_style}** visual language throughout: color palette selection,
+typography personality, spacing density, UI component aesthetic, and overall look-and-feel.
+Set `design_framework.design_style` to "{design_style}" in your output."""
 
     brief_section = ""
     if design_brief:
@@ -207,6 +382,8 @@ color direction, typography direction, and anti-patterns."""
     user_prompt = f"""Generate a complete design system for this product:
 
 {context}
+{mode_context_block}
+{mode_style_directive}
 {brief_section}
 
 Generate ALL pages needed for a fully functional application.
@@ -223,6 +400,8 @@ async def run_full_design_pipeline(
     llm_kwargs: dict,
     *,
     progress_callback=None,
+    design_mode: str | None = None,
+    design_style: str | None = None,
 ) -> dict:
     """
     Run the complete Design Engine pipeline:
@@ -233,12 +412,51 @@ async def run_full_design_pipeline(
 
     progress_callback(stage: str, data: dict) is called at each step
     if provided (for WebSocket status updates).
+    design_mode: structural blueprint ('Analytics Dashboard', 'AI Chat Interface', etc.)
+    design_style: visual language ('Stripe SaaS', 'Apple Editorial', 'Neo-Brutalism', etc.)
+    Combine both for precise design output: mode drives structure, style drives aesthetics.
     """
     if progress_callback:
         await progress_callback("design_brief_started", {})
 
+    classification, mode_context, source = await _resolve_design_mode_selection(
+        project,
+        model_id,
+        llm_kwargs,
+        design_mode=design_mode,
+        design_style=design_style,
+    )
+    resolved_mode = classification.productMode
+    resolved_style = classification.styleMode
+
+    if source not in {"locked", "stored"}:
+        update_project_design_mode(
+            db,
+            project.id,
+            product_mode=resolved_mode,
+            style_mode=resolved_style,
+            confidence=classification.confidence,
+            source=source,
+            locked_by_user=True if source == "user" and project.design_mode_locked else None,
+            record_history=True,
+        )
+
+    if progress_callback:
+        await progress_callback(
+            "design_mode_selected",
+            {
+                "productMode": resolved_mode,
+                "styleMode": resolved_style,
+                "confidence": classification.confidence,
+                "source": source,
+            },
+        )
+
     # Step 1: Design Brief
-    brief = await generate_design_brief(project, db, model_id, llm_kwargs)
+    brief = await generate_design_brief(
+        project, db, model_id, llm_kwargs,
+        design_mode=resolved_mode, design_style=resolved_style, mode_context=mode_context,
+    )
     if progress_callback:
         await progress_callback("design_brief_complete", {"brief": brief})
 
@@ -247,11 +465,19 @@ async def run_full_design_pipeline(
         await progress_callback("design_system_started", {})
 
     design_system = await generate_design_system(
-        project, db, model_id, llm_kwargs, design_brief=brief
+        project, db, model_id, llm_kwargs,
+        design_brief=brief, design_mode=resolved_mode, design_style=resolved_style, mode_context=mode_context,
     )
 
     if not design_system:
         return {"error": "Design system generation failed", "brief": brief}
+
+    framework = design_system.setdefault("design_framework", {})
+    framework["design_mode"] = resolved_mode
+    framework["design_style"] = resolved_style
+    design_system["mode_context"] = mode_context
+    design_system["composition_blueprint"] = mode_context.get("blueprint", {})
+    design_system["recommended_patterns"] = mode_context.get("recommendedPatterns", [])
 
     if progress_callback:
         await progress_callback("design_system_complete", {"design_system": design_system})
@@ -263,6 +489,10 @@ async def run_full_design_pipeline(
         "brief": brief,
         "design_system": design_system,
         "builder_prompt": design_system.get("builder_prompt", ""),
+        "design_mode": resolved_mode,
+        "design_style": resolved_style,
+        "mode_context": mode_context,
+        "classification": classification.model_dump(),
     }
 
 
@@ -390,6 +620,37 @@ def build_design_context_for_agent(design_system: dict) -> str:
         parts.append(f"**Product:** {overview.get('name', 'Unknown')}")
         parts.append(f"**Tone:** {overview.get('tone', '')}")
         parts.append(f"**Type:** {overview.get('product_type', '')}\n")
+
+    mode_context = design_system.get("mode_context", {})
+    framework = design_system.get("design_framework", {})
+    if mode_context or framework.get("design_mode") or framework.get("design_style"):
+        product_mode = mode_context.get("productMode") or framework.get("design_mode")
+        style_mode = mode_context.get("styleMode") or framework.get("design_style")
+        if product_mode or style_mode:
+            parts.append("## Design Mode Context")
+        if product_mode:
+            parts.append(f"**Product Mode:** {product_mode}")
+        if style_mode:
+            parts.append(f"**Style Mode:** {style_mode}")
+        if mode_context.get("designType"):
+            parts.append(f"**Design Type:** {mode_context['designType']}")
+        if mode_context.get("layoutModel"):
+            parts.append(f"**Layout Model:** {mode_context['layoutModel']}")
+        if mode_context.get("density"):
+            parts.append(f"**Density:** {mode_context['density']}")
+        if mode_context.get("recommendedPatterns"):
+            parts.append("**Recommended Patterns:** " + ", ".join(mode_context["recommendedPatterns"]))
+        blueprint = mode_context.get("blueprint", {})
+        if blueprint.get("defaultPages"):
+            parts.append("**Blueprint Pages:** " + ", ".join(blueprint["defaultPages"]))
+        if blueprint.get("sectionOrder"):
+            parts.append("**Blueprint Section Order:** " + " -> ".join(blueprint["sectionOrder"]))
+        if blueprint.get("responsiveRules"):
+            parts.append(
+                "**Blueprint Responsive Rules:** "
+                + "; ".join(f"{key}={value}" for key, value in blueprint["responsiveRules"].items())
+            )
+        parts.append("")
 
     # Design tokens CSS
     css = extract_design_tokens_css(design_system)

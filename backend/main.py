@@ -32,7 +32,7 @@ from error_resolver import attempt_fix, reset_fix_cycle
 
 from fly_service import get_or_create_worker, release_worker
 from models import Base, engine, SessionLocal, Project, File, Message, get_db
-from auth import get_current_user_ws, get_current_user
+from auth import get_current_user_ws, get_current_user, resolve_user_from_token
 import storage_service
 import models_api
 import provider_api
@@ -291,9 +291,7 @@ async def project_events_sse(
     if not token:
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
     try:
-        from auth_supabase import _resolve_user, _ensure_user_in_db
-        user_info = await _resolve_user(token)
-        user = _ensure_user_in_db(db, user_info)
+        user = await resolve_user_from_token(token, db)
     except Exception:
         return JSONResponse(status_code=401, content={"detail": "Invalid token"})
 
@@ -413,6 +411,512 @@ async def _persist_files(db, project_id: str, write_edits: list[dict]):
 
     if storage_error:
         raise storage_error
+
+
+# ── Lucide-react icon sanitizer constants ─────────────────────────────────────
+# Maps hallucinated / incorrectly-cased lucide-react icon names to real exports.
+_LUCIDE_ICON_RENAMES: dict[str, str] = {
+    "GitDiff": "GitCompare",
+    "Close": "X",
+    "Checkmark": "Check",
+    "Cancel": "X",
+    "Gear": "Settings",
+    "Config": "Settings",
+    "GitHub": "Github",
+    "GitLab": "Gitlab",
+    "Warning": "AlertTriangle",
+    "Danger": "AlertCircle",
+    "InfoCircle": "Info",
+    "QuestionCircle": "HelpCircle",
+    "ErrorCircle": "XCircle",
+    "SuccessCircle": "CheckCircle",
+    "Money": "DollarSign",
+    "Dollar": "DollarSign",
+    "Delete": "Trash2",
+    "People": "Users",
+    "ExternalLinkAlt": "ExternalLink",
+    "Spinner": "LoaderCircle",
+    "Loading": "LoaderCircle",
+}
+
+_LUCIDE_KNOWN_ICONS: frozenset = frozenset({
+    "AArrowDown", "AArrowUp", "ALargeSmall", "Accessibility", "Activity", "ActivitySquare", "AirVent", "Airplay",
+    "AlarmCheck", "AlarmClock", "AlarmClockCheck", "AlarmClockMinus", "AlarmClockOff", "AlarmClockPlus", "AlarmMinus", "AlarmPlus",
+    "AlarmSmoke", "Album", "AlertCircle", "AlertOctagon", "AlertTriangle", "AlignCenter", "AlignCenterHorizontal", "AlignCenterVertical",
+    "AlignEndHorizontal", "AlignEndVertical", "AlignHorizontalDistributeCenter", "AlignHorizontalDistributeEnd", "AlignHorizontalDistributeStart", "AlignHorizontalJustifyCenter", "AlignHorizontalJustifyEnd", "AlignHorizontalJustifyStart",
+    "AlignHorizontalSpaceAround", "AlignHorizontalSpaceBetween", "AlignJustify", "AlignLeft", "AlignRight", "AlignStartHorizontal", "AlignStartVertical", "AlignVerticalDistributeCenter",
+    "AlignVerticalDistributeEnd", "AlignVerticalDistributeStart", "AlignVerticalJustifyCenter", "AlignVerticalJustifyEnd", "AlignVerticalJustifyStart", "AlignVerticalSpaceAround", "AlignVerticalSpaceBetween", "Ambulance",
+    "Ampersand", "Ampersands", "Amphora", "Anchor", "Angry", "Annoyed", "Antenna", "Anvil",
+    "Aperture", "AppWindow", "AppWindowMac", "Apple", "Archive", "ArchiveRestore", "ArchiveX", "AreaChart",
+    "Armchair", "ArrowBigDown", "ArrowBigDownDash", "ArrowBigLeft", "ArrowBigLeftDash", "ArrowBigRight", "ArrowBigRightDash", "ArrowBigUp",
+    "ArrowBigUpDash", "ArrowDown", "ArrowDown01", "ArrowDown10", "ArrowDownAZ", "ArrowDownAz", "ArrowDownCircle", "ArrowDownFromLine",
+    "ArrowDownLeft", "ArrowDownLeftFromCircle", "ArrowDownLeftFromSquare", "ArrowDownLeftSquare", "ArrowDownNarrowWide", "ArrowDownRight", "ArrowDownRightFromCircle", "ArrowDownRightFromSquare",
+    "ArrowDownRightSquare", "ArrowDownSquare", "ArrowDownToDot", "ArrowDownToLine", "ArrowDownUp", "ArrowDownWideNarrow", "ArrowDownZA", "ArrowDownZa",
+    "ArrowLeft", "ArrowLeftCircle", "ArrowLeftFromLine", "ArrowLeftRight", "ArrowLeftSquare", "ArrowLeftToLine", "ArrowRight", "ArrowRightCircle",
+    "ArrowRightFromLine", "ArrowRightLeft", "ArrowRightSquare", "ArrowRightToLine", "ArrowUp", "ArrowUp01", "ArrowUp10", "ArrowUpAZ",
+    "ArrowUpAz", "ArrowUpCircle", "ArrowUpDown", "ArrowUpFromDot", "ArrowUpFromLine", "ArrowUpLeft", "ArrowUpLeftFromCircle", "ArrowUpLeftFromSquare",
+    "ArrowUpLeftSquare", "ArrowUpNarrowWide", "ArrowUpRight", "ArrowUpRightFromCircle", "ArrowUpRightFromSquare", "ArrowUpRightSquare", "ArrowUpSquare", "ArrowUpToLine",
+    "ArrowUpWideNarrow", "ArrowUpZA", "ArrowUpZa", "ArrowsUpFromLine", "Asterisk", "AsteriskSquare", "AtSign", "Atom",
+    "AudioLines", "AudioWaveform", "Award", "Axe", "Axis3D", "Axis3d", "Baby", "Backpack",
+    "Badge", "BadgeAlert", "BadgeCent", "BadgeCheck", "BadgeDollarSign", "BadgeEuro", "BadgeHelp", "BadgeIndianRupee",
+    "BadgeInfo", "BadgeJapaneseYen", "BadgeMinus", "BadgePercent", "BadgePlus", "BadgePoundSterling", "BadgeQuestionMark", "BadgeRussianRuble",
+    "BadgeSwissFranc", "BadgeTurkishLira", "BadgeX", "BaggageClaim", "Balloon", "Ban", "Banana", "Bandage",
+    "Banknote", "BanknoteArrowDown", "BanknoteArrowUp", "BanknoteX", "BarChart", "BarChart2", "BarChart3", "BarChart4",
+    "BarChartBig", "BarChartHorizontal", "BarChartHorizontalBig", "Barcode", "Barrel", "Baseline", "Bath", "Battery",
+    "BatteryCharging", "BatteryFull", "BatteryLow", "BatteryMedium", "BatteryPlus", "BatteryWarning", "Beaker", "Bean",
+    "BeanOff", "Bed", "BedDouble", "BedSingle", "Beef", "Beer", "BeerOff", "Bell",
+    "BellDot", "BellElectric", "BellMinus", "BellOff", "BellPlus", "BellRing", "BetweenHorizonalEnd", "BetweenHorizonalStart",
+    "BetweenHorizontalEnd", "BetweenHorizontalStart", "BetweenVerticalEnd", "BetweenVerticalStart", "BicepsFlexed", "Bike", "Binary", "Binoculars",
+    "Biohazard", "Bird", "Birdhouse", "Bitcoin", "Blend", "Blinds", "Blocks", "Bluetooth",
+    "BluetoothConnected", "BluetoothOff", "BluetoothSearching", "Bold", "Bolt", "Bomb", "Bone", "Book",
+    "BookA", "BookAlert", "BookAudio", "BookCheck", "BookCopy", "BookDashed", "BookDown", "BookHeadphones",
+    "BookHeart", "BookImage", "BookKey", "BookLock", "BookMarked", "BookMinus", "BookOpen", "BookOpenCheck",
+    "BookOpenText", "BookPlus", "BookSearch", "BookTemplate", "BookText", "BookType", "BookUp", "BookUp2",
+    "BookUser", "BookX", "Bookmark", "BookmarkCheck", "BookmarkMinus", "BookmarkPlus", "BookmarkX", "BoomBox",
+    "Bot", "BotMessageSquare", "BotOff", "BottleWine", "BowArrow", "Box", "BoxSelect", "Boxes",
+    "Braces", "Brackets", "Brain", "BrainCircuit", "BrainCog", "BrickWall", "BrickWallFire", "BrickWallShield",
+    "Briefcase", "BriefcaseBusiness", "BriefcaseConveyorBelt", "BriefcaseMedical", "BringToFront", "Brush", "BrushCleaning", "Bubbles",
+    "Bug", "BugOff", "BugPlay", "Building", "Building2", "Bus", "BusFront", "Cable",
+    "CableCar", "Cake", "CakeSlice", "Calculator", "Calendar", "Calendar1", "CalendarArrowDown", "CalendarArrowUp",
+    "CalendarCheck", "CalendarCheck2", "CalendarClock", "CalendarCog", "CalendarDays", "CalendarFold", "CalendarHeart", "CalendarMinus",
+    "CalendarMinus2", "CalendarOff", "CalendarPlus", "CalendarPlus2", "CalendarRange", "CalendarSearch", "CalendarSync", "CalendarX",
+    "CalendarX2", "Calendars", "Camera", "CameraOff", "CandlestickChart", "Candy", "CandyCane", "CandyOff",
+    "Cannabis", "CannabisOff", "Captions", "CaptionsOff", "Car", "CarFront", "CarTaxiFront", "Caravan",
+    "CardSim", "Carrot", "CaseLower", "CaseSensitive", "CaseUpper", "CassetteTape", "Cast", "Castle",
+    "Cat", "Cctv", "ChartArea", "ChartBar", "ChartBarBig", "ChartBarDecreasing", "ChartBarIncreasing", "ChartBarStacked",
+    "ChartCandlestick", "ChartColumn", "ChartColumnBig", "ChartColumnDecreasing", "ChartColumnIncreasing", "ChartColumnStacked", "ChartGantt", "ChartLine",
+    "ChartNetwork", "ChartNoAxesColumn", "ChartNoAxesColumnDecreasing", "ChartNoAxesColumnIncreasing", "ChartNoAxesCombined", "ChartNoAxesGantt", "ChartPie", "ChartScatter",
+    "ChartSpline", "Check", "CheckCheck", "CheckCircle", "CheckCircle2", "CheckLine", "CheckSquare", "CheckSquare2",
+    "ChefHat", "Cherry", "ChessBishop", "ChessKing", "ChessKnight", "ChessPawn", "ChessQueen", "ChessRook",
+    "ChevronDown", "ChevronDownCircle", "ChevronDownSquare", "ChevronFirst", "ChevronLast", "ChevronLeft", "ChevronLeftCircle", "ChevronLeftSquare",
+    "ChevronRight", "ChevronRightCircle", "ChevronRightSquare", "ChevronUp", "ChevronUpCircle", "ChevronUpSquare", "ChevronsDown", "ChevronsDownUp",
+    "ChevronsLeft", "ChevronsLeftRight", "ChevronsLeftRightEllipsis", "ChevronsRight", "ChevronsRightLeft", "ChevronsUp", "ChevronsUpDown", "Chrome",
+    "Chromium", "Church", "Cigarette", "CigaretteOff", "Circle", "CircleAlert", "CircleArrowDown", "CircleArrowLeft",
+    "CircleArrowOutDownLeft", "CircleArrowOutDownRight", "CircleArrowOutUpLeft", "CircleArrowOutUpRight", "CircleArrowRight", "CircleArrowUp", "CircleCheck", "CircleCheckBig",
+    "CircleChevronDown", "CircleChevronLeft", "CircleChevronRight", "CircleChevronUp", "CircleDashed", "CircleDivide", "CircleDollarSign", "CircleDot",
+    "CircleDotDashed", "CircleEllipsis", "CircleEqual", "CircleFadingArrowUp", "CircleFadingPlus", "CircleGauge", "CircleHelp", "CircleMinus",
+    "CircleOff", "CircleParking", "CircleParkingOff", "CirclePause", "CirclePercent", "CirclePile", "CirclePlay", "CirclePlus",
+    "CirclePoundSterling", "CirclePower", "CircleQuestionMark", "CircleSlash", "CircleSlash2", "CircleSlashed", "CircleSmall", "CircleStar",
+    "CircleStop", "CircleUser", "CircleUserRound", "CircleX", "CircuitBoard", "Citrus", "Clapperboard", "Clipboard",
+    "ClipboardCheck", "ClipboardClock", "ClipboardCopy", "ClipboardEdit", "ClipboardList", "ClipboardMinus", "ClipboardPaste", "ClipboardPen",
+    "ClipboardPenLine", "ClipboardPlus", "ClipboardSignature", "ClipboardType", "ClipboardX", "Clock", "Clock1", "Clock10",
+    "Clock11", "Clock12", "Clock2", "Clock3", "Clock4", "Clock5", "Clock6", "Clock7",
+    "Clock8", "Clock9", "ClockAlert", "ClockArrowDown", "ClockArrowUp", "ClockCheck", "ClockFading", "ClockPlus",
+    "ClosedCaption", "Cloud", "CloudAlert", "CloudBackup", "CloudCheck", "CloudCog", "CloudDownload", "CloudDrizzle",
+    "CloudFog", "CloudHail", "CloudLightning", "CloudMoon", "CloudMoonRain", "CloudOff", "CloudRain", "CloudRainWind",
+    "CloudSnow", "CloudSun", "CloudSunRain", "CloudSync", "CloudUpload", "Cloudy", "Clover", "Club",
+    "Code", "Code2", "CodeSquare", "CodeXml", "Codepen", "Codesandbox", "Coffee", "Cog",
+    "Coins", "Columns", "Columns2", "Columns3", "Columns3Cog", "Columns4", "ColumnsSettings", "Combine",
+    "Command", "Compass", "Component", "Computer", "ConciergeBell", "Cone", "Construction", "Contact",
+    "Contact2", "ContactRound", "Container", "Contrast", "Cookie", "CookingPot", "Copy", "CopyCheck",
+    "CopyMinus", "CopyPlus", "CopySlash", "CopyX", "Copyleft", "Copyright", "CornerDownLeft", "CornerDownRight",
+    "CornerLeftDown", "CornerLeftUp", "CornerRightDown", "CornerRightUp", "CornerUpLeft", "CornerUpRight", "Cpu", "CreativeCommons",
+    "CreditCard", "Croissant", "Crop", "Cross", "Crosshair", "Crown", "Cuboid", "CupSoda",
+    "CurlyBraces", "Currency", "Cylinder", "Dam", "Database", "DatabaseBackup", "DatabaseSearch", "DatabaseZap",
+    "DecimalsArrowLeft", "DecimalsArrowRight", "Delete", "Dessert", "Diameter", "Diamond", "DiamondMinus", "DiamondPercent",
+    "DiamondPlus", "Dice1", "Dice2", "Dice3", "Dice4", "Dice5", "Dice6", "Dices",
+    "Diff", "Disc", "Disc2", "Disc3", "DiscAlbum", "Divide", "DivideCircle", "DivideSquare",
+    "Dna", "DnaOff", "Dock", "Dog", "DollarSign", "Donut", "DoorClosed", "DoorClosedLocked",
+    "DoorOpen", "Dot", "DotSquare", "Download", "DownloadCloud", "DraftingCompass", "Drama", "Dribbble",
+    "Drill", "Drone", "Droplet", "DropletOff", "Droplets", "Drum", "Drumstick", "Dumbbell",
+    "Ear", "EarOff", "Earth", "EarthLock", "Eclipse", "Edit", "Edit2", "Edit3",
+    "Egg", "EggFried", "EggOff", "Ellipsis", "EllipsisVertical", "Equal", "EqualApproximately", "EqualNot",
+    "EqualSquare", "Eraser", "EthernetPort", "Euro", "EvCharger", "Expand", "ExternalLink", "Eye",
+    "EyeClosed", "EyeOff", "Facebook", "Factory", "Fan", "FastForward", "Feather", "Fence",
+    "FerrisWheel", "Figma", "File", "FileArchive", "FileAudio", "FileAudio2", "FileAxis3D", "FileAxis3d",
+    "FileBadge", "FileBadge2", "FileBarChart", "FileBarChart2", "FileBox", "FileBraces", "FileBracesCorner", "FileChartColumn",
+    "FileChartColumnIncreasing", "FileChartLine", "FileChartPie", "FileCheck", "FileCheck2", "FileCheckCorner", "FileClock", "FileCode",
+    "FileCode2", "FileCodeCorner", "FileCog", "FileCog2", "FileDiff", "FileDigit", "FileDown", "FileEdit",
+    "FileExclamationPoint", "FileHeadphone", "FileHeart", "FileImage", "FileInput", "FileJson", "FileJson2", "FileKey",
+    "FileKey2", "FileLineChart", "FileLock", "FileLock2", "FileMinus", "FileMinus2", "FileMinusCorner", "FileMusic",
+    "FileOutput", "FilePen", "FilePenLine", "FilePieChart", "FilePlay", "FilePlus", "FilePlus2", "FilePlusCorner",
+    "FileQuestion", "FileQuestionMark", "FileScan", "FileSearch", "FileSearch2", "FileSearchCorner", "FileSignal", "FileSignature",
+    "FileSliders", "FileSpreadsheet", "FileStack", "FileSymlink", "FileTerminal", "FileText", "FileType", "FileType2",
+    "FileTypeCorner", "FileUp", "FileUser", "FileVideo", "FileVideo2", "FileVideoCamera", "FileVolume", "FileVolume2",
+    "FileWarning", "FileX", "FileX2", "FileXCorner", "Files", "Film", "Filter", "FilterX",
+    "Fingerprint", "FingerprintPattern", "FireExtinguisher", "Fish", "FishOff", "FishSymbol", "FishingHook", "Flag",
+    "FlagOff", "FlagTriangleLeft", "FlagTriangleRight", "Flame", "FlameKindling", "Flashlight", "FlashlightOff", "FlaskConical",
+    "FlaskConicalOff", "FlaskRound", "FlipHorizontal", "FlipHorizontal2", "FlipVertical", "FlipVertical2", "Flower", "Flower2",
+    "Focus", "FoldHorizontal", "FoldVertical", "Folder", "FolderArchive", "FolderCheck", "FolderClock", "FolderClosed",
+    "FolderCode", "FolderCog", "FolderCog2", "FolderDot", "FolderDown", "FolderEdit", "FolderGit", "FolderGit2",
+    "FolderHeart", "FolderInput", "FolderKanban", "FolderKey", "FolderLock", "FolderMinus", "FolderOpen", "FolderOpenDot",
+    "FolderOutput", "FolderPen", "FolderPlus", "FolderRoot", "FolderSearch", "FolderSearch2", "FolderSymlink", "FolderSync",
+    "FolderTree", "FolderUp", "FolderX", "Folders", "Footprints", "ForkKnife", "ForkKnifeCrossed", "Forklift",
+    "Form", "FormInput", "Forward", "Frame", "Framer", "Frown", "Fuel", "Fullscreen",
+    "FunctionSquare", "Funnel", "FunnelPlus", "FunnelX", "GalleryHorizontal", "GalleryHorizontalEnd", "GalleryThumbnails", "GalleryVertical",
+    "GalleryVerticalEnd", "Gamepad", "Gamepad2", "GamepadDirectional", "GanttChart", "GanttChartSquare", "Gauge", "GaugeCircle",
+    "Gavel", "Gem", "GeorgianLari", "Ghost", "Gift", "GitBranch", "GitBranchMinus", "GitBranchPlus",
+    "GitCommit", "GitCommitHorizontal", "GitCommitVertical", "GitCompare", "GitCompareArrows", "GitFork", "GitGraph", "GitMerge",
+    "GitMergeConflict", "GitPullRequest", "GitPullRequestArrow", "GitPullRequestClosed", "GitPullRequestCreate", "GitPullRequestCreateArrow", "GitPullRequestDraft", "Github",
+    "Gitlab", "GlassWater", "Glasses", "Globe", "Globe2", "GlobeLock", "GlobeOff", "GlobeX",
+    "Goal", "Gpu", "Grab", "GraduationCap", "Grape", "Grid", "Grid2X2", "Grid2X2Check",
+    "Grid2X2Plus", "Grid2X2X", "Grid2x2", "Grid2x2Check", "Grid2x2Plus", "Grid2x2X", "Grid3X3", "Grid3x2",
+    "Grid3x3", "Grip", "GripHorizontal", "GripVertical", "Group", "Guitar", "Ham", "Hamburger",
+    "Hammer", "Hand", "HandCoins", "HandFist", "HandGrab", "HandHeart", "HandHelping", "HandMetal",
+    "HandPlatter", "Handbag", "Handshake", "HardDrive", "HardDriveDownload", "HardDriveUpload", "HardHat", "Hash",
+    "HatGlasses", "Haze", "Hd", "HdmiPort", "Heading", "Heading1", "Heading2", "Heading3",
+    "Heading4", "Heading5", "Heading6", "HeadphoneOff", "Headphones", "Headset", "Heart", "HeartCrack",
+    "HeartHandshake", "HeartMinus", "HeartOff", "HeartPlus", "HeartPulse", "Heater", "Helicopter", "HelpCircle",
+    "HelpingHand", "Hexagon", "Highlighter", "History", "Home", "Hop", "HopOff", "Hospital",
+    "Hotel", "Hourglass", "House", "HouseHeart", "HousePlug", "HousePlus", "HouseWifi", "IceCream",
+    "IceCream2", "IceCreamBowl", "IceCreamCone", "IdCard", "IdCardLanyard", "Image", "ImageDown", "ImageMinus",
+    "ImageOff", "ImagePlay", "ImagePlus", "ImageUp", "ImageUpscale", "Images", "Import", "Inbox",
+    "Indent", "IndentDecrease", "IndentIncrease", "IndianRupee", "Infinity", "Info", "Inspect", "InspectionPanel",
+    "Instagram", "Italic", "IterationCcw", "IterationCw", "JapaneseYen", "Joystick", "Kanban", "KanbanSquare",
+    "KanbanSquareDashed", "Kayak", "Key", "KeyRound", "KeySquare", "Keyboard", "KeyboardMusic", "KeyboardOff",
+    "Lamp", "LampCeiling", "LampDesk", "LampFloor", "LampWallDown", "LampWallUp", "LandPlot", "Landmark",
+    "Languages", "Laptop", "Laptop2", "LaptopMinimal", "LaptopMinimalCheck", "Lasso", "LassoSelect", "Laugh",
+    "Layers", "Layers2", "Layers3", "LayersPlus", "Layout", "LayoutDashboard", "LayoutGrid", "LayoutList",
+    "LayoutPanelLeft", "LayoutPanelTop", "LayoutTemplate", "Leaf", "LeafyGreen", "Lectern", "LensConcave", "LensConvex",
+    "LetterText", "Library", "LibraryBig", "LibrarySquare", "LifeBuoy", "Ligature", "Lightbulb", "LightbulbOff",
+    "LineChart", "LineDotRightHorizontal", "LineSquiggle", "Link", "Link2", "Link2Off", "Linkedin", "List",
+    "ListCheck", "ListChecks", "ListChevronsDownUp", "ListChevronsUpDown", "ListCollapse", "ListEnd", "ListFilter", "ListFilterPlus",
+    "ListIndentDecrease", "ListIndentIncrease", "ListMinus", "ListMusic", "ListOrdered", "ListPlus", "ListRestart", "ListStart",
+    "ListTodo", "ListTree", "ListVideo", "ListX", "Loader", "Loader2", "LoaderCircle", "LoaderPinwheel",
+    "Locate", "LocateFixed", "LocateOff", "LocationEdit", "Lock", "LockKeyhole", "LockKeyholeOpen", "LockOpen",
+    "LogIn", "LogOut", "Logs", "Lollipop", "Luggage", "MSquare", "Magnet", "Mail",
+    "MailCheck", "MailMinus", "MailOpen", "MailPlus", "MailQuestion", "MailQuestionMark", "MailSearch", "MailWarning",
+    "MailX", "Mailbox", "Mails", "Map", "MapMinus", "MapPin", "MapPinCheck", "MapPinCheckInside",
+    "MapPinHouse", "MapPinMinus", "MapPinMinusInside", "MapPinOff", "MapPinPen", "MapPinPlus", "MapPinPlusInside", "MapPinX",
+    "MapPinXInside", "MapPinned", "MapPlus", "Mars", "MarsStroke", "Martini", "Maximize", "Maximize2",
+    "Medal", "Megaphone", "MegaphoneOff", "Meh", "MemoryStick", "Menu", "MenuSquare", "Merge",
+    "MessageCircle", "MessageCircleCheck", "MessageCircleCode", "MessageCircleDashed", "MessageCircleHeart", "MessageCircleMore", "MessageCircleOff", "MessageCirclePlus",
+    "MessageCircleQuestion", "MessageCircleQuestionMark", "MessageCircleReply", "MessageCircleWarning", "MessageCircleX", "MessageSquare", "MessageSquareCheck", "MessageSquareCode",
+    "MessageSquareDashed", "MessageSquareDiff", "MessageSquareDot", "MessageSquareHeart", "MessageSquareLock", "MessageSquareMore", "MessageSquareOff", "MessageSquarePlus",
+    "MessageSquareQuote", "MessageSquareReply", "MessageSquareShare", "MessageSquareText", "MessageSquareWarning", "MessageSquareX", "MessagesSquare", "Metronome",
+    "Mic", "Mic2", "MicOff", "MicVocal", "Microchip", "Microscope", "Microwave", "Milestone",
+    "Milk", "MilkOff", "Minimize", "Minimize2", "Minus", "MinusCircle", "MinusSquare", "MirrorRectangular",
+    "MirrorRound", "Monitor", "MonitorCheck", "MonitorCloud", "MonitorCog", "MonitorDot", "MonitorDown", "MonitorOff",
+    "MonitorPause", "MonitorPlay", "MonitorSmartphone", "MonitorSpeaker", "MonitorStop", "MonitorUp", "MonitorX", "Moon",
+    "MoonStar", "MoreHorizontal", "MoreVertical", "Motorbike", "Mountain", "MountainSnow", "Mouse", "MouseLeft",
+    "MouseOff", "MousePointer", "MousePointer2", "MousePointer2Off", "MousePointerBan", "MousePointerClick", "MousePointerSquareDashed", "MouseRight",
+    "Move", "Move3D", "Move3d", "MoveDiagonal", "MoveDiagonal2", "MoveDown", "MoveDownLeft", "MoveDownRight",
+    "MoveHorizontal", "MoveLeft", "MoveRight", "MoveUp", "MoveUpLeft", "MoveUpRight", "MoveVertical", "Music",
+    "Music2", "Music3", "Music4", "Navigation", "Navigation2", "Navigation2Off", "NavigationOff", "Network",
+    "Newspaper", "Nfc", "NonBinary", "Notebook", "NotebookPen", "NotebookTabs", "NotebookText", "NotepadText",
+    "NotepadTextDashed", "Nut", "NutOff", "Octagon", "OctagonAlert", "OctagonMinus", "OctagonPause", "OctagonX",
+    "Omega", "Option", "Orbit", "Origami", "Outdent", "Package", "Package2", "PackageCheck",
+    "PackageMinus", "PackageOpen", "PackagePlus", "PackageSearch", "PackageX", "PaintBucket", "PaintRoller", "Paintbrush",
+    "Paintbrush2", "PaintbrushVertical", "Palette", "Palmtree", "Panda", "PanelBottom", "PanelBottomClose", "PanelBottomDashed",
+    "PanelBottomInactive", "PanelBottomOpen", "PanelLeft", "PanelLeftClose", "PanelLeftDashed", "PanelLeftInactive", "PanelLeftOpen", "PanelLeftRightDashed",
+    "PanelRight", "PanelRightClose", "PanelRightDashed", "PanelRightInactive", "PanelRightOpen", "PanelTop", "PanelTopBottomDashed", "PanelTopClose",
+    "PanelTopDashed", "PanelTopInactive", "PanelTopOpen", "PanelsLeftBottom", "PanelsLeftRight", "PanelsRightBottom", "PanelsTopBottom", "PanelsTopLeft",
+    "Paperclip", "Parentheses", "ParkingCircle", "ParkingCircleOff", "ParkingMeter", "ParkingSquare", "ParkingSquareOff", "PartyPopper",
+    "Pause", "PauseCircle", "PauseOctagon", "PawPrint", "PcCase", "Pen", "PenBox", "PenLine",
+    "PenOff", "PenSquare", "PenTool", "Pencil", "PencilLine", "PencilOff", "PencilRuler", "Pentagon",
+    "Percent", "PercentCircle", "PercentDiamond", "PercentSquare", "PersonStanding", "PhilippinePeso", "Phone", "PhoneCall",
+    "PhoneForwarded", "PhoneIncoming", "PhoneMissed", "PhoneOff", "PhoneOutgoing", "Pi", "PiSquare", "Piano",
+    "Pickaxe", "PictureInPicture", "PictureInPicture2", "PieChart", "PiggyBank", "Pilcrow", "PilcrowLeft", "PilcrowRight",
+    "PilcrowSquare", "Pill", "PillBottle", "Pin", "PinOff", "Pipette", "Pizza", "Plane",
+    "PlaneLanding", "PlaneTakeoff", "Play", "PlayCircle", "PlaySquare", "Plug", "Plug2", "PlugZap",
+    "PlugZap2", "Plus", "PlusCircle", "PlusSquare", "Pocket", "PocketKnife", "Podcast", "Pointer",
+    "PointerOff", "Popcorn", "Popsicle", "PoundSterling", "Power", "PowerCircle", "PowerOff", "PowerSquare",
+    "Presentation", "Printer", "PrinterCheck", "PrinterX", "Projector", "Proportions", "Puzzle", "Pyramid",
+    "QrCode", "Quote", "Rabbit", "Radar", "Radiation", "Radical", "Radio", "RadioReceiver",
+    "RadioTower", "Radius", "RailSymbol", "Rainbow", "Rat", "Ratio", "Receipt", "ReceiptCent",
+    "ReceiptEuro", "ReceiptIndianRupee", "ReceiptJapaneseYen", "ReceiptPoundSterling", "ReceiptRussianRuble", "ReceiptSwissFranc", "ReceiptText", "ReceiptTurkishLira",
+    "RectangleCircle", "RectangleEllipsis", "RectangleGoggles", "RectangleHorizontal", "RectangleVertical", "Recycle", "Redo", "Redo2",
+    "RedoDot", "RefreshCcw", "RefreshCcwDot", "RefreshCw", "RefreshCwOff", "Refrigerator", "Regex", "RemoveFormatting",
+    "Repeat", "Repeat1", "Repeat2", "Replace", "ReplaceAll", "Reply", "ReplyAll", "Rewind",
+    "Ribbon", "Rocket", "RockingChair", "RollerCoaster", "Rose", "Rotate3D", "Rotate3d", "RotateCcw",
+    "RotateCcwKey", "RotateCcwSquare", "RotateCw", "RotateCwSquare", "Route", "RouteOff", "Router", "Rows",
+    "Rows2", "Rows3", "Rows4", "Rss", "Ruler", "RulerDimensionLine", "RussianRuble", "Sailboat",
+    "Salad", "Sandwich", "Satellite", "SatelliteDish", "SaudiRiyal", "Save", "SaveAll", "SaveOff",
+    "Scale", "Scale3D", "Scale3d", "Scaling", "Scan", "ScanBarcode", "ScanEye", "ScanFace",
+    "ScanHeart", "ScanLine", "ScanQrCode", "ScanSearch", "ScanText", "ScatterChart", "School", "School2",
+    "Scissors", "ScissorsLineDashed", "ScissorsSquare", "ScissorsSquareDashedBottom", "Scooter", "ScreenShare", "ScreenShareOff", "Scroll",
+    "ScrollText", "Search", "SearchAlert", "SearchCheck", "SearchCode", "SearchSlash", "SearchX", "Section",
+    "Send", "SendHorizonal", "SendHorizontal", "SendToBack", "SeparatorHorizontal", "SeparatorVertical", "Server", "ServerCog",
+    "ServerCrash", "ServerOff", "Settings", "Settings2", "Shapes", "Share", "Share2", "Sheet",
+    "Shell", "ShelvingUnit", "Shield", "ShieldAlert", "ShieldBan", "ShieldCheck", "ShieldClose", "ShieldEllipsis",
+    "ShieldHalf", "ShieldMinus", "ShieldOff", "ShieldPlus", "ShieldQuestion", "ShieldQuestionMark", "ShieldUser", "ShieldX",
+    "Ship", "ShipWheel", "Shirt", "ShoppingBag", "ShoppingBasket", "ShoppingCart", "Shovel", "ShowerHead",
+    "Shredder", "Shrimp", "Shrink", "Shrub", "Shuffle", "Sidebar", "SidebarClose", "SidebarOpen",
+    "Sigma", "SigmaSquare", "Signal", "SignalHigh", "SignalLow", "SignalMedium", "SignalZero", "Signature",
+    "Signpost", "SignpostBig", "Siren", "SkipBack", "SkipForward", "Skull", "Slack", "Slash",
+    "SlashSquare", "Slice", "Sliders", "SlidersHorizontal", "SlidersVertical", "Smartphone", "SmartphoneCharging", "SmartphoneNfc",
+    "Smile", "SmilePlus", "Snail", "Snowflake", "SoapDispenserDroplet", "Sofa", "SolarPanel", "SortAsc",
+    "SortDesc", "Soup", "Space", "Spade", "Sparkle", "Sparkles", "Speaker", "Speech",
+    "SpellCheck", "SpellCheck2", "Spline", "SplinePointer", "Split", "SplitSquareHorizontal", "SplitSquareVertical", "Spool",
+    "Spotlight", "SprayCan", "Sprout", "Square", "SquareActivity", "SquareArrowDown", "SquareArrowDownLeft", "SquareArrowDownRight",
+    "SquareArrowLeft", "SquareArrowOutDownLeft", "SquareArrowOutDownRight", "SquareArrowOutUpLeft", "SquareArrowOutUpRight", "SquareArrowRight", "SquareArrowRightEnter", "SquareArrowRightExit",
+    "SquareArrowUp", "SquareArrowUpLeft", "SquareArrowUpRight", "SquareAsterisk", "SquareBottomDashedScissors", "SquareCenterlineDashedHorizontal", "SquareCenterlineDashedVertical", "SquareChartGantt",
+    "SquareCheck", "SquareCheckBig", "SquareChevronDown", "SquareChevronLeft", "SquareChevronRight", "SquareChevronUp", "SquareCode", "SquareDashed",
+    "SquareDashedBottom", "SquareDashedBottomCode", "SquareDashedKanban", "SquareDashedMousePointer", "SquareDashedTopSolid", "SquareDivide", "SquareDot", "SquareEqual",
+    "SquareFunction", "SquareGanttChart", "SquareKanban", "SquareLibrary", "SquareM", "SquareMenu", "SquareMinus", "SquareMousePointer",
+    "SquareParking", "SquareParkingOff", "SquarePause", "SquarePen", "SquarePercent", "SquarePi", "SquarePilcrow", "SquarePlay",
+    "SquarePlus", "SquarePower", "SquareRadical", "SquareRoundCorner", "SquareScissors", "SquareSigma", "SquareSlash", "SquareSplitHorizontal",
+    "SquareSplitVertical", "SquareSquare", "SquareStack", "SquareStar", "SquareStop", "SquareTerminal", "SquareUser", "SquareUserRound",
+    "SquareX", "SquaresExclude", "SquaresIntersect", "SquaresSubtract", "SquaresUnite", "Squircle", "SquircleDashed", "Squirrel",
+    "Stamp", "Star", "StarHalf", "StarOff", "Stars", "StepBack", "StepForward", "Stethoscope",
+    "Sticker", "StickyNote", "Stone", "StopCircle", "Store", "StretchHorizontal", "StretchVertical", "Strikethrough",
+    "Subscript", "Subtitles", "Sun", "SunDim", "SunMedium", "SunMoon", "SunSnow", "Sunrise",
+    "Sunset", "Superscript", "SwatchBook", "SwissFranc", "SwitchCamera", "Sword", "Swords", "Syringe",
+    "Table", "Table2", "TableCellsMerge", "TableCellsSplit", "TableColumnsSplit", "TableConfig", "TableOfContents", "TableProperties",
+    "TableRowsSplit", "Tablet", "TabletSmartphone", "Tablets", "Tag", "Tags", "Tally1", "Tally2",
+    "Tally3", "Tally4", "Tally5", "Tangent", "Target", "Telescope", "Tent", "TentTree",
+    "Terminal", "TerminalSquare", "TestTube", "TestTube2", "TestTubeDiagonal", "TestTubes", "Text", "TextAlignCenter",
+    "TextAlignEnd", "TextAlignJustify", "TextAlignStart", "TextCursor", "TextCursorInput", "TextInitial", "TextQuote", "TextSearch",
+    "TextSelect", "TextSelection", "TextWrap", "Theater", "Thermometer", "ThermometerSnowflake", "ThermometerSun", "ThumbsDown",
+    "ThumbsUp", "Ticket", "TicketCheck", "TicketMinus", "TicketPercent", "TicketPlus", "TicketSlash", "TicketX",
+    "Tickets", "TicketsPlane", "Timer", "TimerOff", "TimerReset", "ToggleLeft", "ToggleRight", "Toilet",
+    "ToolCase", "Toolbox", "Tornado", "Torus", "Touchpad", "TouchpadOff", "TowelRack", "TowerControl",
+    "ToyBrick", "Tractor", "TrafficCone", "Train", "TrainFront", "TrainFrontTunnel", "TrainTrack", "TramFront",
+    "Transgender", "Trash", "Trash2", "TreeDeciduous", "TreePalm", "TreePine", "Trees", "Trello",
+    "TrendingDown", "TrendingUp", "TrendingUpDown", "Triangle", "TriangleAlert", "TriangleDashed", "TriangleRight", "Trophy",
+    "Truck", "TruckElectric", "TurkishLira", "Turntable", "Turtle", "Tv", "Tv2", "TvMinimal",
+    "TvMinimalPlay", "Twitch", "Twitter", "Type", "TypeOutline", "Umbrella", "UmbrellaOff", "Underline",
+    "Undo", "Undo2", "UndoDot", "UnfoldHorizontal", "UnfoldVertical", "Ungroup", "University", "Unlink",
+    "Unlink2", "Unlock", "UnlockKeyhole", "Unplug", "Upload", "UploadCloud", "Usb", "User",
+    "User2", "UserCheck", "UserCheck2", "UserCircle", "UserCircle2", "UserCog", "UserCog2", "UserKey",
+    "UserLock", "UserMinus", "UserMinus2", "UserPen", "UserPlus", "UserPlus2", "UserRound", "UserRoundCheck",
+    "UserRoundCog", "UserRoundKey", "UserRoundMinus", "UserRoundPen", "UserRoundPlus", "UserRoundSearch", "UserRoundX", "UserSearch",
+    "UserSquare", "UserSquare2", "UserStar", "UserX", "UserX2", "Users", "Users2", "UsersRound",
+    "Utensils", "UtensilsCrossed", "UtilityPole", "Van", "Variable", "Vault", "VectorSquare", "Vegan",
+    "VenetianMask", "Venus", "VenusAndMars", "Verified", "Vibrate", "VibrateOff", "Video", "VideoOff",
+    "Videotape", "View", "Voicemail", "Volleyball", "Volume", "Volume1", "Volume2", "VolumeOff",
+    "VolumeX", "Vote", "Wallet", "Wallet2", "WalletCards", "WalletMinimal", "Wallpaper", "Wand",
+    "Wand2", "WandSparkles", "Warehouse", "WashingMachine", "Watch", "Waves", "WavesArrowDown", "WavesArrowUp",
+    "WavesLadder", "Waypoints", "Webcam", "Webhook", "WebhookOff", "Weight", "WeightTilde", "Wheat",
+    "WheatOff", "WholeWord", "Wifi", "WifiCog", "WifiHigh", "WifiLow", "WifiOff", "WifiPen",
+    "WifiSync", "WifiZero", "Wind", "WindArrowDown", "Wine", "WineOff", "Workflow", "Worm",
+    "WrapText", "Wrench", "X", "XCircle", "XLineTop", "XOctagon", "XSquare", "Youtube",
+    "Zap", "ZapOff", "ZoomIn", "ZoomOut",
+})
+
+def _sanitize_tsx_write_edits(write_edits: list[dict]) -> list[dict]:
+    """Fix hallucinated lucide-react icon names in AI-generated TSX/JSX files.
+
+    LLMs occasionally invent icon names (e.g. 'GitDiff') that do not exist in
+    the installed lucide-react package, crashing the Vite sandbox at import time.
+    This function rewrites `import { ... } from 'lucide-react'` statements so:
+    - Known-wrong names are replaced via _LUCIDE_ICON_RENAMES
+    - Completely unknown names fall back to 'Circle' (always safe)
+    - Duplicate imports after remapping are deduplicated
+    """
+    import re as _re
+
+    _IMPORT_RE = _re.compile(
+        r"""^([ \t]*)import\s*\{([^}]+)\}\s*from\s+['"]lucide-react['"]""",
+        _re.MULTILINE,
+    )
+
+    def _fix_import_line(match: _re.Match) -> str:
+        indent = match.group(1)
+        raw_names = match.group(2)
+        fixed: list[str] = []
+        seen: set[str] = set()
+        for raw in _re.split(r",\s*", raw_names):
+            name = raw.strip()
+            if not name:
+                continue
+            as_match = _re.match(r"^(\w+)\s+as\s+(\w+)$", name)
+            if as_match:
+                icon_name, alias = as_match.group(1), as_match.group(2)
+                canonical = _LUCIDE_ICON_RENAMES.get(icon_name, icon_name)
+                if canonical not in _LUCIDE_KNOWN_ICONS:
+                    print(f"[tsx-sanitize] Unknown lucide icon '{icon_name}' → Circle")
+                    canonical = "Circle"
+                resolved = f"{canonical} as {alias}" if canonical != icon_name else name
+            else:
+                icon_name = name
+                canonical = _LUCIDE_ICON_RENAMES.get(icon_name, icon_name)
+                if canonical not in _LUCIDE_KNOWN_ICONS:
+                    print(f"[tsx-sanitize] Unknown lucide icon '{icon_name}' → Circle")
+                    canonical = "Circle"
+                if canonical != icon_name:
+                    # Track identifier rewrites so JSX usage (e.g. <GitDiff />)
+                    # is kept in sync with sanitized imports.
+                    import_rewrites[icon_name] = canonical
+                resolved = canonical
+            if resolved not in seen:
+                seen.add(resolved)
+                fixed.append(resolved)
+        return f"{indent}import {{ {', '.join(fixed)} }} from 'lucide-react'"
+
+    patched: list[dict] = []
+    for edit in write_edits:
+        file_path = str(edit.get("file_path", ""))
+        content = edit.get("content")
+        if not isinstance(content, str) or not file_path.endswith((".tsx", ".ts", ".jsx", ".js")):
+            patched.append(edit)
+            continue
+        if "lucide-react" not in content:
+            patched.append(edit)
+            continue
+        import_rewrites: dict[str, str] = {}
+        new_content = _IMPORT_RE.sub(_fix_import_line, content)
+        if import_rewrites:
+            for old_name, new_name in import_rewrites.items():
+                new_content = _re.sub(rf"\b{_re.escape(old_name)}\b", new_name, new_content)
+        if new_content != content:
+            print(f"[tsx-sanitize] Patched lucide-react imports in {file_path}")
+            next_edit = dict(edit)
+            next_edit["content"] = new_content
+            patched.append(next_edit)
+        else:
+            patched.append(edit)
+    return patched
+
+def _sanitize_css_write_edits(write_edits: list[dict]) -> list[dict]:
+    """Patch known generated CSS pitfalls that crash Vite/PostCSS.
+
+    Some model outputs use `@apply font-body` / `@apply font-heading` in App.css
+    without defining those utilities. Tailwind then throws a 500 on /src/App.css.
+    We append utility definitions once so preview compilation remains stable.
+    """
+    import re
+
+    def _rewrite_apply_arbitrary_value_classes(css: str) -> str:
+        """Rewrite unsupported @apply arbitrary-value classes to plain CSS.
+
+        Tailwind's @apply does not support classes like bg-[var(--surface)]/80,
+        text-[var(--text-primary)], border-[var(--border)], etc.
+        Convert those tokens into direct declarations so CSS compiles.
+        """
+        apply_re = re.compile(r"^(?P<indent>\s*)@apply\s+(?P<body>[^;]+);\s*$")
+
+        out_lines: list[str] = []
+        for line in css.splitlines():
+            m = apply_re.match(line)
+            if not m:
+                out_lines.append(line)
+                continue
+
+            indent = m.group("indent")
+            tokens = m.group("body").split()
+            remaining: list[str] = []
+            declarations: list[str] = []
+
+            for token in tokens:
+                bg = re.match(r"^bg-\[var\(--(?P<name>[^)]+)\)\](?:/(?P<alpha>\d{1,3}))?$", token)
+                if bg:
+                    name = bg.group("name")
+                    alpha = bg.group("alpha")
+                    if alpha is not None:
+                        declarations.append(
+                            f"{indent}background-color: color-mix(in srgb, var(--{name}) {alpha}%, transparent);"
+                        )
+                    else:
+                        declarations.append(f"{indent}background-color: var(--{name});")
+                    continue
+
+                text = re.match(r"^text-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if text:
+                    declarations.append(f"{indent}color: var(--{text.group('name')});")
+                    continue
+
+                border = re.match(r"^border-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if border:
+                    declarations.append(f"{indent}border-color: var(--{border.group('name')});")
+                    continue
+
+                rounded = re.match(r"^rounded-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if rounded:
+                    declarations.append(f"{indent}border-radius: var(--{rounded.group('name')});")
+                    continue
+
+                shadow = re.match(r"^shadow-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if shadow:
+                    declarations.append(f"{indent}box-shadow: var(--{shadow.group('name')});")
+                    continue
+
+                font = re.match(r"^font-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if font:
+                    declarations.append(f"{indent}font-family: var(--{font.group('name')});")
+                    continue
+
+                w = re.match(r"^w-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if w:
+                    declarations.append(f"{indent}width: var(--{w.group('name')});")
+                    continue
+
+                h = re.match(r"^h-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if h:
+                    declarations.append(f"{indent}height: var(--{h.group('name')});")
+                    continue
+
+                p = re.match(r"^p-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if p:
+                    declarations.append(f"{indent}padding: var(--{p.group('name')});")
+                    continue
+
+                px = re.match(r"^px-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if px:
+                    name = px.group("name")
+                    declarations.append(f"{indent}padding-left: var(--{name});")
+                    declarations.append(f"{indent}padding-right: var(--{name});")
+                    continue
+
+                py = re.match(r"^py-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if py:
+                    name = py.group("name")
+                    declarations.append(f"{indent}padding-top: var(--{name});")
+                    declarations.append(f"{indent}padding-bottom: var(--{name});")
+                    continue
+
+                mrg = re.match(r"^m-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if mrg:
+                    declarations.append(f"{indent}margin: var(--{mrg.group('name')});")
+                    continue
+
+                mx = re.match(r"^mx-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if mx:
+                    name = mx.group("name")
+                    declarations.append(f"{indent}margin-left: var(--{name});")
+                    declarations.append(f"{indent}margin-right: var(--{name});")
+                    continue
+
+                my = re.match(r"^my-\[var\(--(?P<name>[^)]+)\)\]$", token)
+                if my:
+                    name = my.group("name")
+                    declarations.append(f"{indent}margin-top: var(--{name});")
+                    declarations.append(f"{indent}margin-bottom: var(--{name});")
+                    continue
+
+                remaining.append(token)
+
+            out_lines.extend(declarations)
+            if remaining:
+                out_lines.append(f"{indent}@apply {' '.join(remaining)};")
+
+        return "\n".join(out_lines)
+
+    patched: list[dict] = []
+    utility_block = (
+        "\n@layer utilities {\n"
+        "  .font-body { font-family: var(--font-body); }\n"
+        "  .font-heading { font-family: var(--font-heading); }\n"
+        "}\n"
+    )
+
+    for edit in write_edits:
+        file_path = str(edit.get("file_path", ""))
+        content = edit.get("content")
+        if not isinstance(content, str):
+            patched.append(edit)
+            continue
+
+        if file_path.endswith(".css") and "@apply" in content:
+            normalized = _rewrite_apply_arbitrary_value_classes(content)
+            next_edit = dict(edit)
+            next_edit["content"] = normalized
+
+            content = normalized
+            edit = next_edit
+
+        if file_path.endswith(".css") and ("@apply" in content) and ("font-body" in content or "font-heading" in content):
+            has_font_body_def = ".font-body" in content
+            has_font_heading_def = ".font-heading" in content
+            if not (has_font_body_def and has_font_heading_def):
+                next_edit = dict(edit)
+                next_edit["content"] = content.rstrip() + utility_block
+                patched.append(next_edit)
+                continue
+
+        patched.append(edit)
+
+    return patched
 
 
 async def _send_json(websocket: WebSocket, payload: dict):
@@ -680,6 +1184,7 @@ async def save_project_files(
         raise HTTPException(status_code=404, detail="Project not found")
 
     edits = [{"file_path": fp, "content": c} for fp, c in body.files.items()]
+    edits = _sanitize_tsx_write_edits(_sanitize_css_write_edits(edits))
     try:
         await _persist_files(db, project_id, edits)
     except Exception as e:
@@ -939,6 +1444,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 {"file_path": f["file_path"], "content": f["content"], "action": "write"}
                                 for f in fix_result["files"]
                             ]
+                            fix_edits = _sanitize_tsx_write_edits(_sanitize_css_write_edits(fix_edits))
                             await _persist_files(db, project_id, fix_edits)
                             for edit in fix_edits:
                                 await _send_json(websocket, {
@@ -1070,6 +1576,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     elif step["status"] == "execution_complete":
                         edits = step.get("edits", [])
                         write_edits = [e for e in edits if e.get("action") == "write"]
+                        write_edits = _sanitize_tsx_write_edits(_sanitize_css_write_edits(write_edits))
 
                         if write_edits:
                             await _send_json(websocket, {
@@ -1134,6 +1641,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                                         {"file_path": f["file_path"], "content": f["content"], "action": "write"}
                                                         for f in fix_result["files"]
                                                     ]
+                                                    fix_edits = _sanitize_tsx_write_edits(_sanitize_css_write_edits(fix_edits))
                                                     await _persist_files(db, project_id, fix_edits)
                                                     for edit in fix_edits:
                                                         await _send_json(websocket, {

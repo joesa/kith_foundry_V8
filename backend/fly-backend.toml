@@ -26,7 +26,7 @@ primary_region = "ord"
 
 [[vm]]
   size = "performance-2x"
-  memory = "2048"
+  memory = "4096"
 
 [scaling]
   min_count = 2

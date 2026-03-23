@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from models import (
+    Project, ProjectDesignModeHistory,
     ProjectPage, ProjectComponent, ProjectSection, ProjectFeature,
     ProjectDecision, ProjectEmbedding,
     PageStatus, FeatureStatus, DecisionType, ContentType,
@@ -203,10 +204,102 @@ def add_decision(
     return dec
 
 
+def update_project_design_mode(
+    db: Session,
+    project_id: str,
+    *,
+    product_mode: str,
+    style_mode: str,
+    confidence: float | None,
+    source: str,
+    locked_by_user: bool | None = None,
+    record_history: bool = True,
+) -> Project:
+    """Persist project-level design mode state and optional history."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise ValueError(f"Project not found: {project_id}")
+
+    project.product_mode = product_mode
+    project.style_mode = style_mode
+    project.mode_confidence = confidence
+    if locked_by_user is not None:
+        project.design_mode_locked = locked_by_user
+    project.updated_at = datetime.utcnow()
+
+    if record_history:
+        db.add(ProjectDesignModeHistory(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            product_mode=product_mode,
+            style_mode=style_mode,
+            confidence=confidence,
+            source=source,
+        ))
+
+    db.flush()
+    return project
+
+
+def lock_project_design_mode(
+    db: Session,
+    project_id: str,
+    *,
+    product_mode: str,
+    style_mode: str,
+    confidence: float | None = None,
+) -> Project:
+    """Persist a user-selected design mode and lock it against auto-reclassification."""
+    return update_project_design_mode(
+        db,
+        project_id,
+        product_mode=product_mode,
+        style_mode=style_mode,
+        confidence=confidence,
+        source="user",
+        locked_by_user=True,
+        record_history=True,
+    )
+
+
+def unlock_project_design_mode(db: Session, project_id: str) -> Project:
+    """Unlock a project's design mode while preserving the last selected values."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise ValueError(f"Project not found: {project_id}")
+
+    project.design_mode_locked = False
+    project.updated_at = datetime.utcnow()
+    db.flush()
+    return project
+
+
+def list_project_design_mode_history(db: Session, project_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
+    rows = (
+        db.query(ProjectDesignModeHistory)
+        .filter_by(project_id=project_id)
+        .order_by(ProjectDesignModeHistory.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "productMode": row.product_mode,
+            "styleMode": row.style_mode,
+            "confidence": float(row.confidence) if row.confidence is not None else None,
+            "source": row.source,
+            "createdAt": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
+
+
 # ── Context assembly ──────────────────────────────────────────────────────────
 
 def get_project_brain_context(db: Session, project_id: str) -> dict[str, Any]:
     """Return a structured summary of the project brain for LLM context injection."""
+    project = db.query(Project).filter_by(id=project_id).first()
     pages = db.query(ProjectPage).filter_by(project_id=project_id).all()
     components = db.query(ProjectComponent).filter_by(project_id=project_id).all()
     features = db.query(ProjectFeature).filter_by(project_id=project_id).all()
@@ -219,6 +312,12 @@ def get_project_brain_context(db: Session, project_id: str) -> dict[str, Any]:
     )
 
     return {
+        "designMode": {
+            "productMode": project.product_mode if project else None,
+            "styleMode": project.style_mode if project else None,
+            "confidence": float(project.mode_confidence) if project and project.mode_confidence is not None else None,
+            "lockedByUser": bool(project.design_mode_locked) if project else False,
+        },
         "pages": [
             {
                 "id": p.id,
@@ -290,7 +389,7 @@ def store_embedding(
     db.execute(
         text("""
             INSERT INTO project_embeddings (id, project_id, content_type, content_ref_id, content_text, embedding, created_at)
-            VALUES (:id, :project_id, :content_type, :ref_id, :content_text, :embedding::vector, NOW())
+            VALUES (:id, :project_id, :content_type, :ref_id, :content_text, CAST(:embedding AS vector), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 content_text = EXCLUDED.content_text,
                 embedding    = EXCLUDED.embedding
@@ -319,10 +418,10 @@ def search_similar(
     rows = db.execute(
         text("""
             SELECT id, content_type, content_ref_id, content_text,
-                   1 - (embedding <=> :qvec::vector) AS similarity
+                   1 - (embedding <=> CAST(:qvec AS vector)) AS similarity
             FROM project_embeddings
             WHERE project_id = :pid
-            ORDER BY embedding <=> :qvec::vector
+            ORDER BY embedding <=> CAST(:qvec AS vector)
             LIMIT :topk
         """),
         {

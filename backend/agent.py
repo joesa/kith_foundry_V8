@@ -203,6 +203,35 @@ async def _resolve_llm_credentials(model_id: str, user_id: str = None):
 
 async def classify_intent(prompt: str, model_id: str, llm_kwargs: dict) -> str:
     """Classify user intent as 'code' or 'conversation' using a fast LLM call."""
+    # Deterministic fast-path for common action/fix requests.
+    # This avoids misrouting prompts like "please fix this" into conversation mode,
+    # which can make the UI appear to "do nothing" from a code-generation perspective.
+    prompt_l = (prompt or "").lower()
+
+    action_keywords = (
+        "fix", "resolve", "patch", "debug", "build", "create", "add", "update",
+        "change", "modify", "implement", "refactor", "remove", "delete", "edit",
+        "generate", "make"
+    )
+    error_markers = (
+        "error", "errors", "bug", "bugs", "issue", "issues", "broken", "crash",
+        "uncaught", "referenceerror", "typeerror", "not defined", "failed",
+        "compile", "compilation", "eslint", "vite", "does not provide an export",
+        "cannot convert", "cannot read", "please fix"
+    )
+
+    has_action = any(k in prompt_l for k in action_keywords)
+    has_error = any(k in prompt_l for k in error_markers)
+    planning_markers = (
+        "what should", "how should", "what do you think", "ideas", "recommend",
+        "brainstorm", "approach", "strategy", "which is better", "should we"
+    )
+    has_planning = any(k in prompt_l for k in planning_markers)
+
+    if has_error or (has_action and not has_planning):
+        print("[intent] Heuristic route: code")
+        return "code"
+
     provider = llm_breaker.extract_provider(model_id)
     try:
         llm_breaker.check(provider)
@@ -365,20 +394,28 @@ async def process_user_request(prompt: str, project_id: int, model_id: str, db=N
     else:
         project_context = "\n(No existing files — this is a fresh project)\n"
     
-    # 2b. Fetch design context
+    # 2b. Fetch design context (prefer GPT Engine, fall back to legacy)
     design_ref = ""
     try:
-        _design_keywords = ("design", "mockup", "visual", "style", "color", "layout",
-                            "theme", "ui", "ux", "brand", "font", "typography",
-                            "foundational", "foundation", "cdo")
-        _use_full = any(kw in prompt.lower() for kw in _design_keywords)
-        if _use_full:
-            design_ref = await asyncio.to_thread(get_design_context, project_id)
+        # Engine-first: use the existing db session when available
+        if db:
+            from design_engine import get_design_system_from_artifacts, build_design_context_for_agent
+            _engine_ds = get_design_system_from_artifacts(db, project_id)
+            if _engine_ds:
+                design_ref = build_design_context_for_agent(_engine_ds)
+
         if not design_ref:
-            design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
-        if design_ref and len(design_ref) > 12_000:
-            compact = await asyncio.to_thread(get_design_context_compact, project_id)
-            design_ref = compact or design_ref[:12_000]
+            _design_keywords = ("design", "mockup", "visual", "style", "color", "layout",
+                                "theme", "ui", "ux", "brand", "font", "typography",
+                                "foundational", "foundation", "cdo")
+            _use_full = any(kw in prompt.lower() for kw in _design_keywords)
+            if _use_full:
+                design_ref = await asyncio.to_thread(get_design_context, project_id)
+            if not design_ref:
+                design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
+            if design_ref and len(design_ref) > 12_000:
+                compact = await asyncio.to_thread(get_design_context_compact, project_id)
+                design_ref = compact or design_ref[:12_000]
     except Exception as e:
         print(f"Design context fetch skipped: {e}")
 

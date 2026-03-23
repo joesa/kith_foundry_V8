@@ -16,29 +16,7 @@ import json
 from redis_client import get_sync_redis, get_async_redis
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1.  Cancelled mockup IDs (used in async design_api functions)
-# ─────────────────────────────────────────────────────────────────────────────
-_KEY_CANCELLED = "kith:cancelled_mockups"
-
-
-async def add_cancelled_mockup(mockup_id: str, ttl: int = 3600) -> None:
-    r = get_async_redis()
-    await r.sadd(_KEY_CANCELLED, mockup_id)
-    await r.expire(_KEY_CANCELLED, ttl)
-
-
-async def is_mockup_cancelled(mockup_id: str) -> bool:
-    r = get_async_redis()
-    return bool(await r.sismember(_KEY_CANCELLED, mockup_id))
-
-
-async def discard_cancelled_mockup(mockup_id: str) -> None:
-    r = get_async_redis()
-    await r.srem(_KEY_CANCELLED, mockup_id)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2.  Auto-fix loop state (used in sync error_resolver)
+# 1.  Auto-fix loop state (used in sync error_resolver)
 # ─────────────────────────────────────────────────────────────────────────────
 _DEFAULT_FIX_STATE = {
     "attempt_count": 0,

@@ -51,6 +51,8 @@ REQUIRED on every generation (non-negotiable for professional output):
 - `react-router-dom` — USE for all page routing (`BrowserRouter` is already in main.tsx). Use `Routes`, `Route`, `Link`, `useNavigate`, `Navigate` in App.tsx and components.
 - `framer-motion` — USE for all animations. Import `motion`, `AnimatePresence`, `useScroll`, `useTransform`, `useInView` etc. Apply entrance animations, page transitions, scroll reveals, parallax effects, and hover micro-interactions.
 - `lucide-react` — USE for all icons. Import named icons like `import { Home, User, Settings, ArrowRight, Menu, X, ChevronDown } from 'lucide-react'`. NEVER use emoji for UI icons — always use lucide-react.
+  - **ONLY use icon names that actually exist in lucide-react.** NEVER invent icon names. Icons that do NOT exist and will crash the app: `GitDiff`, `GitHub` (use `Github`), `GitLab` (use `Gitlab`), `Warning` (use `AlertTriangle`), `Close` (use `X`), `Checkmark` (use `Check`), `Cancel` (use `X`), `Gear`/`Config` (use `Settings`), `Spinner`/`Loading` (use `LoaderCircle`), `Delete` (use `Trash2`), `Money`/`Dollar` (use `DollarSign`), `People` (use `Users`), `InfoCircle` (use `Info`), `ErrorCircle` (use `XCircle`).
+  - Safe git icons: `GitBranch`, `GitCommit`, `GitCompare`, `GitCompareArrows`, `GitFork`, `GitGraph`, `GitMerge`, `GitPullRequest`.
 - `tailwindcss` (v3, via PostCSS) — USE Tailwind utility classes for all styling. Combine with CSS custom properties for theming. App.css MUST start with `@tailwind base; @tailwind components; @tailwind utilities;` on the first lines.
 
 **FILE ORDER — output in this order:**
@@ -216,6 +218,8 @@ Given the user's message and the current project context, classify the intent as
 Rules:
 - If the user asks a question about WHAT to build or HOW to approach something → conversation
 - If the user tells you to BUILD or CHANGE something specific → code
+- If the user asks to fix/debug/resolve any issue or error (even briefly, e.g. "please fix", "fix this", "resolve errors") → code
+- If the message includes runtime/build/type/lint errors, stack traces, file:line references, or words like "broken/crash/failing" → code
 - "What features should we add?" → conversation
 - "Add a dark mode toggle" → code
 - "How is the app structured?" → conversation
@@ -223,7 +227,7 @@ Rules:
 - "Looking at the application, what would you recommend?" → conversation
 - "Can you add authentication?" → code (clear action request despite question form)
 - "What kind of authentication should we use?" → conversation
-- When in doubt, prefer conversation — it's better to discuss first than to generate unwanted code
+- When in doubt in an app-builder context, prefer code when there is any explicit request to change or fix files.
 
 Respond with EXACTLY one word: either `code` or `conversation`. Nothing else."""
 
@@ -261,6 +265,42 @@ You have full visibility into the user's current project — its file structure,
 # PHASE 1 — GPT Design Engine Prompts
 # ══════════════════════════════════════════════════════════════════════════════
 
+MODE_CLASSIFIER_PROMPT = """You are a product mode and design style classifier for Kith Foundry's AI design engine.
+
+Your job is to classify the user's application into:
+1. one product mode
+2. one style mode
+
+Rules:
+- Choose the single best product mode from the provided mode library.
+- Choose the single best style mode from the provided style library.
+- Prefer specific modes over generic ones.
+- Use product type, feature set, target audience, tone, and workflow cues.
+- If the user provides a preferred style and it exists in the style library, honor it.
+- If a required product mode is provided, you MUST use it and only decide the best style.
+- Return JSON only.
+
+Output schema:
+{
+  "productMode": "string",
+  "styleMode": "string",
+  "confidence": 0.0,
+  "alternatives": [
+    {
+      "productMode": "string",
+      "styleMode": "string",
+      "confidence": 0.0
+    }
+  ],
+  "reasoning": {
+    "matchedKeywords": ["string"],
+    "matchedFeatures": ["string"],
+    "matchedAudienceSignals": ["string"],
+    "matchedToneSignals": ["string"]
+  }
+}
+"""
+
 DESIGN_ARCHITECT_PROMPT = """You are a **senior UI/UX design architect** powering the design engine of Kith Foundry, an AI application builder.
 
 Your job is to generate a **complete, production-ready design system** for a product described by the user. You reason like a principal product designer at a top-tier studio.
@@ -280,7 +320,8 @@ Your job is to generate a **complete, production-ready design system** for a pro
     "inspiration": "Calm analytics meets habit gamification",
     "design_philosophy": "Clarity, encouragement, and progress visibility",
     "layout_archetype": "Dashboard with sidebar navigation",
-    "design_mode": "SaaS Dashboard"
+    "design_mode": "SaaS Dashboard",
+    "design_style": "Stripe SaaS"
   },
   "design_tokens": {
     "colors": {
@@ -392,6 +433,8 @@ Your job is to generate a **complete, production-ready design system** for a pro
 - Navigation items must have icon names from the lucide-react library.
 - Design for the product's actual audience and tone — a barbershop app looks nothing like a fintech dashboard.
 - Generate ALL sidebar/nav linked pages. Every route in navigation.items must appear in layout_architecture.pages.
+- **Mode + Style System:** When the user specifies a `design_mode`, use it to drive structural decisions: layout framework, navigation pattern, page hierarchy, primary components, and information architecture. When the user specifies a `design_style`, use it to drive visual decisions: color palette personality, typography choice, spacing density, border radius language, shadow depth, and UI component aesthetic. When both are given, Mode = structure + Style = visuals. Always set both `design_framework.design_mode` and `design_framework.design_style` in your output — auto-infer if not provided.
+- If a `DESIGN MODE CONTEXT` block is provided, treat its design type, layout model, density, recommended patterns, default pages, section order, and responsive rules as high-priority structural constraints. Use those constraints to compose coherent pages rather than inventing unrelated sections.
 
 If the user provides additional context (C-Suite analysis, existing design brief, wireframes), incorporate that intelligence into your design decisions rather than ignoring it."""
 

@@ -312,7 +312,21 @@ def _build_bootstrap_prompt_artifact(db: Session, project: Project) -> Artifact:
     if not ordered_sections:
         raise HTTPException(status_code=400, detail="No completed artifacts available")
 
-    design_block = get_design_context(project.id)
+    design_block = ""
+    # Engine-first: use GPT Engine design system when available
+    _engine_ds_art = db.query(Artifact).filter(
+        Artifact.project_id == project.id,
+        Artifact.artifact_type == ArtifactType.design_system,
+        Artifact.status == AgentStatus.complete,
+    ).first()
+    if _engine_ds_art and isinstance(_engine_ds_art.content, dict) and _engine_ds_art.content.get("design_tokens"):
+        try:
+            from design_engine import build_design_context_for_agent
+            design_block = build_design_context_for_agent(_engine_ds_art.content) or ""
+        except Exception:
+            pass
+    if not design_block:
+        design_block = get_design_context(project.id)
 
     prompt = f"""You are an expert senior full-stack engineer.
 Build the product described below as a production-quality MVP.
@@ -339,6 +353,10 @@ Implementation requirements:
 - Use Tailwind CSS utility classes with CSS custom properties for theming
 - Use framer-motion for all animations, transitions, and scroll effects
 - Use lucide-react for all icons throughout the application
+- CSS validity is mandatory: generated files must compile on first run (no PostCSS/Tailwind errors)
+- Never use `@apply font-body` or `@apply font-heading` unless those classes are explicitly defined in `@layer utilities`
+- For typography tokens, prefer direct utilities like `font-[var(--font-body)]` and `font-[var(--font-heading)]`
+- Keep `src/App.css` pure CSS (no markdown fences, no prose, no JSON blobs)
 
 BUILD PHASES (all in one output):
 
@@ -371,7 +389,7 @@ Phase 3 — DASHBOARD:
 - Responsive: sidebar collapses to hamburger on mobile
 
 Phase 4 — ALL REMAINING SCREENS:
-- Build every screen referenced in the design mockups and requirements as a full route
+- Build every screen referenced in the design system and requirements as a full route
 - Each page has real structured content, not placeholder text
 - Wrap authenticated pages in the dashboard layout
 
@@ -382,8 +400,8 @@ Design standards:
 - Smooth transitions on ALL interactive elements
 - Consistent border-radius, shadows, and spacing throughout
 - Professional typography hierarchy
-- If Design Mockups are provided above, use them as the PRIMARY visual reference.
-  Translate the HTML/CSS layout, colors, typography, and component structure
+- If a Design Reference is provided above, use it as the PRIMARY visual reference.
+  Translate the colors, typography, layout, spacing, and component structure
   into React/TSX components + Tailwind + App.css variables. Preserve the exact look and feel.
 - Follow any CDO Design Foundation guidelines (color palette, spacing, UX patterns).
 """

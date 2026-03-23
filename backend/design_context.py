@@ -8,8 +8,8 @@ Used by:
 """
 import json
 from models import (
-    SessionLocal, Project, DesignMockup, CSuiteAnalysis,
-    CSuiteRole, MockupStatus, Artifact, ArtifactType, AgentStatus,
+    SessionLocal, Project, CSuiteAnalysis,
+    CSuiteRole, Artifact, ArtifactType, AgentStatus,
 )
 from design_intelligence import (
     compose_project_context,
@@ -34,7 +34,7 @@ def _extract_design_contract_css(project_id: str, db, project_context: str) -> s
     """Derive a locked CSS :root block from the best available design source.
 
     Priority order:
-      1. First approved mockup :root — exact brand tokens proven in Design Studio
+      1. GPT Engine design tokens — structured tokens from the design engine
       2. Design System Foundation artifact :root block
       2.5 Persisted design_tokens artifact — previously derived contract (stable)
       3. Vendor brief palette → synthetic CSS vars (derived then auto-persisted
@@ -42,25 +42,7 @@ def _extract_design_contract_css(project_id: str, db, project_context: str) -> s
 
     Returns a ready-to-embed :root { ... } string, or empty string if no data.
     """
-    # ── Priority 1: approved northstar mockup ─────────────────────────────
-    northstar = (
-        db.query(DesignMockup)
-        .filter(
-            DesignMockup.project_id == project_id,
-            DesignMockup.status == MockupStatus.approved,
-            DesignMockup.component_code.isnot(None),
-        )
-        .order_by(DesignMockup.sort_order)
-        .first()
-    )
-    if northstar and northstar.component_code:
-        root_m = _re.search(r':root\s*\{([^}]+)\}', northstar.component_code, _re.DOTALL)
-        if root_m:
-            lines = [m.group(1).strip() for m in _PALETTE_VAR_PAT.finditer(root_m.group(1))]
-            if lines:
-                return ":root {\n  " + "\n  ".join(lines) + "\n}"
-
-    # ── Priority 2: Design System Foundation artifact :root block ─────────
+    # ── Priority 1: GPT Engine design tokens (structured) ─────────────────
     dsf = (
         db.query(Artifact)
         .filter(
@@ -70,6 +52,16 @@ def _extract_design_contract_css(project_id: str, db, project_context: str) -> s
         )
         .first()
     )
+    if dsf and isinstance(dsf.content, dict) and dsf.content.get("design_tokens"):
+        try:
+            from design_engine import extract_design_tokens_css
+            css = extract_design_tokens_css(dsf.content)
+            if css and css.strip() not in ("", ":root {\n}"):
+                return css
+        except Exception:
+            pass  # Fall through to :root extraction
+
+    # ── Priority 2: Design System Foundation artifact :root block ─────────
     if dsf and dsf.content:
         text = dsf.content.get("text") if isinstance(dsf.content, dict) else str(dsf.content)
         root_m = _re.search(r':root\s*\{([^}]+)\}', text or "", _re.DOTALL)
@@ -183,6 +175,29 @@ def get_design_context(project_id: str) -> str:
         if not project:
             return ""
 
+        # ── Engine-first: prefer GPT Design Engine output ─────────────────
+        _engine_art = (
+            db.query(Artifact)
+            .filter(
+                Artifact.project_id == project_id,
+                Artifact.artifact_type == ArtifactType.design_system,
+                Artifact.status == AgentStatus.complete,
+            )
+            .first()
+        )
+        if _engine_art and isinstance(_engine_art.content, dict) and _engine_art.content.get("design_tokens"):
+            try:
+                from design_engine import build_design_context_for_agent
+                engine_ref = build_design_context_for_agent(_engine_art.content)
+                if engine_ref:
+                    return (
+                        "\n\n# ── Design Reference (GPT Design Engine) ──────────────\n\n"
+                        + engine_ref
+                        + "\n"
+                    )
+            except Exception as _e:
+                print(f"Engine design context failed, falling back to legacy: {_e}")
+
         sections: list[str] = []
 
         cdo_data = None
@@ -218,7 +233,7 @@ def get_design_context(project_id: str) -> str:
                 )
 
         # ── Design System Foundation artifact ────────────────────────────
-        dsf = db.query(Artifact).filter(
+        dsf = _engine_art or db.query(Artifact).filter(
             Artifact.project_id == project_id,
             Artifact.artifact_type == ArtifactType.design_system,
             Artifact.status == AgentStatus.complete,
@@ -236,48 +251,7 @@ def get_design_context(project_id: str) -> str:
                     + design_system_text
                 )
 
-        # ── User-Approved Mockups only ─────────────────────────────────────
-        mockups = (
-            db.query(DesignMockup)
-            .filter(
-                DesignMockup.project_id == project_id,
-                DesignMockup.status == MockupStatus.approved,
-            )
-            .order_by(DesignMockup.sort_order)
-            .all()
-        )
-
-        if mockups:
-            screen_blocks = []
-            brief_refs = []
-            for m in mockups:
-                code = (m.component_code or "").strip()
-                if not code:
-                    continue
-                brief_refs.append({
-                    "name": m.screen_name,
-                    "description": m.description or "N/A",
-                    "status": m.status.value,
-                })
-                screen_blocks.append(
-                    f"### {m.screen_name}\n"
-                    f"Description: {m.description or 'N/A'}\n"
-                    f"Priority: {m.priority.value}\n\n"
-                    f"```html\n{code}\n```"
-                )
-
-            if screen_blocks:
-                sections.append(
-                    "## Design Mockups\n\n"
-                    "The following HTML/CSS mockups have been explicitly approved by the user "
-                    "in the Design Studio. Use them as the authoritative visual reference for "
-                    "layout, color palette, typography, spacing, and component structure when "
-                    "building React components. Translate the HTML/CSS patterns into "
-                    "React/TSX + App.css, preserving the exact visual design.\n\n"
-                    + "\n\n".join(screen_blocks)
-                )
-        else:
-            brief_refs = []
+        brief_refs = []
 
         project_context = compose_project_context(
             product_name=project.name,
@@ -335,6 +309,29 @@ def get_design_context_compact(project_id: str) -> str:
         if not project:
             return ""
 
+        # ── Engine-first: prefer GPT Design Engine output ─────────────────
+        _engine_art = (
+            db.query(Artifact)
+            .filter(
+                Artifact.project_id == project_id,
+                Artifact.artifact_type == ArtifactType.design_system,
+                Artifact.status == AgentStatus.complete,
+            )
+            .first()
+        )
+        if _engine_art and isinstance(_engine_art.content, dict) and _engine_art.content.get("design_tokens"):
+            try:
+                from design_engine import build_design_context_for_agent
+                engine_ref = build_design_context_for_agent(_engine_art.content)
+                if engine_ref:
+                    return (
+                        "\n# ── Design Reference (GPT Design Engine) ──\n\n"
+                        + engine_ref
+                        + "\n"
+                    )
+            except Exception as _e:
+                print(f"Engine design context (compact) failed, falling back: {_e}")
+
         sections: list[str] = []
 
         cdo_data = None
@@ -359,7 +356,7 @@ def get_design_context_compact(project_id: str) -> str:
                 sections.append("## CDO Design Foundation\n" + "\n".join(parts))
 
         # Design System Foundation artifact (compact summary)
-        dsf = db.query(Artifact).filter(
+        dsf = _engine_art or db.query(Artifact).filter(
             Artifact.project_id == project_id,
             Artifact.artifact_type == ArtifactType.design_system,
             Artifact.status == AgentStatus.complete,
@@ -376,44 +373,7 @@ def get_design_context_compact(project_id: str) -> str:
                     + design_system_text
                 )
 
-        # Screen inventory — approved only (no full HTML)
-        mockups = (
-            db.query(DesignMockup)
-            .filter(
-                DesignMockup.project_id == project_id,
-                DesignMockup.status == MockupStatus.approved,
-            )
-            .order_by(DesignMockup.sort_order)
-            .all()
-        )
-
         brief_refs = []
-        if mockups:
-            # Extract CSS custom properties from the first approved mockup
-            # to give the agent the exact brand color palette.
-            css_vars = ""
-            for m in mockups:
-                if m.component_code:
-                    import re as _re
-                    root_match = _re.search(r':root\s*\{([^}]+)\}', m.component_code)
-                    if root_match:
-                        css_vars = f"\n\nBrand CSS variables (use these in your React/Tailwind code):\n```css\n:root {{\n{root_match.group(1).strip()}\n}}\n```"
-                        break
-
-            lines = [
-                "## Design Screen Inventory",
-                "User-approved screens from Design Studio (implement these screens with visual consistency):",
-            ]
-            for m in mockups:
-                brief_refs.append({
-                    "name": m.screen_name,
-                    "description": m.description or "N/A",
-                    "status": m.status.value,
-                })
-                lines.append(f"  - **{m.screen_name}** ({m.priority.value}): {m.description or 'N/A'}")
-            if css_vars:
-                lines.append(css_vars)
-            sections.append("\n".join(lines))
 
         project_context = compose_project_context(
             product_name=project.name,

@@ -29,6 +29,18 @@ interface AgentResult {
     error_message?: string | null;
 }
 
+interface ImprovementDetail {
+    current_score: number;
+    key_weaknesses: string[];
+    recommended_changes: string[];
+    enhanced_context: string;
+}
+
+interface ImprovementPlan {
+    improvements: Record<string, ImprovementDetail>;
+    summary: string;
+}
+
 const ROLE_META: Record<string, { label: string; icon: any; color: string; gradient: string }> = {
     ceo: { label: "CEO", icon: Crown, color: "text-amber-400", gradient: "from-amber-500/20 to-orange-500/20" },
     cto: { label: "CTO", icon: Code2, color: "text-cyan-400", gradient: "from-cyan-500/20 to-blue-500/20" },
@@ -78,19 +90,10 @@ export default function CSuiteAnalysisPage() {
     const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const sseRef = useRef<EventSource | null>(null);
     const pollCountRef = useRef(0);
+    const autoStartRequestedRef = useRef(false);
     const POLL_TIMEOUT = 150; // ~5 min at 30s fallback interval — stop if no progress
 
     // ── Improvement state ────────────────────────────────────────────────
-    interface ImprovementDetail {
-        current_score: number;
-        key_weaknesses: string[];
-        recommended_changes: string[];
-        enhanced_context: string;
-    }
-    interface ImprovementPlan {
-        improvements: Record<string, ImprovementDetail>;
-        summary: string;
-    }
     const [improvePlan, setImprovePlan] = useState<ImprovementPlan | null>(null);
     const [improveLoading, setImproveLoading] = useState(false);
     const [improveRoles, setImproveRoles] = useState<string[] | null>(null); // null=all
@@ -428,7 +431,7 @@ export default function CSuiteAnalysisPage() {
                 throw new Error(body.detail || "Failed to generate improvement plan");
             }
             const plan = await resp.json();
-            setImprovePlan(plan);
+            setImprovePlan(normalizeImprovePlan(plan));
         } catch (e: any) {
             setError(e.message);
         } finally {
@@ -506,6 +509,8 @@ export default function CSuiteAnalysisPage() {
 
     // Auto-load on mount (loads existing results or starts fresh)
     useEffect(() => {
+        if (autoStartRequestedRef.current) return;
+        autoStartRequestedRef.current = true;
         if (!started) loadOrStart();
     }, []);
 
@@ -523,8 +528,36 @@ export default function CSuiteAnalysisPage() {
             : "Failed to start analysis";
     };
 
+    const normalizeImprovePlan = (raw: any): ImprovementPlan => {
+        const rawImprovements = raw?.improvements;
+        const improvements = rawImprovements && typeof rawImprovements === "object"
+            ? Object.fromEntries(
+                Object.entries(rawImprovements).map(([role, detail]) => {
+                    const safeDetail = detail && typeof detail === "object" ? detail as Partial<ImprovementDetail> : {};
+                    const asStringArray = (value: unknown): string[] => {
+                        if (!Array.isArray(value)) return [];
+                        return value.map(item => String(item)).filter(Boolean);
+                    };
+
+                    return [role, {
+                        current_score: typeof safeDetail.current_score === "number" ? safeDetail.current_score : 0,
+                        key_weaknesses: asStringArray(safeDetail.key_weaknesses),
+                        recommended_changes: asStringArray(safeDetail.recommended_changes),
+                        enhanced_context: typeof safeDetail.enhanced_context === "string" ? safeDetail.enhanced_context : "",
+                    } satisfies ImprovementDetail];
+                })
+            )
+            : {};
+
+        return {
+            improvements,
+            summary: typeof raw?.summary === "string" ? raw.summary : "",
+        };
+    };
+
     const completedCount = agents.filter(a => a.status === "complete" || a.status === "error").length;
     const avgScore = agents.filter(a => a.score != null).reduce((s, a) => s + (a.score || 0), 0) / Math.max(1, agents.filter(a => a.score != null).length);
+    const improveEntries = Object.entries(improvePlan?.improvements ?? {});
 
     const getVerdictColor = (v: string | null) => {
         if (v === "go") return "text-green-400";
@@ -1032,7 +1065,12 @@ export default function CSuiteAnalysisPage() {
                                     )}
 
                                     <div className="space-y-3 mb-5">
-                                        {Object.entries(improvePlan.improvements).map(([role, detail]) => {
+                                        {improveEntries.length === 0 && (
+                                            <div className="rounded-xl border border-[var(--kf-border)] bg-[var(--kf-surface)] px-4 py-3 text-sm text-[var(--kf-text-secondary)]">
+                                                No agent-specific improvement details were returned for this run.
+                                            </div>
+                                        )}
+                                        {improveEntries.map(([role, detail]) => {
                                             const meta = ROLE_META[role];
                                             const isExpanded = expandedImproveCard === role;
                                             return (
@@ -1114,7 +1152,7 @@ export default function CSuiteAnalysisPage() {
                                         </button>
                                         <button
                                             onClick={handleApplyImprovement}
-                                            disabled={applyingImprove}
+                                            disabled={applyingImprove || improveEntries.length === 0}
                                             className="flex items-center gap-2 h-9 px-5 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 text-black text-sm font-bold hover:from-amber-400 hover:to-orange-400 transition-all disabled:opacity-50 shadow-lg shadow-amber-500/20"
                                         >
                                             {applyingImprove ? (
@@ -1122,7 +1160,7 @@ export default function CSuiteAnalysisPage() {
                                             ) : (
                                                 <RotateCcw className="w-4 h-4" />
                                             )}
-                                            {applyingImprove ? "Re-running..." : `Accept & Re-run ${Object.keys(improvePlan.improvements).length} Agent${Object.keys(improvePlan.improvements).length > 1 ? "s" : ""}`}
+                                            {applyingImprove ? "Re-running..." : `Accept & Re-run ${improveEntries.length} Agent${improveEntries.length > 1 ? "s" : ""}`}
                                         </button>
                                     </div>
                                 </>

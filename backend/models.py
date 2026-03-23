@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Text, ForeignKey, Boolean, DateTime,
-    Float, Enum as SAEnum, JSON, create_engine, UniqueConstraint
+    Float, Enum as SAEnum, JSON, Numeric, create_engine, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -179,20 +179,6 @@ class ArtifactType(str, enum.Enum):
     monetization = "monetization"
 
 
-class MockupStatus(str, enum.Enum):
-    pending = "pending"
-    generating = "generating"
-    complete = "complete"
-    approved = "approved"
-    error = "error"
-
-
-class MockupPriority(str, enum.Enum):
-    high = "high"
-    medium = "medium"
-    low = "low"
-
-
 # ── Models ───────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -222,6 +208,10 @@ class Project(Base):
     preview_url = Column(String, nullable=True)
     auto_save_enabled = Column(Boolean, default=True)
     design_preferences = Column(JSON, nullable=True)  # {theme, style, color_preference, ...}
+    product_mode = Column(String, nullable=True)
+    style_mode = Column(String, nullable=True)
+    mode_confidence = Column(Numeric(5, 4), nullable=True)
+    design_mode_locked = Column(Boolean, default=False, nullable=False)
     idea_id = Column(String, ForeignKey("ideas.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -232,7 +222,7 @@ class Project(Base):
     messages = relationship("Message", back_populates="project", cascade="all, delete-orphan")
     csuite_analyses = relationship("CSuiteAnalysis", back_populates="project", cascade="all, delete-orphan")
     artifacts = relationship("Artifact", back_populates="project", cascade="all, delete-orphan")
-    design_mockups = relationship("DesignMockup", back_populates="project", cascade="all, delete-orphan")
+    design_mode_history = relationship("ProjectDesignModeHistory", back_populates="project", cascade="all, delete-orphan")
     pages = relationship("ProjectPage", back_populates="project", cascade="all, delete-orphan")
     components = relationship("ProjectComponent", back_populates="project", cascade="all, delete-orphan")
     features = relationship("ProjectFeature", back_populates="project", cascade="all, delete-orphan")
@@ -253,6 +243,19 @@ class Idea(Base):
 
     user = relationship("User", back_populates="ideas")
     project = relationship("Project", back_populates="idea", foreign_keys=[Project.idea_id])
+
+
+class ProjectDesignModeHistory(Base):
+    __tablename__ = "project_design_mode_history"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_mode = Column(String, nullable=False)
+    style_mode = Column(String, nullable=False)
+    confidence = Column(Numeric(5, 4), nullable=True)
+    source = Column(String, nullable=False)  # auto | user
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    project = relationship("Project", back_populates="design_mode_history")
 
 
 class IdeaQuestionnaireResponse(Base):
@@ -325,23 +328,6 @@ class Artifact(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "artifact_type", name="uq_project_artifact"),
     )
-
-
-class DesignMockup(Base):
-    __tablename__ = "design_mockups"
-    id = Column(String, primary_key=True, index=True)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=False, index=True)
-    screen_name = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
-    priority = Column(SAEnum(MockupPriority), default=MockupPriority.medium, nullable=False)
-    prompt = Column(Text, nullable=True)  # Mini-prompt for generating this screen
-    component_code = Column(Text, nullable=True)  # Generated React component code
-    status = Column(SAEnum(MockupStatus), default=MockupStatus.pending, nullable=False)
-    sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    project = relationship("Project", back_populates="design_mockups")
 
 
 class File(Base):
