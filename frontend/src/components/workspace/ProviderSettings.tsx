@@ -1,23 +1,19 @@
 import { useState, useEffect } from "react";
-import {
-    X, Plus, Star, Trash2, Pencil, Power, TestTube,
-    Shield, Key, Globe, Eye, EyeOff, Check, Loader2,
-    Zap, Cloud, Server, Bot, Box, Cpu, Brain, Sparkles
-} from "lucide-react";
-import { getApiBaseUrl } from "../lib/runtimeConfig";
-import { useAuth } from "../contexts/AuthContext";
+import { cn } from "../../lib/utils/cn";
+import { getApiBaseUrl } from "../../lib/runtimeConfig";
+import { useAuth } from "../../contexts/AuthContext";
 
 const PROVIDERS = [
-    { id: "anthropic", name: "Anthropic", icon: Bot, color: "#D97757" },
-    { id: "openai", name: "OpenAI", icon: Zap, color: "#10A37F" },
-    { id: "openai_compatible", name: "OpenAI Compatible", icon: Server, color: "#818CF8" },
-    { id: "openrouter", name: "OpenRouter", icon: Cloud, color: "#9333EA" },
-    { id: "google_ai", name: "Google AI", icon: Sparkles, color: "#4285F4" },
-    { id: "azure_openai", name: "Azure OpenAI", icon: Box, color: "#0078D4" },
-    { id: "ollama", name: "Ollama", icon: Cpu, color: "#FFFFFF" },
-    { id: "lm_studio", name: "LM Studio", icon: Brain, color: "#22D3EE" },
-    { id: "cohere", name: "Cohere", icon: Sparkles, color: "#39A275" },
-    { id: "huggingface", name: "Hugging Face", icon: Bot, color: "#FFD21E" },
+    { id: "anthropic", name: "Anthropic", icon: "psychology", color: "#D97757" },
+    { id: "openai", name: "OpenAI", icon: "bolt", color: "#10A37F" },
+    { id: "openai_compatible", name: "OpenAI Compatible", icon: "dns", color: "#818CF8" },
+    { id: "openrouter", name: "OpenRouter", icon: "cloud", color: "#9333EA" },
+    { id: "google_ai", name: "Google AI", icon: "auto_awesome", color: "#4285F4" },
+    { id: "azure_openai", name: "Azure OpenAI", icon: "cloud_queue", color: "#0078D4" },
+    { id: "ollama", name: "Ollama", icon: "memory", color: "#FFFFFF" },
+    { id: "lm_studio", name: "LM Studio", icon: "psychology", color: "#22D3EE" },
+    { id: "cohere", name: "Cohere", icon: "auto_awesome", color: "#39A275" },
+    { id: "huggingface", name: "Hugging Face", icon: "smart_toy", color: "#FFD21E" },
 ];
 
 interface ProviderEntry {
@@ -79,6 +75,10 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
             const res = await fetch(`${API}/api/v1/providers`, {
                 headers: { Authorization: `Bearer ${t}` }
             });
+            if (!res.ok) {
+                const body = await res.text();
+                throw new Error(`providers ${res.status}: ${body.slice(0, 180)}`);
+            }
             const data = await res.json();
             setProviders(data.providers || []);
         } catch (e) {
@@ -95,6 +95,10 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
             const res = await fetch(`${API}/api/v1/model-routing`, {
                 headers: { Authorization: `Bearer ${t}` }
             });
+            if (!res.ok) {
+                const body = await res.text();
+                throw new Error(`model-routing ${res.status}: ${body.slice(0, 180)}`);
+            }
             const data = await res.json();
             setRoutings(data.routings || []);
         } catch (e) {
@@ -128,6 +132,10 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
             const res = await fetch(`${API}/api/v1/model-routing`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
+            if (!res.ok) {
+                const body = await res.text();
+                throw new Error(`model-routing ${res.status}: ${body.slice(0, 180)}`);
+            }
             const data = await res.json();
             const r: ModelRoutingEntry[] = data.routings || [];
             setRoutings(r);
@@ -308,384 +316,403 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
     const innerContent = (
         <>
             {/* Header */}
-            <div className={`flex items-center justify-between ${inline ? 'mb-6' : 'px-6 py-5 border-b border-[var(--kf-border)]'}`}>
+            <div className={cn("flex items-center justify-between", inline ? "mb-6" : "px-6 py-5 border-b border-outline-variant")}>
                 {!inline && (
                     <div>
-                        <h2 className="text-xl font-bold text-[var(--kf-text)]">AI Provider Settings</h2>
-                        <p className="text-sm text-zinc-500 mt-1">
+                        <h2 className="text-xl font-black text-on-surface uppercase tracking-widest cinematic-tracking">AI Provider Settings</h2>
+                        <p className="text-sm text-tertiary mt-1">
                             Manage your custom API keys for different AI providers.
                         </p>
                     </div>
                 )}
-                <div className={`flex items-center gap-3 ${inline ? 'ml-auto' : ''}`}>
+                <div className={cn("flex items-center gap-3", inline ? "ml-auto" : "")}>
                     <button
                         onClick={() => { resetForm(); setShowForm(true); }}
-                        className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                        className="flex items-center gap-2 bg-primary hover:bg-primary/80 text-on-primary text-sm px-4 py-2 rounded-full font-black uppercase tracking-widest transition-colors cursor-pointer"
                     >
-                        <Plus className="w-4 h-4" /> Connect Provider
+                        <span className="material-symbols-outlined" style={{ fontSize: 16 }}>add</span>
+                        Connect Provider
                     </button>
                     {!inline && onClose && (
                         <button
                             onClick={onClose}
-                            className="p-2 hover:bg-[var(--kf-hover-bg)] rounded-lg text-[var(--kf-text-muted)] hover:text-[var(--kf-text)] transition-colors cursor-pointer"
+                            className="p-2 hover:bg-surface-container rounded-full text-tertiary hover:text-on-surface transition-colors cursor-pointer"
                         >
-                            <X className="w-5 h-5" />
+                            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>close</span>
                         </button>
                     )}
                 </div>
             </div>
 
             {/* Content */}
-            <div className={inline ? '' : 'flex-1 overflow-y-auto px-6 py-4'}>
-                    {/* Security banner */}
-                    <div className="flex items-start gap-3 bg-indigo-500/5 border border-indigo-500/15 rounded-lg p-4 mb-6">
-                        <Shield className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
-                        <div>
-                            <p className="text-sm font-medium text-indigo-600 dark:text-indigo-300">Enterprise-Grade Security</p>
-                            <p className="text-xs text-zinc-500 mt-1">
-                                Your API keys are encrypted at rest using AES-256. They are never exposed to the client-side
-                                and are only decrypted securely within our server environment when making API requests.
-                            </p>
-                        </div>
+            <div className={inline ? "" : "flex-1 overflow-y-auto px-6 py-4"}>
+                {/* Security banner */}
+                <div className="flex items-start gap-3 bg-primary/5 border border-primary/15 rounded-[var(--radius-module)] p-4 mb-6">
+                    <span className="material-symbols-outlined text-primary shrink-0 mt-0.5" style={{ fontSize: 20 }}>shield</span>
+                    <div>
+                        <p className="text-sm font-black text-primary uppercase tracking-widest">Enterprise-Grade Security</p>
+                        <p className="text-xs text-tertiary mt-1">
+                            Your API keys are encrypted at rest using AES-256. They are never exposed to the client-side
+                            and are only decrypted securely within our server environment when making API requests.
+                        </p>
+                    </div>
+                </div>
+
+                {/* Configured Keys */}
+                <div className="mb-6">
+                    <div className="flex items-center gap-2 mb-3">
+                        <span className="material-symbols-outlined text-primary" style={{ fontSize: 16 }}>key</span>
+                        <h3 className="text-sm font-black text-on-surface uppercase tracking-widest">Configured Keys</h3>
+                        <span className="text-xs bg-surface-container text-secondary px-1.5 py-0.5 rounded-full">{providers.length}</span>
                     </div>
 
-                    {/* Configured Keys */}
-                    <div className="mb-6">
-                        <div className="flex items-center gap-2 mb-3">
-                            <Key className="w-4 h-4 text-indigo-400" />
-                            <h3 className="text-sm font-semibold text-[var(--kf-text)]">Configured Keys</h3>
-                            <span className="text-xs bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] px-1.5 py-0.5 rounded">{providers.length}</span>
+                    {loading ? (
+                        <div className="flex items-center justify-center py-8">
+                            <span className="material-symbols-outlined text-tertiary animate-spin" style={{ fontSize: 20 }}>refresh</span>
                         </div>
-
-                        {loading ? (
-                            <div className="flex items-center justify-center py-8">
-                                <Loader2 className="w-5 h-5 text-zinc-500 animate-spin" />
-                            </div>
-                        ) : providers.length === 0 ? (
-                            <div className="text-center py-8 text-zinc-600">
-                                <Key className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                                <p className="text-sm">No providers configured yet</p>
-                                <p className="text-xs mt-1">Click "Connect Provider" to add your first API key</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-2">
-                                {providers.map(p => {
-                                    const info = getProviderInfo(p.provider);
-                                    const Icon = info.icon;
-                                    return (
+                    ) : providers.length === 0 ? (
+                        <div className="text-center py-8 text-tertiary">
+                            <span className="material-symbols-outlined block mx-auto mb-2 opacity-40" style={{ fontSize: 32 }}>key</span>
+                            <p className="text-sm">No providers configured yet</p>
+                            <p className="text-xs mt-1">Click "Connect Provider" to add your first API key</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            {providers.map(p => {
+                                const info = getProviderInfo(p.provider);
+                                return (
+                                    <div
+                                        key={p.id}
+                                        className={cn(
+                                            "flex items-center gap-4 px-4 py-3 rounded-[var(--radius-module)] border transition-colors steel-gradient ghost-border",
+                                            !p.is_active && "opacity-50"
+                                        )}
+                                    >
                                         <div
-                                            key={p.id}
-                                            className={`flex items-center gap-4 px-4 py-3 rounded-lg border transition-colors ${p.is_active
-                                                ? "bg-[var(--kf-surface)] border-[var(--kf-border)] hover:border-[var(--kf-border-muted)]"
-                                                : "bg-[var(--kf-surface)] border-[var(--kf-border)] opacity-50"
-                                                }`}
+                                            className="w-10 h-10 rounded-[var(--radius-module)] flex items-center justify-center shrink-0"
+                                            style={{ backgroundColor: info.color + "15" }}
                                         >
-                                            <div
-                                                className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-                                                style={{ backgroundColor: info.color + "15" }}
-                                            >
-                                                <Icon className="w-5 h-5" style={{ color: info.color }} />
-                                            </div>
+                                            <span className="material-symbols-outlined" style={{ fontSize: 20, color: info.color }}>{info.icon}</span>
+                                        </div>
 
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="text-sm font-medium text-[var(--kf-text)] truncate">{p.name}</span>
-                                                    {p.is_default && (
-                                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 flex items-center gap-1">
-                                                            <Star className="w-2.5 h-2.5" /> Default
-                                                        </span>
-                                                    )}
-                                                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.is_active
-                                                        ? "bg-green-500/15 text-green-400 border border-green-500/20"
-                                                        : "bg-zinc-700/30 text-zinc-500 border border-zinc-700/30"
-                                                        }`}>
-                                                        {p.is_active ? "Active" : "Inactive"}
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-sm font-black text-on-surface uppercase tracking-widest truncate">{p.name}</span>
+                                                {p.is_default && (
+                                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/20 flex items-center gap-1 font-black uppercase tracking-widest">
+                                                        <span className="material-symbols-outlined" style={{ fontSize: 10 }}>star</span> Default
                                                     </span>
-                                                </div>
-                                                <div className="flex items-center gap-2 mt-1 text-xs text-zinc-500">
-                                                    <span>{info.name}</span>
-                                                    <span>•</span>
-                                                    <span>Added {formatDate(p.created_at)}</span>
-                                                    {p.last_used_at && (
-                                                        <>
-                                                            <span>•</span>
-                                                            <span>Last used {formatDate(p.last_used_at)}</span>
-                                                        </>
-                                                    )}
-                                                    {p.base_url && (
-                                                        <>
-                                                            <span>•</span>
-                                                            <span className="bg-[var(--kf-badge-bg)] px-1.5 py-0.5 rounded text-[10px] font-mono truncate max-w-[180px]">
-                                                                {p.base_url}
-                                                            </span>
-                                                        </>
-                                                    )}
-                                                </div>
-                                                {/* Test result */}
-                                                {testResult && testResult.id === p.id && (
-                                                    <div className={`mt-2 text-xs px-2 py-1 rounded ${testResult.success
-                                                        ? "bg-green-500/10 text-green-400 border border-green-500/20"
-                                                        : "bg-red-500/10 text-red-400 border border-red-500/20"
-                                                        }`}>
-                                                        {testResult.message}
-                                                    </div>
+                                                )}
+                                                <span className={cn(
+                                                    "text-[10px] px-1.5 py-0.5 rounded-full font-black uppercase tracking-widest",
+                                                    p.is_active
+                                                        ? "bg-green-500/15 text-green-400 border border-green-500/20"
+                                                        : "bg-outline-variant/30 text-tertiary border border-outline-variant/30"
+                                                )}>
+                                                    {p.is_active ? "Active" : "Inactive"}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-2 mt-1 text-xs text-tertiary">
+                                                <span>{info.name}</span>
+                                                <span>•</span>
+                                                <span>Added {formatDate(p.created_at)}</span>
+                                                {p.last_used_at && (
+                                                    <>
+                                                        <span>•</span>
+                                                        <span>Last used {formatDate(p.last_used_at)}</span>
+                                                    </>
+                                                )}
+                                                {p.base_url && (
+                                                    <>
+                                                        <span>•</span>
+                                                        <span className="bg-surface-container px-1.5 py-0.5 rounded text-[10px] font-mono truncate max-w-[180px]">
+                                                            {p.base_url}
+                                                        </span>
+                                                    </>
                                                 )}
                                             </div>
-
-                                            {/* Actions */}
-                                            <div className="flex items-center gap-1 shrink-0">
-                                                <button
-                                                    onClick={() => handleSetDefault(p.id)}
-                                                    className={`p-1.5 rounded hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer ${p.is_default ? "text-amber-400" : "text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)]"}`}
-                                                    title="Set as default"
-                                                >
-                                                    <Star className="w-3.5 h-3.5" />
-                                                </button>
-                                                <button
-                                                    onClick={() => handleTest(p.id)}
-                                                    className="p-1.5 rounded text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
-                                                    title="Test connection"
-                                                    disabled={testingId === p.id}
-                                                >
-                                                    {testingId === p.id ? (
-                                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                    ) : (
-                                                        <TestTube className="w-3.5 h-3.5" />
-                                                    )}
-                                                </button>
-                                                <button
-                                                    onClick={() => handleToggle(p.id)}
-                                                    className={`p-1.5 rounded hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer ${p.is_active ? "text-green-500 hover:text-red-400" : "text-[var(--kf-text-faint)] hover:text-green-400"}`}
-                                                    title={p.is_active ? "Deactivate" : "Activate"}
-                                                >
-                                                    <Power className="w-3.5 h-3.5" />
-                                                </button>
-                                                <button
-                                                    onClick={() => handleEdit(p)}
-                                                    className="p-1.5 rounded text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
-                                                    title="Edit"
-                                                >
-                                                    <Pencil className="w-3.5 h-3.5" />
-                                                </button>
-                                                <div className="w-px h-4 bg-[var(--kf-border)] mx-0.5" />
-                                                <button
-                                                    onClick={() => handleDelete(p.id)}
-                                                    className="p-1.5 rounded text-[var(--kf-text-faint)] hover:text-red-400 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
-                                                    title="Delete"
-                                                >
-                                                    <Trash2 className="w-3.5 h-3.5" />
-                                                </button>
-                                            </div>
+                                            {/* Test result */}
+                                            {testResult && testResult.id === p.id && (
+                                                <div className={cn(
+                                                    "mt-2 text-xs px-2 py-1 rounded-full",
+                                                    testResult.success
+                                                        ? "bg-green-500/10 text-green-400 border border-green-500/20"
+                                                        : "bg-red-500/10 text-red-400 border border-red-500/20"
+                                                )}>
+                                                    {testResult.message}
+                                                </div>
+                                            )}
                                         </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
 
-                    {/* Model Routing */}
-                    <div className="mb-6">
-                        <div className="flex items-center justify-between mb-3">
-                            <div className="flex items-center gap-2">
-                                <Cpu className="w-4 h-4 text-indigo-400" />
-                                <h3 className="text-sm font-semibold text-[var(--kf-text)]">Task Routing</h3>
-                            </div>
-                            <span className="text-xs text-zinc-500">Route specific tasks to specific models</span>
-                        </div>
-                        <div className="space-y-3">
-                            {routings.length === 0 ? (
-                                <div className="text-sm text-zinc-500 text-center py-4">Loading routing configurations...</div>
-                            ) : routings.map(r => (
-                                <div key={r.task_type} className="flex flex-col gap-2 p-3 rounded-lg border border-[var(--kf-border)] bg-[var(--kf-surface)]">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-sm font-medium text-[var(--kf-text)]">{r.task_label}</span>
-                                        <button
-                                            onClick={() => handleUpdateRouting(r.task_type, null, null)}
-                                            className="text-xs text-[var(--kf-text-muted)] hover:text-[var(--kf-text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                                            disabled={!r.provider_id}
-                                        >
-                                            Reset to Default
-                                        </button>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <select
-                                            className="bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-md px-3 py-2 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 cursor-pointer"
-                                            value={r.provider_id || ""}
-                                            onChange={(e) => {
-                                                const pid = e.target.value ? Number(e.target.value) : null;
-                                                if (pid) loadProviderModels(pid);
-                                                handleUpdateRouting(r.task_type, pid, null);
-                                            }}
-                                        >
-                                            <option value="">Default Provider</option>
-                                            {providers.filter(p => p.is_active).map(p => (
-                                                <option key={p.id} value={p.id}>{p.name} ({getProviderInfo(p.provider).name})</option>
-                                            ))}
-                                        </select>
-                                        <select
-                                            className="bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-md px-3 py-2 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 disabled:opacity-50 cursor-pointer"
-                                            value={r.model_id || ""}
-                                            onChange={(e) => handleUpdateRouting(r.task_type, r.provider_id, e.target.value || null)}
-                                            disabled={!r.provider_id}
-                                        >
-                                            <option value="">Default Model</option>
-                                            {r.provider_id && providerModels[r.provider_id]?.map((m: any, idx: number) => {
-                                                const modelId = typeof m === 'string' ? m : m.id;
-                                                return <option key={`${modelId}-${idx}`} value={modelId}>{modelId}</option>;
-                                            })}
-                                        </select>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Add/Edit Form */}
-                    {showForm && (
-                        <div className="border border-[var(--kf-border)] rounded-lg p-5 bg-[var(--kf-surface)] mb-6">
-                            <h3 className="text-sm font-semibold text-[var(--kf-text)] mb-4">
-                                {editingId ? "Edit Provider" : "Select Provider"}
-                            </h3>
-
-                            {/* Provider grid */}
-                            {!editingId && (
-                                <div className="grid grid-cols-3 gap-2 mb-6">
-                                    {PROVIDERS.map(p => {
-                                        const Icon = p.icon;
-                                        return (
+                                        {/* Actions */}
+                                        <div className="flex items-center gap-1 shrink-0">
                                             <button
-                                                key={p.id}
-                                                onClick={() => setSelectedProvider(p.id)}
-                                                className={`flex flex-col items-center gap-2 py-3 px-2 rounded-lg border transition-all cursor-pointer ${selectedProvider === p.id
-                                                    ? "border-indigo-500 bg-indigo-500/10 text-[var(--kf-text)]"
-                                                    : "border-[var(--kf-border)] hover:border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"
-                                                    }`}
+                                                onClick={() => handleSetDefault(p.id)}
+                                                className={cn(
+                                                    "p-1.5 rounded-full hover:bg-surface-container transition-colors cursor-pointer",
+                                                    p.is_default ? "text-amber-400" : "text-tertiary hover:text-secondary"
+                                                )}
+                                                title="Set as default"
                                             >
-                                                <Icon className="w-5 h-5" style={{ color: p.color }} />
-                                                <span className="text-xs">{p.name}</span>
+                                                <span className="material-symbols-outlined" style={{ fontSize: 14 }}>star</span>
                                             </button>
-                                        );
-                                    })}
-                                </div>
-                            )}
-
-                            {/* Key Name */}
-                            <div className="mb-4">
-                                <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">Key Name</label>
-                                <div className="relative">
-                                    <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600" />
-                                    <input
-                                        type="text"
-                                        value={keyName}
-                                        onChange={e => setKeyName(e.target.value)}
-                                        placeholder="e.g. My Production Key"
-                                        className="w-full bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-lg pl-10 pr-4 py-2.5 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 placeholder:text-[var(--kf-text-faint)]"
-                                    />
-                                </div>
-                                <p className="text-xs text-zinc-600 mt-1">A friendly name to identify this key.</p>
-                            </div>
-
-                            {/* API Key */}
-                            <div className="mb-4">
-                                <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">
-                                    API Key <span className="text-red-400">*</span>
-                                </label>
-                                <div className="relative">
-                                    <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-indigo-400" />
-                                    <input
-                                        type={showKey ? "text" : "password"}
-                                        value={apiKey}
-                                        onChange={e => setApiKey(e.target.value)}
-                                        placeholder="sk-••••••••••••"
-                                        className="w-full bg-[var(--kf-input-bg)] border border-indigo-500/30 rounded-lg pl-10 pr-12 py-2.5 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 placeholder:text-[var(--kf-text-faint)]"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowKey(v => !v)}
-                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--kf-text-faint)] hover:text-[var(--kf-text-secondary)] cursor-pointer"
-                                    >
-                                        {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                                    </button>
-                                </div>
-                                <p className="text-xs text-zinc-600 mt-1 flex items-center gap-1">
-                                    <Shield className="w-3 h-3" /> Encrypted securely. Never shared with third parties.
-                                </p>
-                            </div>
-
-                            {/* Base URL */}
-                            <div className="mb-4">
-                                <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">
-                                    Base URL {needsBaseUrl ? "" : "(Optional)"}
-                                </label>
-                                <div className="relative">
-                                    <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600" />
-                                    <input
-                                        type="text"
-                                        value={baseUrl}
-                                        onChange={e => setBaseUrl(e.target.value)}
-                                        placeholder={urlPlaceholder}
-                                        className="w-full bg-[var(--kf-input-bg)] border border-[var(--kf-border-muted)] rounded-lg pl-10 pr-4 py-2.5 text-sm text-[var(--kf-text-secondary)] focus:outline-none focus:border-indigo-500 placeholder:text-[var(--kf-text-faint)]"
-                                    />
-                                </div>
-                                <p className="text-xs text-zinc-600 mt-1">
-                                    {needsBaseUrl
-                                        ? `Required. Example: ${urlPlaceholder}`
-                                        : "Required for local models (Ollama, LM Studio) or proxy usage."
-                                    }
-                                </p>
-                            </div>
-
-                            {/* Set as default checkbox */}
-                            {!editingId && (
-                                <div className="flex items-start gap-3 bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-lg p-3 mb-5">
-                                    <input
-                                        type="checkbox"
-                                        id="set-default"
-                                        checked={isDefault}
-                                        onChange={e => setIsDefault(e.target.checked)}
-                                        className="mt-0.5 accent-indigo-500"
-                                    />
-                                    <label htmlFor="set-default" className="cursor-pointer">
-                                        <p className="text-sm font-medium text-[var(--kf-text)]">
-                                            Set as default for {providerInfo.name}
-                                        </p>
-                                        <p className="text-xs text-zinc-500 mt-0.5">
-                                            New requests for this provider will use this key automatically.
-                                        </p>
-                                    </label>
-                                </div>
-                            )}
-
-                            {/* Action buttons */}
-                            <div className="flex justify-end gap-3 pt-2 border-t border-[var(--kf-border)]">
-                                <button
-                                    onClick={() => { resetForm(); setShowForm(false); }}
-                                    className="px-4 py-2 text-sm text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] bg-[var(--kf-badge-bg)] hover:bg-[var(--kf-hover-bg)] rounded-lg transition-colors cursor-pointer"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    onClick={handleSubmit}
-                                    disabled={!apiKey.trim() || saving}
-                                    className="flex items-center gap-2 px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer"
-                                >
-                                    {saving ? (
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                        <Check className="w-4 h-4" />
-                                    )}
-                                    {editingId ? "Update Provider" : "Connect Provider"}
-                                </button>
-                            </div>
+                                            <button
+                                                onClick={() => handleTest(p.id)}
+                                                className="p-1.5 rounded-full text-tertiary hover:text-secondary hover:bg-surface-container transition-colors cursor-pointer"
+                                                title="Test connection"
+                                                disabled={testingId === p.id}
+                                            >
+                                                {testingId === p.id ? (
+                                                    <span className="material-symbols-outlined animate-spin" style={{ fontSize: 14 }}>refresh</span>
+                                                ) : (
+                                                    <span className="material-symbols-outlined" style={{ fontSize: 14 }}>science</span>
+                                                )}
+                                            </button>
+                                            <button
+                                                onClick={() => handleToggle(p.id)}
+                                                className={cn(
+                                                    "p-1.5 rounded-full hover:bg-surface-container transition-colors cursor-pointer",
+                                                    p.is_active ? "text-green-500 hover:text-red-400" : "text-tertiary hover:text-green-400"
+                                                )}
+                                                title={p.is_active ? "Deactivate" : "Activate"}
+                                            >
+                                                <span className="material-symbols-outlined" style={{ fontSize: 14 }}>power_settings_new</span>
+                                            </button>
+                                            <button
+                                                onClick={() => handleEdit(p)}
+                                                className="p-1.5 rounded-full text-tertiary hover:text-secondary hover:bg-surface-container transition-colors cursor-pointer"
+                                                title="Edit"
+                                            >
+                                                <span className="material-symbols-outlined" style={{ fontSize: 14 }}>edit</span>
+                                            </button>
+                                            <div className="w-px h-4 bg-outline-variant mx-0.5" />
+                                            <button
+                                                onClick={() => handleDelete(p.id)}
+                                                className="p-1.5 rounded-full text-tertiary hover:text-red-400 hover:bg-surface-container transition-colors cursor-pointer"
+                                                title="Delete"
+                                            >
+                                                <span className="material-symbols-outlined" style={{ fontSize: 14 }}>delete</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     )}
+                </div>
 
-                    {/* Footer badges */}
-                    <div className="flex items-center justify-center gap-6 text-[11px] text-[var(--kf-text-faint)] pt-2 pb-1">
-                        <span className="flex items-center gap-1"><Shield className="w-3 h-3" /> Encrypted Storage</span>
-                        <span className="flex items-center gap-1"><Server className="w-3 h-3" /> Server-Side Execution</span>
-                        <span className="flex items-center gap-1"><Check className="w-3 h-3" /> Zero-Logging Policy</span>
+                {/* Model Routing */}
+                <div className="mb-6">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                            <span className="material-symbols-outlined text-primary" style={{ fontSize: 16 }}>psychology</span>
+                            <h3 className="text-sm font-black text-on-surface uppercase tracking-widest">Task Routing</h3>
+                        </div>
+                        <span className="text-xs text-tertiary">Route specific tasks to specific models</span>
                     </div>
+                    <div className="space-y-3">
+                        {routings.length === 0 ? (
+                            <div className="text-sm text-tertiary text-center py-4">Loading routing configurations...</div>
+                        ) : routings.map(r => (
+                            <div key={r.task_type} className="flex flex-col gap-2 p-3 rounded-[var(--radius-module)] border border-outline-variant bg-surface steel-gradient ghost-border">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm font-black text-on-surface uppercase tracking-widest">{r.task_label}</span>
+                                    <button
+                                        onClick={() => handleUpdateRouting(r.task_type, null, null)}
+                                        className="text-xs text-tertiary hover:text-secondary disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer font-black uppercase tracking-widest"
+                                        disabled={!r.provider_id}
+                                    >
+                                        Reset to Default
+                                    </button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <select
+                                        className="bg-surface-container border border-outline-variant rounded-full px-3 py-2 text-sm text-secondary focus:outline-none focus:border-primary cursor-pointer"
+                                        value={r.provider_id || ""}
+                                        onChange={(e) => {
+                                            const pid = e.target.value ? Number(e.target.value) : null;
+                                            if (pid) loadProviderModels(pid);
+                                            handleUpdateRouting(r.task_type, pid, null);
+                                        }}
+                                    >
+                                        <option value="">Default Provider</option>
+                                        {providers.filter(p => p.is_active).map(p => (
+                                            <option key={p.id} value={p.id}>{p.name} ({getProviderInfo(p.provider).name})</option>
+                                        ))}
+                                    </select>
+                                    <select
+                                        className="bg-surface-container border border-outline-variant rounded-full px-3 py-2 text-sm text-secondary focus:outline-none focus:border-primary disabled:opacity-50 cursor-pointer"
+                                        value={r.model_id || ""}
+                                        onChange={(e) => handleUpdateRouting(r.task_type, r.provider_id, e.target.value || null)}
+                                        disabled={!r.provider_id}
+                                    >
+                                        <option value="">Default Model</option>
+                                        {r.provider_id && providerModels[r.provider_id]?.map((m: any, idx: number) => {
+                                            const modelId = typeof m === 'string' ? m : m.id;
+                                            return <option key={`${modelId}-${idx}`} value={modelId}>{modelId}</option>;
+                                        })}
+                                    </select>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Add/Edit Form */}
+                {showForm && (
+                    <div className="border border-outline-variant rounded-[var(--radius-module)] p-5 bg-surface steel-gradient ghost-border mb-6">
+                        <h3 className="text-sm font-black text-on-surface uppercase tracking-widest mb-4">
+                            {editingId ? "Edit Provider" : "Select Provider"}
+                        </h3>
+
+                        {/* Provider grid */}
+                        {!editingId && (
+                            <div className="grid grid-cols-3 gap-2 mb-6">
+                                {PROVIDERS.map(p => (
+                                    <button
+                                        key={p.id}
+                                        onClick={() => setSelectedProvider(p.id)}
+                                        className={cn(
+                                            "flex flex-col items-center gap-2 py-3 px-2 rounded-[var(--radius-module)] border transition-all cursor-pointer",
+                                            selectedProvider === p.id
+                                                ? "border-primary bg-primary/10 text-on-surface"
+                                                : "border-outline-variant hover:border-outline-variant/80 text-secondary hover:text-on-surface"
+                                        )}
+                                    >
+                                        <span className="material-symbols-outlined" style={{ fontSize: 20, color: p.color }}>{p.icon}</span>
+                                        <span className="text-xs font-black uppercase tracking-widest">{p.name}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Key Name */}
+                        <div className="mb-4">
+                            <label className="block text-sm font-black text-secondary uppercase tracking-widest mb-1.5">Key Name</label>
+                            <div className="relative">
+                                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-tertiary" style={{ fontSize: 16 }}>key</span>
+                                <input
+                                    type="text"
+                                    value={keyName}
+                                    onChange={e => setKeyName(e.target.value)}
+                                    placeholder="e.g. My Production Key"
+                                    className="w-full bg-surface-container border border-outline-variant rounded-full pl-10 pr-4 py-2.5 text-sm text-secondary focus:outline-none focus:border-primary placeholder:text-tertiary"
+                                />
+                            </div>
+                            <p className="text-xs text-tertiary mt-1">A friendly name to identify this key.</p>
+                        </div>
+
+                        {/* API Key */}
+                        <div className="mb-4">
+                            <label className="block text-sm font-black text-secondary uppercase tracking-widest mb-1.5">
+                                API Key <span className="text-red-400">*</span>
+                            </label>
+                            <div className="relative">
+                                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-primary" style={{ fontSize: 16 }}>key</span>
+                                <input
+                                    type={showKey ? "text" : "password"}
+                                    value={apiKey}
+                                    onChange={e => setApiKey(e.target.value)}
+                                    placeholder="sk-••••••••••••"
+                                    className="w-full bg-surface-container border border-primary/30 rounded-full pl-10 pr-12 py-2.5 text-sm text-secondary focus:outline-none focus:border-primary placeholder:text-tertiary"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowKey(v => !v)}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-tertiary hover:text-secondary cursor-pointer"
+                                >
+                                    <span className="material-symbols-outlined" style={{ fontSize: 16 }}>{showKey ? "visibility_off" : "visibility"}</span>
+                                </button>
+                            </div>
+                            <p className="text-xs text-tertiary mt-1 flex items-center gap-1">
+                                <span className="material-symbols-outlined" style={{ fontSize: 12 }}>shield</span>
+                                Encrypted securely. Never shared with third parties.
+                            </p>
+                        </div>
+
+                        {/* Base URL */}
+                        <div className="mb-4">
+                            <label className="block text-sm font-black text-secondary uppercase tracking-widest mb-1.5">
+                                Base URL {needsBaseUrl ? "" : "(Optional)"}
+                            </label>
+                            <div className="relative">
+                                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-tertiary" style={{ fontSize: 16 }}>cloud</span>
+                                <input
+                                    type="text"
+                                    value={baseUrl}
+                                    onChange={e => setBaseUrl(e.target.value)}
+                                    placeholder={urlPlaceholder}
+                                    className="w-full bg-surface-container border border-outline-variant rounded-full pl-10 pr-4 py-2.5 text-sm text-secondary focus:outline-none focus:border-primary placeholder:text-tertiary"
+                                />
+                            </div>
+                            <p className="text-xs text-tertiary mt-1">
+                                {needsBaseUrl
+                                    ? `Required. Example: ${urlPlaceholder}`
+                                    : "Required for local models (Ollama, LM Studio) or proxy usage."
+                                }
+                            </p>
+                        </div>
+
+                        {/* Set as default checkbox */}
+                        {!editingId && (
+                            <div className="flex items-start gap-3 bg-surface border border-outline-variant rounded-[var(--radius-module)] p-3 mb-5">
+                                <input
+                                    type="checkbox"
+                                    id="set-default"
+                                    checked={isDefault}
+                                    onChange={e => setIsDefault(e.target.checked)}
+                                    className="mt-0.5 accent-primary"
+                                />
+                                <label htmlFor="set-default" className="cursor-pointer">
+                                    <p className="text-sm font-black text-on-surface uppercase tracking-widest">
+                                        Set as default for {providerInfo.name}
+                                    </p>
+                                    <p className="text-xs text-tertiary mt-0.5">
+                                        New requests for this provider will use this key automatically.
+                                    </p>
+                                </label>
+                            </div>
+                        )}
+
+                        {/* Action buttons */}
+                        <div className="flex justify-end gap-3 pt-2 border-t border-outline-variant">
+                            <button
+                                onClick={() => { resetForm(); setShowForm(false); }}
+                                className="px-4 py-2 text-sm font-black uppercase tracking-widest text-secondary hover:text-on-surface bg-surface-container hover:bg-surface rounded-full transition-colors cursor-pointer"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSubmit}
+                                disabled={!apiKey.trim() || saving}
+                                className="flex items-center gap-2 px-4 py-2 text-sm font-black uppercase tracking-widest bg-primary hover:bg-primary/80 text-on-primary rounded-full transition-colors disabled:opacity-40 cursor-pointer"
+                            >
+                                {saving ? (
+                                    <span className="material-symbols-outlined animate-spin" style={{ fontSize: 16 }}>refresh</span>
+                                ) : (
+                                    <span className="material-symbols-outlined" style={{ fontSize: 16 }}>check</span>
+                                )}
+                                {editingId ? "Update Provider" : "Connect Provider"}
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Footer badges */}
+                <div className="flex items-center justify-center gap-6 text-[11px] text-tertiary pt-2 pb-1">
+                    <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined" style={{ fontSize: 12 }}>shield</span>
+                        Encrypted Storage
+                    </span>
+                    <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined" style={{ fontSize: 12 }}>dns</span>
+                        Server-Side Execution
+                    </span>
+                    <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined" style={{ fontSize: 12 }}>check</span>
+                        Zero-Logging Policy
+                    </span>
+                </div>
             </div>
         </>
     );
@@ -697,7 +724,7 @@ export function ProviderSettings({ onClose, inline = false }: ProviderSettingsPr
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
             <div
-                className="w-full max-w-[820px] max-h-[90vh] bg-[var(--kf-bg)] border border-[var(--kf-border)] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+                className="w-full max-w-[820px] max-h-[90vh] bg-surface border border-outline-variant rounded-[var(--radius-module)] shadow-2xl flex flex-col overflow-hidden steel-gradient ghost-border"
                 style={{ animation: "fadeInScale 0.2s ease" }}
             >
                 {innerContent}

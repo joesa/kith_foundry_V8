@@ -1,182 +1,142 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
-import { motion } from "framer-motion";
-import { Anvil, Eye, EyeOff } from "lucide-react";
+import { cn } from "../../lib/utils/cn";
 
 export default function SignUpPage() {
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [confirmPassword, setConfirmPassword] = useState("");
-    const [showPassword, setShowPassword] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const [success, setSuccess] = useState(false);
-    const [loading, setLoading] = useState(false);
-    const { signUp } = useAuth();
-    const navigate = useNavigate();
+  const [callsign, setCallsign] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const { signUp } = useAuth();
+  const navigate = useNavigate();
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setError(null);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
 
-        if (password !== confirmPassword) {
-            setError("Passwords do not match");
-            return;
-        }
-
-        setLoading(true);
-        const { error } = await signUp(email, password);
-        setLoading(false);
-
-        if (error) {
-            setError(error);
-        } else {
-            setSuccess(true);
-        }
-    };
-
-    if (success) {
-        return (
-            <div className="min-h-screen bg-[var(--kf-bg)] flex items-center justify-center p-4 relative overflow-hidden">
-                <div className="absolute inset-0 overflow-hidden">
-                    <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[128px]" />
-                </div>
-                <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="w-full max-w-md relative z-10 text-center"
-                >
-                    <div className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-8 shadow-2xl">
-                        <div className="w-16 h-16 rounded-full bg-green-500/10 border border-green-500/20 flex items-center justify-center mx-auto mb-4">
-                            <svg className="w-8 h-8 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                        </div>
-                        <h2 className="text-xl font-bold text-[var(--kf-text)] mb-2">Check your email</h2>
-                        <p className="text-[var(--kf-text-secondary)] text-sm mb-6">
-                            We've sent a confirmation link to <span className="text-[var(--kf-text)] font-medium">{email}</span>.
-                            Click the link to activate your account.
-                        </p>
-                        <button
-                            onClick={() => navigate("/login")}
-                            className="w-full h-11 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white font-medium hover:from-purple-500 hover:to-purple-400 transition-all shadow-lg shadow-purple-500/20"
-                        >
-                            Back to Sign In
-                        </button>
-                    </div>
-                </motion.div>
-            </div>
-        );
+    const { error } = await signUp(email, password);
+    setLoading(false);
+    if (error) {
+      setError(error);
+    } else {
+      navigate("/app/home");
     }
+  };
 
-    return (
-        <div className="min-h-screen bg-[var(--kf-bg)] flex items-center justify-center p-4 relative overflow-hidden">
-            {/* Background effects */}
-            <div className="absolute inset-0 overflow-hidden">
-                <div className="absolute top-1/4 right-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[128px]" />
-                <div className="absolute bottom-1/3 left-1/3 w-96 h-96 bg-indigo-600/8 rounded-full blur-[128px]" />
+  return (
+    <div className="min-h-screen bg-[#0E0E12] flex items-center justify-center p-4 font-sans">
+      <div className="w-full max-w-[420px]">
+        <div className="bg-[#121216] border-t-2 border-[#96C7E8] rounded-2xl p-10 shadow-2xl">
+          <div className="mb-8">
+            <h3 className="text-[10px] font-black tracking-[0.25em] text-[#8890A4] mb-3 uppercase">Secure Access</h3>
+            <h1 className="text-white text-[28px] font-black tracking-tight uppercase mb-2">Initialization</h1>
+            <p className="text-[#8890A4] text-sm font-medium">Register new operator credentials.</p>
+          </div>
+
+          <div className="flex bg-[#1A1C23] rounded-lg p-1 mb-8">
+            <div className="flex-1">
+               <Link to="/login" className="flex items-center justify-center w-full py-3 rounded-md text-[11px] font-bold uppercase tracking-widest text-[#8890A4] hover:text-white transition-colors">
+                 Authenticate
+               </Link>
+            </div>
+            <div className="flex-1">
+               <button className="w-full py-3 rounded-md text-[11px] font-bold uppercase tracking-widest bg-[#96C7E8] text-[#121216] shadow-[0_0_15px_rgba(150,199,232,0.3)]">
+                 Register
+               </button>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-[#8890A4] mb-2.5">
+                Callsign
+              </label>
+              <input
+                type="text"
+                value={callsign}
+                onChange={(e) => setCallsign(e.target.value)}
+                className="w-full px-4 py-3.5 text-sm rounded-lg bg-[#0E0E12] border border-white/5 text-white font-semibold placeholder:text-[#4B5060] focus:outline-none focus:border-[#96C7E8] focus:ring-1 focus:ring-[#96C7E8] transition-all focus:bg-[#121216]"
+                placeholder="Ops Lead"
+                required
+                autoFocus
+              />
             </div>
 
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5 }}
-                className="w-full max-w-md relative z-10"
-            >
-                {/* Logo */}
-                <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500 to-purple-700 mb-4 shadow-lg shadow-purple-500/20">
-                        <Anvil className="w-7 h-7 text-[var(--kf-text)]" />
-                    </div>
-                    <h1 className="text-2xl font-bold text-[var(--kf-text)]">Create your account</h1>
-                    <p className="text-sm text-zinc-500 mt-1">Start building with Kith Foundry</p>
-                </div>
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-[#8890A4] mb-2.5">
+                Data Link (Email)
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3.5 text-sm rounded-lg bg-[#EDEDF2] text-black font-semibold placeholder:text-[#8890A4] focus:outline-none focus:ring-2 focus:ring-[#96C7E8] transition-all"
+                placeholder="joesa73@gmail.com"
+                required
+              />
+            </div>
 
-                {/* Form card */}
-                <div className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-8 shadow-2xl">
-                    <form onSubmit={handleSubmit} className="space-y-5">
-                        <div>
-                            <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">Email</label>
-                            <input
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                className="w-full h-11 px-4 rounded-xl bg-[var(--kf-surface-alt)] border border-[var(--kf-border-muted)]/50 text-[var(--kf-text)] placeholder-zinc-500 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500/50 transition-colors"
-                                placeholder="you@example.com"
-                                required
-                                autoFocus
-                            />
-                        </div>
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-[#8890A4] mb-2.5">
+                Cipher (Password)
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3.5 text-sm rounded-lg bg-[#EDEDF2] text-black font-semibold placeholder:text-[#8890A4] focus:outline-none focus:ring-2 focus:ring-[#96C7E8] transition-all"
+                placeholder="••••••••"
+                required
+                minLength={6}
+              />
+            </div>
 
-                        <div>
-                            <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">Password</label>
-                            <div className="relative">
-                                <input
-                                    type={showPassword ? "text" : "password"}
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    className="w-full h-11 px-4 pr-11 rounded-xl bg-[var(--kf-surface-alt)] border border-[var(--kf-border-muted)]/50 text-[var(--kf-text)] placeholder-zinc-500 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500/50 transition-colors"
-                                    placeholder="••••••••"
-                                    required
-                                    minLength={6}
-                                />
-                                <button
-                                    type="button"
-                                    onClick={() => setShowPassword(!showPassword)}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-[var(--kf-text-secondary)] transition-colors"
-                                >
-                                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                                </button>
-                            </div>
-                        </div>
+            {error && (
+              <div className="px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-sm font-medium">
+                {error}
+              </div>
+            )}
 
-                        <div>
-                            <label className="block text-sm font-medium text-[var(--kf-text-secondary)] mb-1.5">Confirm Password</label>
-                            <input
-                                type="password"
-                                value={confirmPassword}
-                                onChange={(e) => setConfirmPassword(e.target.value)}
-                                className="w-full h-11 px-4 rounded-xl bg-[var(--kf-surface-alt)] border border-[var(--kf-border-muted)]/50 text-[var(--kf-text)] placeholder-zinc-500 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500/50 transition-colors"
-                                placeholder="••••••••"
-                                required
-                                minLength={6}
-                            />
-                        </div>
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={loading}
+                className={cn(
+                  "w-full py-4 rounded-lg font-black uppercase tracking-widest text-xs",
+                  "bg-[#96C7E8] text-[#121216] shadow-[0_4px_20px_rgba(150,199,232,0.25)]",
+                  "hover:brightness-110 transition-all flex items-center justify-center gap-3",
+                  "disabled:opacity-50 disabled:cursor-not-allowed"
+                )}
+              >
+                {loading ? (
+                  <span className="flex items-center gap-2">
+                    <span className="w-4 h-4 border-2 border-[#121216]/30 border-t-[#121216] rounded-full animate-spin" />
+                    Executing...
+                  </span>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[18px]">how_to_reg</span>
+                    Execute Registration
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
 
-                        {error && (
-                            <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: "auto" }}
-                                className="px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm"
-                            >
-                                {error}
-                            </motion.div>
-                        )}
-
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full h-11 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white font-medium hover:from-purple-500 hover:to-purple-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20"
-                        >
-                            {loading ? (
-                                <div className="flex items-center justify-center gap-2">
-                                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                                    Creating account...
-                                </div>
-                            ) : (
-                                "Create account"
-                            )}
-                        </button>
-                    </form>
-
-                    <div className="mt-6 text-center">
-                        <span className="text-sm text-zinc-500">Already have an account? </span>
-                        <Link to="/login" className="text-sm text-purple-400 hover:text-purple-300 font-medium transition-colors">
-                            Sign in
-                        </Link>
-                    </div>
-                </div>
-            </motion.div>
+          <div className="mt-10 flex flex-col items-center gap-4">
+            <Link to="/" className="inline-flex items-center text-[11px] text-[#8890A4] hover:text-white font-black tracking-[0.15em] uppercase transition-colors gap-2">
+              <span className="material-symbols-outlined text-[16px]">arrow_back</span>
+              Return to Gateway
+            </Link>
+            <button className="text-[9px] text-[#4B5060] hover:text-[#8890A4] font-black tracking-[0.2em] uppercase transition-colors">
+              Clear Stale Session
+            </button>
+          </div>
         </div>
-    );
+      </div>
+    </div>
+  );
 }

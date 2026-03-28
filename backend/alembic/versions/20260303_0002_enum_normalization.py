@@ -8,6 +8,7 @@ Create Date: 2026-03-03
 from typing import Sequence, Union
 
 from alembic import op
+from sqlalchemy import text
 
 revision: str = "20260303_0002"
 down_revision: Union[str, Sequence[str], None] = "20260303_0001"
@@ -16,6 +17,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def _add_enum_value(enum_name: str, value: str) -> None:
+    bind = op.get_bind()
+    result = bind.execute(
+        text(f"SELECT 1 FROM pg_type WHERE typname = '{enum_name}'")
+    )
+    if not result.fetchone():
+        return
     op.execute(f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{value}'")
 
 

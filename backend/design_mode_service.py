@@ -194,9 +194,20 @@ class DesignModeService:
         target_audience: str | None = None,
         preferred_style: str | None = None,
         required_product_mode: str | None = None,
+        prd_context: str | None = None,
+        design_foundation_context: str | None = None,
     ) -> ModeClassificationResult:
         product_modes = self.get_all_product_modes()
         style_modes = self.get_all_style_modes()
+
+        # Build enriched context blocks from PRD + Design System Foundation
+        enriched_sections: list[str] = []
+        if prd_context:
+            enriched_sections.append(f"\n--- PRODUCT REQUIREMENTS DOCUMENT (PRD) ---\n{prd_context}\n--- END PRD ---")
+        if design_foundation_context:
+            enriched_sections.append(f"\n--- DESIGN SYSTEM FOUNDATION ---\n{design_foundation_context}\n--- END DESIGN SYSTEM FOUNDATION ---")
+        enriched_block = "\n".join(enriched_sections)
+
         user_prompt = f"""
 Project prompt: {prompt}
 App name: {app_name or ''}
@@ -206,6 +217,7 @@ Features: {', '.join(features or [])}
 Target audience: {target_audience or ''}
 Preferred style: {preferred_style or ''}
 Required product mode: {required_product_mode or ''}
+{enriched_block}
 
 Available product modes:
 {', '.join(product_modes)}

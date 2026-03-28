@@ -1,0 +1,20 @@
+app = "kith-sandbox-runtime"
+primary_region = "ord"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Machines are created on-demand per project; no persistent min count needed.
+  # auto_start is OFF — only the explicitly provisioned machine should serve
+  # traffic. Stopped machines from old projects must NOT be resurrected.
+  auto_stop_machines = "stop"
+  auto_start_machines = false
+  min_machines_running = 0
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -1,0 +1,960 @@
+
+
+You are building the FRONTEND ONLY for a premium AI-powered product creation platform called:
+
+ARCHITECTURE OF CREATION
+
+Your job is to implement the complete UI layer in a production-quality way using React, Vite, TypeScript, TailwindCSS, React Router, Zustand, Monaco Editor, and reusable component patterns.
+
+You are NOT building the backend.
+You are NOT changing the product architecture.
+You are NOT simplifying the product into a chatbot app.
+You are building the entire frontend experience with realistic mock data, routed pages, reusable components, polished states, and a tokenized theme system.
+
+==================================================
+1. PRIMARY GOAL
+==================================================
+
+Build a premium, dark, cinematic, industrial command-center frontend for a coordinated specialist-agent platform that helps users move through:
+
+Idea → Executive Analysis → Planning → Design → Code → Sandbox → Deploy → Learn
+
+The UI must communicate:
+- specialist collaboration
+- visible orchestration
+- artifact progression
+- runtime trust
+- secure secret handling
+- deployment readiness
+- premium product precision
+
+This product should feel like a venture-scale AI operating system for product creation.
+
+==================================================
+2. HARD RULES
+==================================================
+
+You must follow these rules exactly:
+
+- FRONTEND ONLY
+- no backend implementation
+- no fake backend server beyond local mock modules
+- no changing route names
+- no renaming major screens
+- no playful AI assistant styling
+- no pastel SaaS dashboard look
+- no generic dashboard boilerplate
+- no one-screen chatbot experience
+- no marketing site unless needed minimally for app shell context
+- no light theme
+- no random unstructured component sprawl
+
+Everything must stay aligned with the design system and information architecture below.
+
+==================================================
+3. TECH STACK
+==================================================
+
+Implement using:
+
+- React
+- Vite
+- TypeScript
+- TailwindCSS
+- React Router
+- Zustand
+- Monaco Editor
+- Lucide React
+- shadcn/ui-compatible patterns where helpful
+
+Use modern React best practices:
+- function components
+- typed props
+- route-based page modules
+- reusable layout primitives
+- feature-based folders
+- clean data contracts
+- maintainable mock service layer
+
+==================================================
+4. PRODUCT STRUCTURE
+==================================================
+
+This is not a generic app. It is a multi-surface operational system with these major product areas:
+
+1. Command Center
+2. Ideas
+3. Projects
+4. Project Overview
+5. Executive Analysis
+6. Planning
+7. Design Studio
+8. Code Studio
+9. Sandbox / Preview
+10. Capabilities
+11. Secrets
+12. Deployments
+13. Learning
+14. Settings
+
+Engineering routes must be:
+
+/home
+/ideas
+/projects
+/projects/:id/overview
+/projects/:id/executive
+/projects/:id/planning
+/projects/:id/design-studio
+/projects/:id/code-studio
+/projects/:id/sandbox
+/projects/:id/capabilities
+/projects/:id/secrets
+/projects/:id/deployments
+/projects/:id/learning
+/settings
+
+Do not change these.
+
+==================================================
+5. DESIGN SYSTEM — EXACT VISUAL LANGUAGE
+==================================================
+
+Implement a premium dark cinematic industrial visual system.
+
+FOUNDATION COLORS
+- canvas: #090C12
+- panel: #101721
+- primary text: #F2F7FB
+- secondary text: #C4D0DC
+- ember: #E86443
+- ember hover: #EF785B
+- cyan: #8FD9FF
+- glass: rgba(16, 23, 33, 0.60)
+- subtle cyan tint: rgba(143, 217, 255, 0.08)
+
+SEMANTIC TOKENS
+- bg.app = canvas
+- bg.surface.1 = panel
+- bg.surface.2 = glass
+- bg.surface.3 = steel gradient
+- text.primary = #F2F7FB
+- text.secondary = rgba(196,208,220,0.80)
+- text.tertiary = rgba(196,208,220,0.50)
+- border.default = rgba(143,217,255,0.10)
+- border.interactive = rgba(143,217,255,0.20)
+- border.focus = rgba(143,217,255,0.50)
+- border.priority = rgba(232,100,67,0.30)
+
+TYPOGRAPHY
+- font family: Inter, ui-sans-serif, system-ui
+- display typography: heavy, premium, tight
+- headings: strong and controlled
+- labels / metadata: uppercase with tracking
+- body text minimum 16px on key app surfaces
+
+RADIUS / EFFECTS
+- base spacing: 8px grid
+- module radius: 28px
+- hero radius: 32px
+- pill radius: 999px
+- glass blur: 24px
+- subtle shadow depth
+- ember glow for major CTA only
+- cyan glow for telemetry emphasis
+- hover lift: translateY(-2px)
+- restrained motion only
+
+SURFACE TYPES
+- GlassPanel
+- SteelPanel
+- PriorityPanel
+- TelemetryPill
+
+The UI must feel like digital steel + luminous telemetry + controlled energy.
+
+==================================================
+6. LAYOUT REQUIREMENTS
+==================================================
+
+Global shell must include:
+- floating glass top command bar
+- structural left sidebar
+- central content region over dark canvas
+- project switcher
+- command palette trigger
+- notifications entry
+- account entry
+
+Layout rules:
+- max width 1280px
+- 12-column layouts for dashboard/data pages
+- 3-panel layouts for editor/workspace pages
+- responsive collapse for tablet/mobile
+- sidebar becomes overlay drawer on smaller screens
+
+The entire app should feel cohesive across all pages.
+
+==================================================
+7. UX SPINE — WHAT THE PRODUCT MUST COMMUNICATE
+==================================================
+
+The product must repeatedly surface the lifecycle:
+
+Idea
+→ Executive Analysis:
+		The Executive Analysis should should all the Csuite Agents below with photo and names and how the collaborate together to produce the overall system requirements. There are the details of the CSuite agents in the system to include:
+			The C-Suite is a set of independent specialist agents:
+				- CEO
+				- CPO
+				- CTO
+				- CDO
+				- CFO
+				- CMO
+				- COO
+				- CISO
+				- Executive Synthesizer
+
+					Each of the executive brings a different lens:
+					- CEO: vision and strategic direction
+					- CPO: product lifecycle, prioritization, roadmap
+					- CTO: technical architecture, stack fit, scalability
+					- CDO: design philosophy and UX direction
+					- CFO: cost, pricing, revenue framing
+					- CMO: positioning, urgency, communication
+					- COO: sequencing, execution, operational alignment
+					- CISO: security, credential safety, sandbox restrictions
+					- Executive Synthesizer: merges all of the above into one aligned strategy
+→ PRD
+→ Architecture
+→ Design Studio
+→ Build Prompt Compiler
+→ Capability Gate
+→ Secrets Collection
+→ Code Generation
+→ Sandbox Check
+→ Build
+→ Repair Loop
+→ Preview
+→ Git / Vercel
+→ Learning
+
+This lifecycle should be visible in:
+- Command Center
+- Project Overview
+- contextual stepper areas on related pages
+
+The user should always know:
+- where they are
+- what was generated
+- what happens next
+- what is blocked
+- what is ready
+- which specialist systems were involved
+
+==================================================
+8. IMPLEMENTATION PLAN — BUILD ORDER
+==================================================
+
+Build the app in this order.
+
+PHASE 1 — FOUNDATION
+1. Initialize Vite + React + TypeScript project structure
+2. Configure Tailwind
+3. Create global theme tokens via Tailwind config + CSS variables
+4. Set base background, typography, container, border, and focus styles
+5. Build app router
+6. Build app shell
+7. Build global layout primitives
+
+PHASE 2 — DESIGN SYSTEM / SHARED UI
+Build these shared components first:
+- AppShell
+- TopCommandBar
+- SidebarNav
+- PageHeader
+- CommandPalette
+- GlassPanel
+- SteelPanel
+- PriorityPanel
+- StatusBadge
+- TelemetryPill
+- AgentPill
+- PipelineStepper
+- ArtifactCard
+- MetricCard
+- ActivityFeed
+- AlertBanner
+- EmptyState
+- LoadingState
+
+PHASE 3 — IDEA SYSTEM
+Build:
+- PromptComposer
+- IdeaCard
+- IdeaComparisonRail
+- QuestionnaireStepper
+- Ideas page
+- mock idea data and analyses
+
+PHASE 4 — PROJECT / ARTIFACT SYSTEM
+Build:
+- Projects page
+- Project Overview page
+- Executive Analysis page
+- Planning page
+- DocumentViewer
+- artifact switching patterns
+- project summary cards
+- lifecycle status areas
+
+PHASE 5 — DESIGN / CODE WORKSPACES
+Build:
+- Design Studio page
+- Code Studio page
+- CodeEditorShell
+- AssistantRoutePanel
+- file tree
+- Monaco integration
+- architecture context drawer
+- patch history and error panels
+
+PHASE 6 — RUNTIME / SECURITY / DEPLOYMENT
+Build:
+- Sandbox page
+- PreviewFrame
+- LogConsole
+- Capabilities page
+- CapabilitySelector
+- Secrets page
+- SecretVaultCard
+- Deployments page
+- DeploymentCard
+
+PHASE 7 — LEARNING / SETTINGS / POLISH
+Build:
+- Learning page
+- Settings page
+- loading states
+- empty states
+- warning states
+- error states
+- transitions
+- responsive tuning
+- keyboard focus refinement
+- data consistency pass
+
+==================================================
+9. FOLDER / FILE STRUCTURE
+==================================================
+
+Use this structure:
+
+src/
+  app/
+    router.tsx
+    providers.tsx
+  layouts/
+    AppShell.tsx
+  routes/
+    HomePage.tsx
+    IdeasPage.tsx
+    ProjectsPage.tsx
+    ProjectOverviewPage.tsx
+    ExecutiveAnalysisPage.tsx
+    PlanningPage.tsx
+    DesignStudioPage.tsx
+    CodeStudioPage.tsx
+    SandboxPage.tsx
+    CapabilitiesPage.tsx
+    SecretsPage.tsx
+    DeploymentsPage.tsx
+    LearningPage.tsx
+    SettingsPage.tsx
+  features/
+    ideas/
+    projects/
+    orchestration/
+    design-studio/
+    code-studio/
+    sandbox/
+    deployments/
+    secrets/
+    settings/
+    learning/
+  components/
+    layout/
+    system/
+    data-display/
+    forms/
+    editor/
+  lib/
+    tokens/
+      theme.ts
+      cssVariables.ts
+    mocks/
+      projects.ts
+      ideas.ts
+      artifacts.ts
+      designStudio.ts
+      codeStudio.ts
+      sandbox.ts
+      deployments.ts
+      secrets.ts
+      learning.ts
+      settings.ts
+    utils/
+      cn.ts
+      formatters.ts
+      dates.ts
+  store/
+    uiStore.ts
+    projectStore.ts
+  hooks/
+    useCommandPalette.ts
+    useProject.ts
+    useResponsivePanels.ts
+  types/
+    index.ts
+    project.ts
+    idea.ts
+    artifact.ts
+    sandbox.ts
+    deployment.ts
+    security.ts
+    learning.ts
+
+Keep it clean and modular.
+
+==================================================
+10. PAGE REQUIREMENTS
+==================================================
+
+--------------------------------
+A. /home — COMMAND CENTER
+--------------------------------
+
+Create a high-signal control room screen with:
+- active project hero
+- lifecycle stepper
+- active agent group pills
+- latest artifacts
+- project readiness
+- telemetry metrics
+- reliability indicators
+- recent activity feed
+- next recommended action
+
+This page should feel like command center / mission control.
+
+--------------------------------
+B. /ideas
+--------------------------------
+
+Include:
+- freeform prompt composer
+- send as-is CTA
+- enhance-first CTA
+- Top #1 curated idea spotlight
+- ideation questionnaire
+- Top 5 curated ideas
+- save-for-later controls
+- exclusivity decay messaging
+- market analysis panel
+- financial analysis panel
+
+This must feel premium and strategic, not casual.
+
+--------------------------------
+C. /projects
+--------------------------------
+
+Include:
+- project list/grid
+- search
+- filter chips
+- stage/status tags
+- create project CTA
+- recently updated items
+- progress visibility
+
+--------------------------------
+D. /projects/:id/overview
+--------------------------------
+
+Include:
+- project summary
+- lifecycle tracker
+- artifact cards
+- current phase
+- next action
+- recent changes
+- readiness indicators
+
+--------------------------------
+E. /projects/:id/executive
+--------------------------------
+
+Include:
+- C-Suite specialist cards
+- executive synthesis summary
+- strategic recommendation modules
+- report viewer
+- collaboration explanation copy
+
+--------------------------------
+F. /projects/:id/planning
+--------------------------------
+
+Include:
+- PRD viewer
+- architecture plan viewer
+- implementation guide viewer
+- stack choices
+- provider/model preference section
+- document switching/tabs
+
+--------------------------------
+G. /projects/:id/design-studio
+--------------------------------
+
+Include:
+- design mode result
+- UX strategy summary
+- page map
+- section map
+- component inventory
+- design review panel
+- token preview
+- generated preview cards
+- comparison view
+
+--------------------------------
+H. /projects/:id/code-studio
+--------------------------------
+
+Use 3-panel layout:
+- left: file tree / project files
+- center: Monaco editor
+- right: AssistantRoutePanel / patch history / architecture context
+
+Include:
+- file tree
+- Monaco editor
+- AI routed assistant panel
+- patch history
+- build errors
+- repair attempts
+- architecture context
+- quick preview CTA
+- deploy CTA
+
+This must feel like a premium engineering workspace.
+
+--------------------------------
+I. /projects/:id/sandbox
+--------------------------------
+
+Include:
+- live preview frame
+- build status timeline
+- logs console
+- artifacts
+- sandbox policy violations
+- restart / rebuild controls
+- runtime trust indicators
+
+--------------------------------
+J. /projects/:id/capabilities
+--------------------------------
+
+Include:
+- database selector
+- auth selector
+- AI selector
+- combination states
+- generated-app backend recommendations
+- operational explanation copy
+
+--------------------------------
+K. /projects/:id/secrets
+--------------------------------
+
+Include:
+- encrypted vault card
+- provider credential cards
+- masked secret rows
+- audit preview
+- runtime injection explanation
+- trust-building secure handling copy
+
+--------------------------------
+L. /projects/:id/deployments
+--------------------------------
+
+Include:
+- Git connection
+- Vercel connection
+- deployment history
+- release cards
+- environment status
+- rollback / redeploy actions
+
+--------------------------------
+M. /projects/:id/learning
+--------------------------------
+
+Include:
+- reflection reports
+- feedback cards
+- prompt optimization history
+- pattern performance
+- project metrics
+- system memory framing
+
+--------------------------------
+N. /settings
+--------------------------------
+
+Include:
+- workspace settings
+- user preferences
+- model preferences
+- notifications
+- security settings
+- operational controls
+
+==================================================
+11. REUSABLE COMPONENTS — MUST BUILD
+==================================================
+
+Build these shared components and use them consistently.
+
+GLOBAL / SHELL
+- AppShell
+- TopCommandBar
+- SidebarNav
+- PageHeader
+- CommandPalette
+
+SURFACES
+- GlassPanel
+- SteelPanel
+- PriorityPanel
+
+STATUS / SIGNAL
+- StatusBadge
+- TelemetryPill
+- AgentPill
+- PipelineStepper
+
+DATA / CONTENT
+- ArtifactCard
+- MetricCard
+- ActivityFeed
+- AlertBanner
+- EmptyState
+- LoadingState
+
+IDEA FLOW
+- PromptComposer
+- IdeaCard
+- IdeaComparisonRail
+- QuestionnaireStepper
+
+DOCUMENTS
+- DocumentViewer
+
+WORKSPACE / EDITOR
+- CodeEditorShell
+- AssistantRoutePanel
+- PreviewFrame
+- LogConsole
+
+SECURITY / DEPLOYMENT
+- CapabilitySelector
+- SecretVaultCard
+- DeploymentCard
+
+Make these elegant, reusable, and visually aligned.
+
+==================================================
+12. MOCK DATA — REQUIRED DOMAIN MODELS
+==================================================
+
+Create realistic typed mock data for:
+
+- users
+- workspaces
+- projects
+- project_versions
+- project_prompts
+- project_settings
+- executive_reports
+- prds
+- architecture_plans
+- implementation_guides
+- design_systems
+- project_pages
+- project_sections
+- project_components
+- html_previews
+- design_reviews
+- project_files
+- file_snapshots
+- code_generations
+- code_patches
+- patch_validations
+- build_errors
+- repair_attempts
+- sandboxes
+- sandbox_builds
+- sandbox_logs
+- sandbox_artifacts
+- git_connections
+- deployments
+- llm_providers
+- llm_models
+- project_model_preferences
+- design_feedback
+- pattern_performance
+- project_metrics
+- reflection_reports
+- prompt_optimizations
+- generated_ideas
+- idea_batches
+- idea_batch_items
+- saved_idea_events
+- idea_warnings
+- idea_market_analyses
+- idea_financial_analyses
+- idea_presentation_assets
+- idea_expiry_events
+- project_capability_choices
+- generated_app_ai_providers
+- encrypted_user_secrets
+- secret_access_audit
+- secret_runtime_injections
+- generated_app_backends
+- sandbox_policy_violations
+
+All pages must look product-real using this seeded data.
+
+==================================================
+13. STATE MANAGEMENT
+==================================================
+
+Use Zustand for lightweight state handling.
+
+Recommended stores:
+- uiStore
+  - sidebar open/closed
+  - command palette open/closed
+  - active theme tokens if needed
+  - layout panel states
+- projectStore
+  - current project
+  - selected artifact
+  - selected file
+  - selected deployment
+  - active lifecycle stage
+  - mock async loading states
+
+Use mock async loaders where helpful to simulate realism.
+
+==================================================
+14. THEME IMPLEMENTATION
+==================================================
+
+Create a proper token system.
+
+Implement:
+- Tailwind theme extension
+- CSS custom properties for colors/effects/radii
+- helper utility classes for glass, steel, telemetry, priority, focus rings
+
+Required token groups:
+- canvas
+- panel
+- glass
+- steel gradient
+- ember
+- ember hover
+- cyan
+- text-primary
+- text-secondary
+- text-tertiary
+- border-default
+- border-interactive
+- border-focus
+- border-priority
+- radius-module
+- radius-hero
+- blur-glass
+- shadow-subtle
+- glow-ember
+- glow-cyan
+
+Create reusable surface classes rather than repeating styles everywhere.
+
+==================================================
+15. COMPONENT STYLE RULES
+==================================================
+
+GlassPanel
+- frosted look
+- subtle cyan border
+- premium blur
+- soft dark transparency
+
+SteelPanel
+- more solid structural look
+- ideal for sidebars/editor chrome/tool panels
+
+PriorityPanel
+- ember-accented border/background emphasis
+- for warnings, high-priority actions, deadlines
+
+TelemetryPill
+- compact cyan-accented system-status pill
+
+StatusBadge
+- compact status label
+- supports success, pending, warning, blocked, active
+
+PipelineStepper
+- supports complete/current/pending/warning states
+- visually strong enough to anchor project progression
+
+ArtifactCard
+- title
+- stage
+- status
+- timestamp
+- quick action
+
+DocumentViewer
+- readable document layout
+- metadata header
+- section nav/tabs
+- premium dense reading experience
+
+AssistantRoutePanel
+- must feel like routed specialist capability access
+- not casual speech bubble UI
+- use structured sections, routes, task categories, recent actions
+
+CodeEditorShell
+- premium editor shell
+- sharp but not cold
+- clear tool hierarchy
+
+SecretVaultCard
+- must feel secure and operationally trustworthy
+
+DeploymentCard
+- must communicate release state cleanly
+
+==================================================
+16. MOTION / INTERACTION RULES
+==================================================
+
+Motion should be restrained and premium.
+
+Allowed:
+- subtle hover lift
+- soft border transitions
+- opacity/translate entrance for panels
+- focus ring transitions
+- drawer slide transitions
+
+Avoid:
+- bounce
+- overshoot
+- springy cartoon motion
+- flashy decorative animation
+
+==================================================
+17. ACCESSIBILITY / QUALITY RULES
+==================================================
+
+Must include:
+- keyboard navigability
+- visible focus states
+- good contrast
+- large-enough click targets
+- labels for status
+- icon + label pairing for important states
+- coherent responsive collapse
+- editor usability on narrower screens
+- no hidden critical content on mobile/tablet
+
+==================================================
+18. IMPLEMENTATION EXPECTATIONS
+==================================================
+
+When building:
+- create all routes
+- wire navigation between routes
+- make every major page feel complete
+- use realistic seeded content
+- include empty/loading/error/success/warning states
+- avoid placeholder Lorem Ipsum
+- avoid incomplete card grids
+- ensure consistent component usage
+- keep naming exact
+- keep visual system exact
+
+==================================================
+19. DELIVERY FORMAT
+==================================================
+
+Generate the codebase directly.
+
+Return:
+1. project structure
+2. core theme/token setup
+3. app shell
+4. shared components
+5. route/page implementations
+6. mock data/types
+7. state management
+8. polished interactions/states
+
+Prioritize correctness, consistency, and production-grade structure over shortcuts.
+
+==================================================
+20. FIRST EXECUTION STEP
+==================================================
+
+Start by creating:
+1. theme/tokens
+2. app shell
+3. router
+4. shared surface/status components
+5. then implement pages in the exact build order defined above
+
+Do not skip the design system foundation.
+Do not jump straight into page chaos.
+Build systematically.
+
+
+
+Execute this in phases.
+
+Phase 1:
+Set up the project structure, theme tokens, router, AppShell, TopCommandBar, SidebarNav, PageHeader, and the shared surface/status components first.
+
+Phase 2:
+Build the pages in the specified order, using realistic mock data and maintaining exact naming consistency.
+
+As you implement, do not simplify the product architecture and do not replace premium structured UI with generic dashboard patterns.
+
+
+Before generating each page, check it against these criteria:
+- Does it feel premium?
+- Does it reflect specialist orchestration?
+- Does it match the industrial command-center visual system?
+- Is it using the shared components consistently?
+- Would this screen hand off cleanly from Stitch without surprises?
+If not, improve it before moving on.

@@ -25,7 +25,10 @@ You will receive the COMPLETE current project files. When the user requests a ne
 - When adding a new component, import it in App.tsx and compose it with the existing UI
 - The user's experience should feel like INCREMENTAL, CONSISTENT evolution — never a jarring redesign
 
-The ONLY exception: if the user explicitly asks for a redesign, new color scheme, or layout change, then you may alter the design system.
+The ONLY exceptions:
+- If the user explicitly asks for a redesign, new color scheme, or layout change.
+- If the pipeline context marks the request as an initial build (fresh build from requirements).
+In those cases, replace scaffold/template structure as needed to match requirements.
 
 **⚠ DESIGN CONTRACT ENFORCEMENT (mandatory — not advisory):**
 The design context block will contain a "## ⚠ MANDATORY DESIGN CONTRACT" section with locked CSS `:root` variables sourced directly from the approved Design Studio mockups or vendor intelligence brief.
@@ -48,7 +51,7 @@ REQUIRED on every generation (non-negotiable for professional output):
 - Font stacks coming from `var(--font-heading)` / `var(--font-body)` when those tokens are available
 
 **AVAILABLE LIBRARIES (pre-installed in the sandbox):**
-- `react-router-dom` — USE for all page routing (`BrowserRouter` is already in main.tsx). Use `Routes`, `Route`, `Link`, `useNavigate`, `Navigate` in App.tsx and components.
+- `react-router-dom` — USE for all page routing. **CRITICAL: `BrowserRouter` is ALREADY in main.tsx — NEVER add `BrowserRouter` or any `<Router>` in App.tsx or any component. Nesting routers crashes the app.** Only use `Routes`, `Route`, `Link`, `useNavigate`, `Navigate` in App.tsx and components.
 - `framer-motion` — USE for all animations. Import `motion`, `AnimatePresence`, `useScroll`, `useTransform`, `useInView` etc. Apply entrance animations, page transitions, scroll reveals, parallax effects, and hover micro-interactions.
 - `lucide-react` — USE for all icons. Import named icons like `import { Home, User, Settings, ArrowRight, Menu, X, ChevronDown } from 'lucide-react'`. NEVER use emoji for UI icons — always use lucide-react.
   - **ONLY use icon names that actually exist in lucide-react.** NEVER invent icon names. Icons that do NOT exist and will crash the app: `GitDiff`, `GitHub` (use `Github`), `GitLab` (use `Gitlab`), `Warning` (use `AlertTriangle`), `Close` (use `X`), `Checkmark` (use `Check`), `Cancel` (use `X`), `Gear`/`Config` (use `Settings`), `Spinner`/`Loading` (use `LoaderCircle`), `Delete` (use `Trash2`), `Money`/`Dollar` (use `DollarSign`), `People` (use `Users`), `InfoCircle` (use `Info`), `ErrorCircle` (use `XCircle`).
@@ -60,7 +63,7 @@ REQUIRED on every generation (non-negotiable for professional output):
 2. New component files (pages, layout, shared components)
 3. Modified component files
 4. `src/App.tsx` — root component with Routes
-5. `src/main.tsx` — ONLY include if it needs changes. It already has BrowserRouter wrapping App.
+5. `src/main.tsx` — ONLY include if it needs changes. It already has BrowserRouter wrapping App. **NEVER add BrowserRouter in App.tsx — it will cause a "cannot render Router inside another Router" crash.**
 
 **COMPONENT RULES:**
 - Each component is SELF-CONTAINED with its own types/interfaces at the top
@@ -74,82 +77,26 @@ REQUIRED on every generation (non-negotiable for professional output):
 - Do NOT embed SVG data URIs or inline binary image data — this will crash the system
 - There is NO file count limit — create as many component files as needed for a clean architecture
 
-**FOR INITIAL BUILDS (fresh project) — BUILD ALL OF THESE:**
-You MUST build a complete, multi-page application on the first generation. Every page must be stunning, professional, and captivating.
+**FOR INITIAL BUILDS (fresh project) — REQUIREMENTS FIRST:**
+You MUST build a complete, multi-page application on the first generation, but the page set and UX must come from the user's requirements/design context.
 
-**Page 1 — LANDING PAGE (src/components/LandingPage.tsx):**
-The landing page is the MOST important page. It must be jaw-droppingly beautiful:
-- Hero section with framer-motion entrance animations (fade-up stagger on heading, subheading, CTA)
-- Parallax scroll effect using `useScroll` and `useTransform` on hero background elements
-- Floating/animated decorative elements (gradient orbs, grid patterns, glowing accents)
-- Features section with `useInView` scroll-triggered reveals (staggered card animations)
-- Social proof / testimonials section with animated cards
-- Pricing or value proposition section
-- CTA section with animated gradient background
-- Professional footer with navigation links, social links, copyright
-- ALL copy must be compelling and product-specific — NEVER use lorem ipsum or generic placeholder text
-- Use smooth scroll behavior for anchor navigation within the page
+MANDATORY initial-build rules:
+- Treat PRD/requirements/design context as authoritative for routes, workflows, entities, and naming.
+- Existing scaffold files are NOT authoritative. Replace them when they conflict with requirements.
+- Do NOT output generic app-builder templates, house-brand UIs, or unrelated marketing pages unless explicitly requested.
+- Do NOT include unrelated labels/navigation (for example: "Kith Foundry", "How it works", "Stories", "View pricing") unless explicitly required by the user's spec.
+- Every route must be complete and product-specific. No placeholders, no "coming soon", no stubs.
+- Mock data must match the target domain terminology from the requirements.
 
-**Page 2 — AUTH PAGES (src/components/LoginPage.tsx, src/components/RegisterPage.tsx):**
-- Beautiful full-screen auth layouts with split design or centered card
-- Animated form transitions with `AnimatePresence` when switching between login/register
-- Floating labels or modern input styling with focus animations
-- Mock authentication — accept ANY email/password combination:
-  - On submit, store user info in state/localStorage and redirect to dashboard
-  - NO real backend integration — just simulate success with a brief loading animation
-- "Forgot password" link (can show a toast or simple message)
-- Social login buttons (Google, GitHub, etc.) as non-functional but beautiful UI elements
-- Link between Login and Register pages
-- Show a brief success animation before redirecting
+Suggested route planning behavior:
+- Derive route list from the requirements package and layout/component plans.
+- Build all core workflows end-to-end in first pass (onboarding, primary operations, tracking/reporting, settings/admin as required).
+- Ensure nav links map exactly to implemented routes.
 
-**Page 3 — DASHBOARD (src/components/Dashboard.tsx + src/components/DashboardLayout.tsx):**
-- Full dashboard layout with:
-  - Collapsible sidebar navigation with lucide-react icons, active state highlighting, smooth open/close animation
-  - Top header bar with user avatar placeholder, notification bell, search bar
-- Main content area with:
-  - Welcome banner with user greeting and animated gradient
-  - Metrics/KPI cards (4-6) with animated number counters and trend indicators
-  - Recent activity list with staggered entrance animation
-  - Quick action buttons
-  - Data table or content grid with proper structure and mock data rows
-- All sidebar links MUST navigate to full, real pages — every linked route gets its own complete component file
-- Responsive: sidebar collapses to hamburger menu on mobile
-
-**Page 4+ — ADDITIONAL PAGES (MANDATORY — no exceptions):**
-Every route linked from the sidebar, navbar, or any navigation element MUST be a complete, fully-built page.
-
-⛔ ABSOLUTELY BANNED — any variation of these patterns will be rejected:
-- "This section is currently being architected"
-- "Coming soon" / "Check back soon"
-- "Under construction"
-- "This page is not yet available"
-- Any single-paragraph stub that contains nothing but a title and a placeholder message
-- Empty `<div>` with just a heading and a description sentence
-
-✅ EVERY inner dashboard/app page MUST contain ALL of the following:
-- A full page header with title, subtitle or breadcrumb, and at least one action button (e.g. "New Appointment", "Redeem Points", "Upload Photo")
-- A primary content section appropriate to the page type — concrete examples:
-  - **List / table page** (Appointments, Orders, Transactions, Members, etc.): a styled table or card list with 4–8 mock data rows, column headers, row hover states, status badges, action buttons per row (Edit, View, Delete)
-  - **Gallery page** (Style Gallery, Portfolio, Media, etc.): a responsive grid of at least 9 cards, each with a colored placeholder image (CSS gradient rectangle), title, subtitle, and hover overlay
-  - **Rewards / Points page**: tier status badge, animated points balance, at least 6 reward cards in a grid (each with name, points cost, and a Redeem button), a redemption history table
-  - **Profile / Settings page**: avatar display, form sections for personal info / preferences / notifications / security, Save button per section, all fields pre-filled with realistic mock data
-  - **Analytics / Reports page**: 3–4 chart placeholder cards (styled divs with axis labels), stats row, date range selector
-- Secondary content: at least one supplementary section (sidebar stats, recent-activity list, tips panel, or quick-links grid)
-- All mock data must be PRODUCT-SPECIFIC and realistic — name it after the actual product, use real job titles, real service names, real item names from the product domain
-
-Reuse the DashboardLayout wrapper for all authenticated pages.
-
-**ROUTING STRUCTURE in App.tsx:**
-```
-/ → LandingPage
-/login → LoginPage
-/register → RegisterPage
-/dashboard → DashboardLayout > Dashboard
-/dashboard/* → DashboardLayout > additional pages
-```
-- Wrap authenticated routes in a simple auth check (check localStorage for mock user)
-- Redirect unauthenticated users to /login
-- Redirect authenticated users from / to /dashboard (optional Navigate)
+Auth/routing behavior:
+- Only add auth flows if requirements call for authenticated roles/access.
+- Do not force login/register/landing/dashboard structure when not specified.
+- Keep routing architecture simple and aligned with requested product behavior.
 
 **ANIMATION STANDARDS:**
 - Page transitions: `AnimatePresence` with `motion.div` fade/slide (initial, animate, exit)
@@ -278,6 +225,9 @@ Rules:
 - Use product type, feature set, target audience, tone, and workflow cues.
 - If the user provides a preferred style and it exists in the style library, honor it.
 - If a required product mode is provided, you MUST use it and only decide the best style.
+- When a PRODUCT REQUIREMENTS DOCUMENT (PRD) is provided, analyze its features, user stories, product type, UX flows, and target audience to strongly inform your product mode selection.
+- When a DESIGN SYSTEM FOUNDATION is provided, analyze its brand identity, design tokens, color palette, typography choices, layout guidance, and component specifications to strongly inform your style mode selection.
+- PRD and Design System Foundation context should be weighted MORE heavily than basic project description when available.
 - Return JSON only.
 
 Output schema:

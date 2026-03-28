@@ -1,0 +1,17 @@
+Security headers
+The main app now adds: X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, and Strict-Transport-Security (production only)
+
+Platform status endpoint
+/api/platform/status shows all infrastructure connections:
+
+Nhost PostgreSQL: connected, us-east-1
+Fly.io sandbox: configured with your token
+Inngest: enabled (dev mode)
+OpenAI, Anthropic, Gemini: all configured
+Cloudflare: ready (fill in API token to activate)
+Redis: available when flyctl redis proxy is running
+To activate Cloudflare
+Create a Cloudflare account and add your domain
+Fill in CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID, CLOUDFLARE_ACCOUNT_ID in .env
+For bot protection: add CLOUDFLARE_TURNSTILE_SITE_KEY and CLOUDFLARE_TURNSTILE_SECRET_KEY
+For R2 storage: add the R2 credentials

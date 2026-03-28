@@ -4,10 +4,18 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1" rel="stylesheet" />
+    <title>Forge — AI Product Creation Platform</title>
+    <meta name="description" content="Forge is an AI-powered product creation platform with specialized collaborative agents working in concert to design, build, and deploy your ideas." />
+    <meta name="theme-color" content="#10131a" />
   </head>
   <body>
     <div id="root"></div>
+    <!-- Cloudflare Turnstile — loaded globally so the widget can render on the login page -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

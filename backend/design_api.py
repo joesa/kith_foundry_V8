@@ -1,6 +1,7 @@
 """
 Design Studio API — GPT Design Engine endpoints.
 """
+import json
 import os
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +11,7 @@ from typing import Optional
 
 import litellm
 
-from models import get_db, User, Project
+from models import get_db, User, Project, Artifact, ArtifactType, AgentStatus
 from auth import get_current_user
 from brain_service import (
     list_project_design_mode_history,
@@ -34,8 +35,31 @@ def _resolve_design_model(user_id: str | None = None, db=None) -> dict:
     """Resolve model config for design task."""
     if user_id:
         from model_resolver import resolve_model_for_task
-        return resolve_model_for_task(user_id, "design", db=db)
-    return {"model": _get_model(), "api_key": None, "api_base": None, "provider_name": "Default"}
+        model_config = resolve_model_for_task(user_id, "design", db=db)
+    else:
+        model_config = {
+            "model": _get_model(),
+            "api_key": None,
+            "api_base": None,
+            "provider_name": "Default",
+        }
+
+    if model_config.get("error"):
+        raise HTTPException(status_code=400, detail=model_config["error"])
+
+    if not model_config.get("model"):
+        raise HTTPException(
+            status_code=500,
+            detail="Design model resolution failed: no model configured.",
+        )
+
+    llm_kwargs: dict = {}
+    if model_config.get("api_key"):
+        llm_kwargs["api_key"] = model_config["api_key"]
+    if model_config.get("api_base"):
+        llm_kwargs["api_base"] = model_config["api_base"]
+    model_config["llm_kwargs"] = llm_kwargs
+    return model_config
 
 
 def _build_litellm_kwargs(model_config: dict, messages: list, **extra) -> dict:
@@ -254,6 +278,10 @@ async def classify_project_design_mode(
         )
         locked_by_user = True
     else:
+        # Enrich classification with PRD + Design System Foundation context
+        prd_text = _fetch_artifact_text(db, project_id, ArtifactType.product_requirements)
+        dsf_text = _fetch_artifact_text(db, project_id, ArtifactType.design_system)
+
         mc = _resolve_design_model(user.id, db)
         classification = await design_mode_service.classify_design_mode(
             model_id=mc["model"],
@@ -265,6 +293,8 @@ async def classify_project_design_mode(
             features=body.features,
             target_audience=body.targetAudience or project.target_audience,
             preferred_style=body.preferredStyle,
+            prd_context=prd_text,
+            design_foundation_context=dsf_text,
         )
         locked_by_user = bool(project.design_mode_locked)
         if not project.design_mode_locked:
@@ -289,6 +319,118 @@ async def classify_project_design_mode(
         "classification": classification.model_dump(),
         "blueprint": mode_context.get("blueprint"),
         "recommendedPatterns": mode_context.get("recommendedPatterns", []),
+    }
+
+
+def _fetch_artifact_text(db: Session, project_id: str, artifact_type: ArtifactType, max_chars: int = 6000) -> str | None:
+    """Fetch a completed artifact's content as a text string, truncated for LLM context."""
+    artifact = (
+        db.query(Artifact)
+        .filter(
+            Artifact.project_id == project_id,
+            Artifact.artifact_type == artifact_type,
+            Artifact.status == AgentStatus.complete,
+        )
+        .first()
+    )
+    if not artifact or not artifact.content:
+        return None
+    raw = json.dumps(artifact.content, indent=2) if isinstance(artifact.content, (dict, list)) else str(artifact.content)
+    if len(raw) > max_chars:
+        raw = raw[:max_chars] + "\n... (truncated)"
+    return raw
+
+
+@router.post("/{project_id}/design/auto-select-mode")
+async def auto_select_design_mode(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Auto-select design mode using PRD + Design System Foundation context.
+
+    Called automatically when the Design Studio is opened if no mode is
+    currently selected/locked.  Pulls the PRD and Design System Foundation
+    artifacts from the database and feeds them as enriched context to the
+    mode classifier for a more accurate selection.
+    """
+    project = _get_owned_project(project_id, user.id, db)
+
+    # If mode is already locked, return existing selection immediately
+    if project.design_mode_locked and project.product_mode and project.style_mode:
+        classification = ModeClassificationResult(
+            productMode=project.product_mode,
+            styleMode=project.style_mode,
+            confidence=float(project.mode_confidence) if project.mode_confidence is not None else 1.0,
+            alternatives=[],
+            reasoning={},
+        )
+        mode_context = design_mode_service.get_mode_context(
+            classification.productMode,
+            classification.styleMode,
+            confidence=classification.confidence,
+            locked_by_user=True,
+        )
+        return {
+            "classification": classification.model_dump(),
+            "blueprint": mode_context.get("blueprint"),
+            "recommendedPatterns": mode_context.get("recommendedPatterns", []),
+            "source": "locked",
+        }
+
+    # Fetch PRD and Design System Foundation for enriched classification
+    prd_text = _fetch_artifact_text(db, project_id, ArtifactType.product_requirements)
+    dsf_text = _fetch_artifact_text(db, project_id, ArtifactType.design_system)
+
+    # Extract feature list from project context
+    features: list[str] | None = None
+    if project.problem_statement:
+        features = [project.problem_statement]
+    if isinstance(project.design_preferences, dict):
+        raw_feat = project.design_preferences.get("features")
+        if isinstance(raw_feat, list):
+            features = (features or []) + [str(f) for f in raw_feat if f]
+
+    mc = _resolve_design_model(user.id, db)
+    classification = await design_mode_service.classify_design_mode(
+        model_id=mc["model"],
+        llm_kwargs=mc.get("llm_kwargs", {}),
+        prompt="Auto-classify the best design mode and style based on project context, PRD, and Design System Foundation.",
+        app_name=project.name,
+        description=project.description or project.problem_statement,
+        features=features,
+        target_audience=project.target_audience,
+        prd_context=prd_text,
+        design_foundation_context=dsf_text,
+    )
+
+    # Persist the auto-detected mode (but don't lock — user can change later)
+    update_project_design_mode(
+        db,
+        project_id,
+        product_mode=classification.productMode,
+        style_mode=classification.styleMode,
+        confidence=classification.confidence,
+        source="auto",
+        locked_by_user=False,
+        record_history=True,
+    )
+
+    mode_context = design_mode_service.get_mode_context(
+        classification.productMode,
+        classification.styleMode,
+        confidence=classification.confidence,
+        locked_by_user=False,
+    )
+    return {
+        "classification": classification.model_dump(),
+        "blueprint": mode_context.get("blueprint"),
+        "recommendedPatterns": mode_context.get("recommendedPatterns", []),
+        "source": "auto",
+        "contextUsed": {
+            "prd": prd_text is not None,
+            "designSystemFoundation": dsf_text is not None,
+        },
     }
 
 

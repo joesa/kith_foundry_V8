@@ -1,23 +1,9 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-    Bookmark,
-    Sparkles,
-    Trash2,
-    Lock,
-    Users,
-    ChevronDown,
-    ChevronUp,
-    ArrowLeft,
-    Target,
-    Lightbulb,
-    TrendingUp,
-    Zap,
-    AlertCircle,
-} from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { getApiBaseUrl } from "../../lib/runtimeConfig";
+import { cn } from "../../lib/utils/cn";
 
 interface SavedIdeaEntry {
     id: string;
@@ -34,9 +20,9 @@ function ScoreBadge({ score }: { score: number }) {
     const color =
         score >= 80 ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/20" :
         score >= 60 ? "text-amber-300 bg-amber-500/10 border-amber-500/20" :
-                      "text-[var(--kf-text-secondary)] bg-zinc-500/10 border-zinc-500/20";
+                      "text-secondary bg-surface-container border-outline-variant/20";
     return (
-        <span className={`inline-flex items-center text-xs font-bold px-2 py-0.5 rounded-full border ${color}`}>
+        <span className={cn("inline-flex items-center text-xs font-black px-2 py-0.5 rounded-full border uppercase tracking-widest", color)}>
             {score}/100
         </span>
     );
@@ -44,27 +30,27 @@ function ScoreBadge({ score }: { score: number }) {
 
 function SourceBadge({ source }: { source: string }) {
     const map: Record<string, { label: string; cls: string }> = {
-        questionnaire: { label: "Questionnaire", cls: "text-purple-300 bg-purple-500/10 border-purple-500/20" },
+        questionnaire: { label: "Questionnaire", cls: "text-on-primary-container bg-primary-container border-outline-variant/20" },
         user_prompt:   { label: "My Idea",       cls: "text-amber-300 bg-amber-500/10 border-amber-500/20" },
         global:        { label: "Discovered",    cls: "text-cyan-300 bg-cyan-500/10 border-cyan-500/20" },
     };
-    const { label, cls } = map[source] ?? { label: source, cls: "text-[var(--kf-text-secondary)] bg-[var(--kf-badge-bg)] border-[var(--kf-border-muted)]" };
+    const { label, cls } = map[source] ?? { label: source, cls: "text-secondary bg-surface-container border-outline-variant/20" };
     return (
-        <span className={`inline-flex items-center text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${cls}`}>
+        <span className={cn("inline-flex items-center text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border", cls)}>
             {label}
         </span>
     );
 }
 
-function IdeaDetail({ label, icon: Icon, value }: { label: string; icon: any; value?: string }) {
+function IdeaDetail({ label, icon, value }: { label: string; icon: string; value?: string }) {
     if (!value) return null;
     return (
         <div>
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 mb-1">
-                <Icon className="w-3.5 h-3.5" />
+            <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-tertiary mb-1">
+                <span className="material-symbols-outlined text-sm leading-none">{icon}</span>
                 {label}
             </div>
-            <p className="text-sm text-[var(--kf-text-secondary)] leading-relaxed">{value}</p>
+            <p className="text-sm text-secondary leading-relaxed">{value}</p>
         </div>
     );
 }
@@ -96,31 +82,31 @@ function IdeaCard({
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
-            className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl overflow-hidden"
+            className="steel-gradient ghost-border rounded-[var(--radius-module)] overflow-hidden"
         >
             {/* Header row */}
             <div className="p-5 flex items-start gap-4">
                 <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2 mb-2">
-                        <h3 className="text-base font-bold text-[var(--kf-text)] truncate">{idea.name}</h3>
+                        <h3 className="text-base font-black text-on-surface truncate uppercase" style={{ letterSpacing: "-0.05em" }}>{idea.name}</h3>
                         {idea.is_claimed && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full">
-                                <Lock className="w-3 h-3" /> Building
+                            <span className="inline-flex items-center gap-1 text-[10px] font-black text-on-primary-container bg-primary-container border border-outline-variant/20 px-2 py-0.5 rounded-full uppercase tracking-widest">
+                                <span className="material-symbols-outlined text-xs leading-none">lock</span> Building
                             </span>
                         )}
                         {idea.claimed_by_other && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-orange-300 bg-orange-500/10 border border-orange-500/20 px-2 py-0.5 rounded-full">
-                                <Lock className="w-3 h-3" /> Taken
+                            <span className="inline-flex items-center gap-1 text-[10px] font-black text-tertiary bg-surface-container border border-outline-variant/20 px-2 py-0.5 rounded-full uppercase tracking-widest">
+                                <span className="material-symbols-outlined text-xs leading-none">lock</span> Taken
                             </span>
                         )}
                         {idea.score != null && <ScoreBadge score={idea.score} />}
                         <SourceBadge source={idea.source} />
                     </div>
-                    <p className="text-sm text-[var(--kf-text-secondary)] line-clamp-2 leading-relaxed">
+                    <p className="text-sm text-secondary line-clamp-2 leading-relaxed">
                         {c.description || c.summary || "No description available."}
                     </p>
                     {savedDate && (
-                        <p className="text-xs text-zinc-600 mt-1.5">Saved {savedDate}</p>
+                        <p className="text-xs text-tertiary mt-1.5 font-black uppercase tracking-widest">Saved {savedDate}</p>
                     )}
                 </div>
 
@@ -130,7 +116,7 @@ function IdeaCard({
                         <button
                             onClick={() => onBuild(idea)}
                             disabled={buildingId === idea.id}
-                            className="flex items-center gap-1.5 h-9 px-4 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
+                            className="flex items-center gap-1.5 h-9 px-4 rounded-full bg-primary-container text-on-primary-container text-xs font-black uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-50"
                         >
                             {buildingId === idea.id ? (
                                 <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -138,7 +124,7 @@ function IdeaCard({
                                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                                 </svg>
                             ) : (
-                                <Sparkles className="w-3.5 h-3.5" />
+                                <span className="material-symbols-outlined text-sm leading-none">rocket_launch</span>
                             )}
                             Build
                         </button>
@@ -147,7 +133,7 @@ function IdeaCard({
                         <button
                             onClick={() => onDelete(idea.id)}
                             disabled={deletingId === idea.id}
-                            className="h-9 w-9 rounded-xl border border-[var(--kf-border-muted)] flex items-center justify-center text-zinc-500 hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-50"
+                            className="h-9 w-9 rounded-full border border-outline-variant/30 flex items-center justify-center text-tertiary hover:text-on-surface hover:border-outline-variant transition-colors disabled:opacity-50"
                             title="Remove saved idea"
                         >
                             {deletingId === idea.id ? (
@@ -156,16 +142,18 @@ function IdeaCard({
                                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                                 </svg>
                             ) : (
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <span className="material-symbols-outlined text-sm leading-none">delete</span>
                             )}
                         </button>
                     )}
                     <button
                         onClick={() => setExpanded(v => !v)}
-                        className="h-9 w-9 rounded-xl border border-[var(--kf-border-muted)] flex items-center justify-center text-zinc-500 hover:text-[var(--kf-text)] hover:border-zinc-500 transition-colors"
+                        className="h-9 w-9 rounded-full border border-outline-variant/30 flex items-center justify-center text-tertiary hover:text-on-surface hover:border-outline-variant transition-colors"
                         title={expanded ? "Collapse" : "Expand details"}
                     >
-                        {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        <span className="material-symbols-outlined text-base leading-none">
+                            {expanded ? "expand_less" : "expand_more"}
+                        </span>
                     </button>
                 </div>
             </div>
@@ -181,37 +169,37 @@ function IdeaCard({
                         transition={{ duration: 0.2 }}
                         className="overflow-hidden"
                     >
-                        <div className="border-t border-[var(--kf-border)]/60 px-5 py-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div className="border-t border-outline-variant/20 px-5 py-5 grid grid-cols-1 md:grid-cols-2 gap-5">
                             <IdeaDetail
                                 label="Target Audience"
-                                icon={Target}
+                                icon="groups"
                                 value={c.target_market || c.target_audience}
                             />
                             <IdeaDetail
                                 label="Problem & Why Now"
-                                icon={AlertCircle}
+                                icon="psychology"
                                 value={c.problem_statement || c.why_now}
                             />
                             <IdeaDetail
                                 label="Revenue Model"
-                                icon={TrendingUp}
+                                icon="trending_up"
                                 value={c.revenue_model}
                             />
                             <IdeaDetail
                                 label="Differentiator"
-                                icon={Zap}
+                                icon="auto_awesome"
                                 value={c.differentiator || c.unique_angle}
                             />
                             {features.length > 0 && (
                                 <div className="md:col-span-2">
-                                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 mb-2">
-                                        <Lightbulb className="w-3.5 h-3.5" />
+                                    <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-tertiary mb-2">
+                                        <span className="material-symbols-outlined text-sm leading-none">checklist</span>
                                         Key Features
                                     </div>
                                     <ul className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                                         {features.map((f, i) => (
-                                            <li key={i} className="flex items-start gap-2 text-sm text-[var(--kf-text-secondary)]">
-                                                <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0" />
+                                            <li key={i} className="flex items-start gap-2 text-sm text-secondary">
+                                                <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
                                                 {f}
                                             </li>
                                         ))}
@@ -219,8 +207,8 @@ function IdeaCard({
                                 </div>
                             )}
                             {idea.claimed_by_other && (
-                                <div className="md:col-span-2 flex items-center gap-2 text-sm text-orange-400/80 bg-orange-500/5 border border-orange-500/10 rounded-xl px-4 py-3">
-                                    <Users className="w-4 h-4 shrink-0" />
+                                <div className="md:col-span-2 flex items-center gap-2 text-sm text-tertiary bg-surface-container border border-outline-variant/20 rounded-xl px-4 py-3">
+                                    <span className="material-symbols-outlined text-base leading-none shrink-0">groups</span>
                                     Another user is currently building this idea — it's no longer available.
                                 </div>
                             )}
@@ -282,7 +270,7 @@ export default function SavedIdeasPage() {
             });
             if (!resp.ok) throw new Error("Failed to create project");
             const data = await resp.json();
-            navigate(`/csuite/${data.project_id}`);
+            navigate(`/app/projects/${data.project_id}/executive`);
         } catch (e) {
             console.error("Failed to build idea", e);
         } finally {
@@ -320,22 +308,22 @@ export default function SavedIdeasPage() {
         <div className="max-w-3xl mx-auto px-6 py-12">
             {/* Back */}
             <button
-                onClick={() => navigate("/ideation")}
-                className="flex items-center gap-2 text-sm text-zinc-500 hover:text-[var(--kf-text)] transition-colors mb-8"
+                onClick={() => navigate("/app/ideation")}
+                className="flex items-center gap-2 text-xs text-tertiary hover:text-on-surface font-black uppercase tracking-widest transition-colors mb-8"
             >
-                <ArrowLeft className="w-4 h-4" />
+                <span className="material-symbols-outlined text-base leading-none">arrow_back</span>
                 Back to Ideation
             </button>
 
             {/* Header */}
             <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 border border-amber-500/10 flex items-center justify-center">
-                        <Bookmark className="w-5 h-5 text-amber-400" />
+                    <div className="w-10 h-10 rounded-xl bg-primary-container border border-outline-variant/20 flex items-center justify-center">
+                        <span className="material-symbols-outlined text-xl text-on-primary-container">checklist</span>
                     </div>
                     <div>
-                        <h1 className="text-2xl font-bold text-[var(--kf-text)]">Saved Ideas</h1>
-                        <p className="text-sm text-zinc-500 mt-0.5">
+                        <h1 className="text-2xl font-black text-on-surface uppercase" style={{ letterSpacing: "-0.05em" }}>Saved Ideas</h1>
+                        <p className="text-xs text-tertiary mt-0.5 font-black uppercase tracking-widest">
                             {ideas.length === 0 ? "No ideas saved yet" : `${ideas.length} idea${ideas.length !== 1 ? "s" : ""} saved`}
                         </p>
                     </div>
@@ -344,8 +332,8 @@ export default function SavedIdeasPage() {
 
             {/* Exclusivity note */}
             {ideas.length > 0 && (
-                <p className="flex items-center gap-2 text-xs text-zinc-600 mb-6 mt-4">
-                    <Users className="w-3.5 h-3.5 shrink-0" />
+                <p className="flex items-center gap-2 text-xs text-tertiary mb-6 mt-4">
+                    <span className="material-symbols-outlined text-base leading-none shrink-0">groups</span>
                     Ideas are available until someone starts building — then they're locked exclusively to that user.
                 </p>
             )}
@@ -361,11 +349,12 @@ export default function SavedIdeasPage() {
                         <button
                             key={tab.key}
                             onClick={() => setFilter(tab.key as any)}
-                            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                            className={cn(
+                                "px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-widest transition-colors",
                                 filter === tab.key
-                                    ? "bg-zinc-700 text-[var(--kf-text)]"
-                                    : "text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
-                            }`}
+                                    ? "bg-primary-container text-on-primary-container"
+                                    : "text-tertiary hover:text-secondary hover:bg-surface-container border border-outline-variant/30"
+                            )}
                         >
                             {tab.label}
                         </button>
@@ -375,12 +364,12 @@ export default function SavedIdeasPage() {
 
             {/* Content */}
             {loading ? (
-                <div className="flex flex-col items-center gap-4 py-24 text-zinc-600">
+                <div className="flex flex-col items-center gap-4 py-24 text-tertiary">
                     <svg className="w-8 h-8 animate-spin" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                     </svg>
-                    <p className="text-sm">Loading saved ideas…</p>
+                    <p className="text-sm font-black uppercase tracking-widest">Loading saved ideas…</p>
                 </div>
             ) : ideas.length === 0 ? (
                 <motion.div
@@ -388,23 +377,23 @@ export default function SavedIdeasPage() {
                     animate={{ opacity: 1, y: 0 }}
                     className="flex flex-col items-center gap-4 py-24 text-center"
                 >
-                    <div className="w-16 h-16 rounded-2xl bg-[var(--kf-hover-bg)] border border-[var(--kf-border)] flex items-center justify-center mb-2">
-                        <Bookmark className="w-8 h-8 text-zinc-600" />
+                    <div className="w-16 h-16 rounded-2xl bg-surface-container border border-outline-variant/20 flex items-center justify-center mb-2">
+                        <span className="material-symbols-outlined text-3xl text-tertiary">checklist</span>
                     </div>
-                    <h2 className="text-lg font-semibold text-[var(--kf-text-secondary)]">No saved ideas yet</h2>
-                    <p className="text-sm text-zinc-600 max-w-xs leading-relaxed">
+                    <h2 className="text-lg font-black text-secondary uppercase tracking-widest">No saved ideas yet</h2>
+                    <p className="text-sm text-tertiary max-w-xs leading-relaxed">
                         When you find an idea you like, bookmark it — it'll appear here so you can build it later.
                     </p>
                     <button
-                        onClick={() => navigate("/ideation")}
-                        className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors"
+                        onClick={() => navigate("/app/ideation")}
+                        className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-full bg-primary-container text-on-primary-container text-xs font-black uppercase tracking-widest hover:opacity-80 transition-opacity"
                     >
-                        <Sparkles className="w-4 h-4" />
+                        <span className="material-symbols-outlined text-base leading-none">auto_awesome</span>
                         Discover Ideas
                     </button>
                 </motion.div>
             ) : filtered.length === 0 ? (
-                <p className="text-center text-zinc-600 py-16 text-sm">No ideas match this filter.</p>
+                <p className="text-center text-tertiary py-16 text-sm font-black uppercase tracking-widest">No ideas match this filter.</p>
             ) : (
                 <div className="space-y-3">
                     <AnimatePresence>

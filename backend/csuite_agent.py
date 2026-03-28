@@ -289,6 +289,32 @@ Cover ALL of the following:
 6. Mobile vs. Desktop Strategy — where does the primary experience live? What is the responsive/native strategy?
 7. User Research Gaps — what assumptions about user behaviour need to be validated through design research before building?
 8. Design-to-Engineering Handoff — what design tooling, documentation, and process is recommended to minimize rework?""",
+
+    CSuiteRole.ciso: """You are the CISO (Chief Information Security Officer) — a senior security executive with deep expertise in application security, data privacy, threat modeling, and compliance frameworks. Provide a thorough security posture analysis for this product.
+
+Cover ALL of the following:
+1. Threat Model Overview — identify the most critical threat vectors for this product (data breaches, injection attacks, social engineering, insider threats, supply chain attacks). Rank by likelihood and impact.
+2. Data Classification & Privacy — what categories of data will be collected, processed, and stored? Map each to sensitivity level (public, internal, confidential, restricted). Identify PII/PHI/PCI scope.
+3. Authentication & Access Control — recommended auth architecture (OAuth2, SAML, MFA). Role-based access control design. Session management strategy.
+4. Infrastructure Security — recommended security controls for hosting, networking, secrets management, and CI/CD pipeline. Container/serverless hardening requirements.
+5. Compliance & Regulatory Requirements — which frameworks apply (SOC 2, GDPR, HIPAA, PCI-DSS, CCPA)? What is the timeline and cost to achieve compliance?
+6. Dependency & Supply Chain Risk — evaluate the risk profile of third-party dependencies, open-source libraries, and SaaS integrations. Recommend SCA and SBOM practices.
+7. Incident Response Readiness — what IR plan, monitoring, logging, and alerting infrastructure is needed from day one? What is the minimum viable security operations capability?
+8. Security Debt & Prioritization — the top 5 security investments that should be made before launch, ranked by risk reduction per dollar spent.""",
+
+    CSuiteRole.synthesizer: """You are the Executive Synthesizer — a seasoned board-level strategic advisor who has served as a multi-time CEO and board director across technology companies. Your role is NOT to analyze from a single functional lens but to synthesize the analyses of ALL other C-Suite agents into a unified executive brief.
+
+You will receive the same project context as the other agents. Your job is to provide the HOLISTIC executive perspective:
+
+Cover ALL of the following:
+1. Executive Summary — a crisp 3-paragraph synthesis: what is this product, what is its overall viability, and what is the single most important thing the founder should know?
+2. Cross-Functional Alignment Score — rate how well the opportunity stacks across ALL disciplines (product, tech, finance, marketing, operations, design, security). Identify the weakest link.
+3. Go/No-Go Consensus — based on the typical range of C-Suite perspectives, would a board vote to fund this? What would be the likely split and key dissenting concerns?
+4. Critical Path to Revenue — what is the shortest, most capital-efficient path from idea to first dollar of revenue? What are the 3-5 milestones that must be hit?
+5. Top 3 Existential Risks — the three things most likely to kill this venture, synthesized across all functional areas. For each, provide a concrete mitigation.
+6. Resource Allocation Priority — if the founder has limited capital, what should they spend on first, second, third? Provide a phased investment thesis.
+7. 90-Day Action Plan — the most important actions for the first 90 days, sequenced by dependency and priority. Be specific and actionable.
+8. Board-Level Recommendation — your personal recommendation as if presenting to a seed-stage investment committee. Include conviction level (high/medium/low) and key conditions.""",
 }
 
 RESPONSE_SCHEMA = """Respond with ONLY valid JSON matching this exact schema:
@@ -341,6 +367,28 @@ Idea Details:
         context += f"\n\nUser Corrections / Extra Context:\n{correction_notes}"
 
     return context
+
+
+def _build_synthesis_context(completed_analyses) -> str:
+    """Build a summary of all completed functional agent results for the synthesizer."""
+    sections = ["=== C-SUITE AGENT RESULTS (synthesize these) ===\n"]
+    for a in completed_analyses:
+        data = a.analysis or {}
+        sections.append(f"--- {a.agent_role.value.upper()} (score: {a.score}/100, verdict: {data.get('verdict', 'N/A')}) ---")
+        rec = data.get("recommendation", "")
+        if rec:
+            sections.append(f"Recommendation: {rec}")
+        deep = data.get("deep_analysis", "")
+        if deep:
+            sections.append(f"Analysis: {deep[:2000]}")
+        strengths = data.get("strengths", [])
+        if strengths:
+            sections.append(f"Strengths: {'; '.join(str(s) for s in strengths[:5])}")
+        risks = data.get("risks", [])
+        if risks:
+            sections.append(f"Risks: {'; '.join(str(r) for r in risks[:5])}")
+        sections.append("")
+    return "\n".join(sections)
 
 
 async def run_single_agent(
@@ -488,11 +536,32 @@ async def run_all_agents_background(project_id: str, correction_notes: str | Non
         analyses = db.query(CSuiteAnalysis).filter(CSuiteAnalysis.project_id == project_id).all()
         _ = project.idea
 
-        tasks = [
-            _throttled_agent(project, analysis.agent_role, analysis.id, correction_notes)
-            for analysis in analyses
-        ]
-        await asyncio.gather(*tasks)
+        # Separate the synthesizer from the 8 functional agents
+        synth_analysis = None
+        functional_tasks = []
+        for analysis in analyses:
+            if analysis.agent_role == CSuiteRole.synthesizer:
+                synth_analysis = analysis
+            else:
+                functional_tasks.append(
+                    _throttled_agent(project, analysis.agent_role, analysis.id, correction_notes)
+                )
+
+        # Phase 1: run the 8 functional agents in parallel
+        await asyncio.gather(*functional_tasks)
+
+        # Phase 2: run the synthesizer with other agents' completed results
+        if synth_analysis and project_id not in _CANCELLED_PROJECTS:
+            db.expire_all()
+            completed = db.query(CSuiteAnalysis).filter(
+                CSuiteAnalysis.project_id == project_id,
+                CSuiteAnalysis.agent_role != CSuiteRole.synthesizer,
+                CSuiteAnalysis.status == AgentStatus.complete,
+            ).all()
+
+            synth_extra = _build_synthesis_context(completed)
+            synth_notes = (correction_notes + "\n\n" + synth_extra) if correction_notes else synth_extra
+            await _throttled_agent(project, synth_analysis.agent_role, synth_analysis.id, synth_notes)
 
         # Safety net: mark any agents still pending/running as error
         db.expire_all()

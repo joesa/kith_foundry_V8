@@ -49,3 +49,9 @@ cd backend && /home/joe/miniconda3/envs/kith_venv/bin/alembic current
 ```bash
 /home/joe/miniconda3/envs/kith_venv/bin/pip install -r backend/requirements.txt
 ```
+
+### Cloudflare Deployment
+When any change is made that affects the frontend UI, always deploy to Cloudflare Pages automatically. Include this exact command to deploy the frontend:
+```bash
+cd frontend && npx wrangler pages deploy dist --project-name forge-operator --branch main
+```

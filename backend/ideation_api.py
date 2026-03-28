@@ -52,7 +52,7 @@ class SaveIdeaRequest(BaseModel):
 
 # ── LLM helpers ──────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+DEFAULT_MODEL = "gpt-4o"
 
 def _get_model():
     return os.getenv("IDEATION_MODEL", DEFAULT_MODEL)
@@ -62,7 +62,18 @@ def _resolve_ideation_model(user_id: str | None = None) -> dict:
     """Resolve model config for ideation task."""
     if user_id:
         from model_resolver import resolve_model_for_task
-        return resolve_model_for_task(user_id, "ideation")
+        mc = resolve_model_for_task(user_id, "ideation")
+
+        # Some providers default to placeholder IDs (e.g. "local-model")
+        # when a task-specific model isn't set. In that case, prefer the
+        # user's code_gen routing, which is typically the actively configured model.
+        resolved_model = str(mc.get("model") or "").strip().lower()
+        if resolved_model in {"local-model", "openai/local-model"}:
+            cg = resolve_model_for_task(user_id, "code_gen")
+            if not cg.get("error") and cg.get("model"):
+                return cg
+
+        return mc
     return {"model": _get_model(), "api_key": None, "api_base": None, "provider_name": "Default"}
 
 
@@ -75,6 +86,26 @@ def _compute_idea_hash(idea: dict[str, Any]) -> str:
         "why_now": (idea.get("why_now") or "").strip().lower()[:140],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _should_retry_ideation_with_env_fallback(exc: Exception) -> bool:
+    text = str(exc).lower()
+    retry_markers = (
+        "timeout",
+        "timed out",
+        "connection",
+        "network",
+        "service unavailable",
+        "overloaded",
+        "resource exhausted",
+        "rate limit",
+        "ratelimit",
+        "quota exceeded",
+        "provider not provided",
+        "not found. passed model=",
+        "invalid model",
+    )
+    return any(marker in text for marker in retry_markers)
 
 
 def _repair_json(text: str) -> dict | None:
@@ -159,6 +190,7 @@ async def _llm_json(system: str, user_msg: str, user_id: str | None = None, retr
             mc = _resolve_ideation_model(user_id)
             if mc.get("error"):
                 raise HTTPException(status_code=400, detail=mc["error"])
+
             call_kwargs = {
                 "model": mc["model"],
                 "messages": [
@@ -166,7 +198,10 @@ async def _llm_json(system: str, user_msg: str, user_id: str | None = None, retr
                     {"role": "user", "content": user_msg},
                 ],
                 "temperature": 0.9,
-                "max_tokens": 8000,
+                # Ideation responses are short JSON payloads; smaller budgets
+                # reduce latency and avoid long-running provider timeouts.
+                "max_tokens": 2000,
+                "timeout": 45,
             }
             if mc.get("api_key"):
                 call_kwargs["api_key"] = mc["api_key"]
@@ -177,7 +212,45 @@ async def _llm_json(system: str, user_msg: str, user_id: str | None = None, retr
                     call_kwargs["api_key"] = key
             if mc.get("api_base"):
                 call_kwargs["api_base"] = mc["api_base"]
-            resp = await litellm.acompletion(**call_kwargs)
+
+            try:
+                resp = await litellm.acompletion(**call_kwargs)
+            except Exception as primary_exc:
+                if not user_id or not _should_retry_ideation_with_env_fallback(primary_exc):
+                    raise
+
+                from model_resolver import _env_fallback
+                fallback = _env_fallback()
+                if fallback.get("error"):
+                    raise
+
+                same_provider = (
+                    fallback.get("model") == mc.get("model")
+                    and fallback.get("api_key") == mc.get("api_key")
+                    and fallback.get("api_base") == mc.get("api_base")
+                )
+                if same_provider:
+                    raise
+
+                fallback_kwargs = {
+                    **call_kwargs,
+                    "model": fallback["model"],
+                }
+                fallback_kwargs.pop("api_key", None)
+                fallback_kwargs.pop("api_base", None)
+                if fallback.get("api_key"):
+                    fallback_kwargs["api_key"] = fallback["api_key"]
+                if fallback.get("api_base"):
+                    fallback_kwargs["api_base"] = fallback["api_base"]
+
+                provider_name = mc.get("provider_name") or mc.get("model") or "configured provider"
+                fallback_name = fallback.get("provider_name") or fallback.get("model") or "server fallback"
+                print(
+                    f"[ideation] Primary model failed ({provider_name}): {primary_exc}. "
+                    f"Retrying with {fallback_name}."
+                )
+                resp = await litellm.acompletion(**fallback_kwargs)
+
             text = resp.choices[0].message.content.strip()
 
             # Check if response was truncated

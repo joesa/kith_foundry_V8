@@ -130,17 +130,9 @@ async def _resolve_llm_credentials(model_id: str, user_id: str = None):
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail=mc["error"])
         routed_model = mc["model"]
-        selected_model = (model_id or "").strip()
-        if not selected_model or selected_model == "default":
-            effective_model = routed_model
-        else:
-            if "/" in selected_model:
-                effective_model = selected_model
-            elif isinstance(routed_model, str) and "/" in routed_model:
-                routed_prefix = routed_model.split("/", 1)[0]
-                effective_model = f"{routed_prefix}/{selected_model}"
-            else:
-                effective_model = selected_model
+        # User routing is authoritative when a user context exists.
+        # This prevents request-level model hints from bypassing user settings.
+        effective_model = routed_model
         api_key = mc.get("api_key")
         api_base = mc.get("api_base")
         resolved_via_routing = True

@@ -5,12 +5,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import {
-    CreditCard, Zap, BarChart2, Package, ExternalLink,
-    CheckCircle, AlertCircle, Clock, ArrowUpRight,
-} from "lucide-react";
-import { useTheme } from "../../contexts/ThemeContext";
 import { useApiFetch } from "../../hooks/useApiFetch";
+import { cn } from "../../lib/utils/cn";
 
 interface SubscriptionData {
     tier: string;
@@ -48,30 +44,22 @@ const TIER_LABELS: Record<string, string> = {
     enterprise: "Enterprise",
 };
 
-const TIER_COLOR: Record<string, string> = {
-    free: "from-slate-500 to-slate-600",
-    indie: "from-blue-500 to-indigo-600",
-    pro: "from-purple-500 to-violet-600",
-    team: "from-emerald-500 to-teal-600",
-    enterprise: "from-amber-500 to-orange-600",
-};
-
 function UsageBar({ value, max, label }: { value: number; max: number | null; label: string }) {
     const pct = max === null ? 0 : Math.min((value / max) * 100, 100);
-    const color = pct > 90 ? "bg-red-500" : pct > 70 ? "bg-amber-500" : "bg-purple-500";
+    const fillColor = pct > 90 ? "bg-error" : pct > 70 ? "bg-warning" : "bg-secondary";
 
     return (
         <div className="mb-3">
-            <div className="flex justify-between text-xs mb-1">
-                <span>{label}</span>
-                <span className="font-mono">
+            <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-on-surface/60 font-black uppercase tracking-widest text-[0.6rem]">{label}</span>
+                <span className="font-mono text-on-surface/80">
                     {value}{max !== null ? ` / ${max}` : " / ∞"}
                 </span>
             </div>
             {max !== null && (
-                <div className="h-1.5 rounded-full bg-white/10">
+                <div className="h-1.5 bg-surface-container rounded-full overflow-hidden">
                     <div
-                        className={`h-full rounded-full ${color} transition-all duration-500`}
+                        className={cn("h-full rounded-full transition-all duration-500", fillColor)}
                         style={{ width: `${pct}%` }}
                     />
                 </div>
@@ -81,7 +69,6 @@ function UsageBar({ value, max, label }: { value: number; max: number | null; la
 }
 
 export default function BillingPage() {
-    const { theme } = useTheme();
     const apiFetch = useApiFetch();
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
@@ -90,12 +77,6 @@ export default function BillingPage() {
     const [loading, setLoading] = useState(true);
     const [portalLoading, setPortalLoading] = useState(false);
     const [packLoading, setPackLoading] = useState<string | null>(null);
-
-    const isDark = theme === "dark";
-    const bg = isDark ? "bg-[#0A0A10]" : "bg-[#F8F9FA]";
-    const card = isDark ? "bg-[#111118] border-white/10" : "bg-white border-gray-200";
-    const text = isDark ? "text-white" : "text-gray-900";
-    const textSub = isDark ? "text-gray-400" : "text-gray-500";
 
     const checkoutStatus = searchParams.get("checkout");
     const packStatus = searchParams.get("pack");
@@ -155,18 +136,17 @@ export default function BillingPage() {
 
     if (loading) {
         return (
-            <div className={`min-h-screen ${bg} flex items-center justify-center`}>
-                <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+            <div className="min-h-screen bg-background flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-secondary border-t-transparent rounded-full animate-spin" />
             </div>
         );
     }
 
     const tier = sub?.tier ?? "free";
-    const tierColor = TIER_COLOR[tier] ?? TIER_COLOR.free;
     const isPaid = tier !== "free";
 
     return (
-        <div className={`min-h-screen ${bg} ${text} px-4 py-8`}>
+        <div className="min-h-screen bg-background text-on-surface px-4 py-8">
             <div className="max-w-4xl mx-auto">
 
                 {/* Status banners */}
@@ -174,40 +154,42 @@ export default function BillingPage() {
                     <motion.div
                         initial={{ opacity: 0, y: -10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="mb-6 flex items-center gap-2 bg-green-500/20 border border-green-500/40 rounded-xl px-4 py-3 text-green-400"
+                        className="mb-6 flex items-center gap-2 bg-success/10 border border-success/30 rounded-[var(--radius-module)] px-4 py-3 text-success"
                     >
-                        <CheckCircle className="w-5 h-5 flex-shrink-0" />
-                        <span>Subscription activated! Your plan has been upgraded.</span>
+                        <span className="material-symbols-outlined text-base flex-shrink-0">check_circle</span>
+                        <span className="text-sm font-black uppercase tracking-widest">Subscription activated! Your plan has been upgraded.</span>
                     </motion.div>
                 )}
                 {checkoutStatus === "cancelled" && (
-                    <div className="mb-6 flex items-center gap-2 bg-amber-500/20 border border-amber-500/40 rounded-xl px-4 py-3 text-amber-400">
-                        <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                        <span>Checkout cancelled. Your plan was not changed.</span>
+                    <div className="mb-6 flex items-center gap-2 bg-warning/10 border border-warning/30 rounded-[var(--radius-module)] px-4 py-3 text-warning">
+                        <span className="material-symbols-outlined text-base flex-shrink-0">warning</span>
+                        <span className="text-sm font-black uppercase tracking-widest">Checkout cancelled. Your plan was not changed.</span>
                     </div>
                 )}
                 {packStatus === "success" && (
                     <motion.div
                         initial={{ opacity: 0, y: -10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="mb-6 flex items-center gap-2 bg-blue-500/20 border border-blue-500/40 rounded-xl px-4 py-3 text-blue-400"
+                        className="mb-6 flex items-center gap-2 bg-primary-container/40 border border-primary-container/60 rounded-[var(--radius-module)] px-4 py-3 text-on-primary-container"
                     >
-                        <CheckCircle className="w-5 h-5 flex-shrink-0" />
-                        <span>Pack purchased! Your extra usage has been added.</span>
+                        <span className="material-symbols-outlined text-base flex-shrink-0">check_circle</span>
+                        <span className="text-sm font-black uppercase tracking-widest">Pack purchased! Your extra usage has been added.</span>
                     </motion.div>
                 )}
 
                 <div className="flex items-center justify-between mb-8">
-                    <h1 className="text-3xl font-bold">Billing & Usage</h1>
+                    <h1 className="text-3xl font-black uppercase" style={{ letterSpacing: "-0.05em" }}>
+                        Billing &amp; Usage
+                    </h1>
                     {isPaid && (
                         <button
                             onClick={openPortal}
                             disabled={portalLoading}
-                            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-medium transition-all"
+                            className="flex items-center gap-2 px-4 py-2 rounded-full bg-surface-container border border-outline-variant/20 hover:border-outline-variant/50 text-xs font-black uppercase tracking-widest transition-all disabled:opacity-50"
                         >
-                            <CreditCard className="w-4 h-4" />
+                            <span className="material-symbols-outlined text-base">credit_card</span>
                             {portalLoading ? "Opening…" : "Manage Subscription"}
-                            <ExternalLink className="w-3 h-3" />
+                            <span className="material-symbols-outlined text-sm">open_in_new</span>
                         </button>
                     )}
                 </div>
@@ -217,51 +199,52 @@ export default function BillingPage() {
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className={`rounded-2xl border ${card} p-6 lg:col-span-1`}
+                        className="steel-gradient ghost-border rounded-[var(--radius-module)] p-6 lg:col-span-1"
                     >
                         <div className="flex items-center gap-3 mb-4">
-                            <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${tierColor} flex items-center justify-center`}>
-                                <Zap className="w-5 h-5 text-white" />
+                            <div className="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center">
+                                <span className="material-symbols-outlined text-on-primary-container text-lg">bolt</span>
                             </div>
                             <div>
-                                <p className={`text-xs ${textSub}`}>Current Plan</p>
-                                <p className="font-bold text-lg">{TIER_LABELS[tier] ?? tier}</p>
+                                <p className="text-[0.6rem] font-black uppercase tracking-widest text-tertiary">Current Plan</p>
+                                <p className="font-black text-lg uppercase" style={{ letterSpacing: "-0.05em" }}>{TIER_LABELS[tier] ?? tier}</p>
                             </div>
                         </div>
 
-                        <div className={`space-y-2 text-sm mb-4 ${textSub}`}>
+                        <div className="space-y-2 text-sm mb-4">
                             <div className="flex justify-between">
-                                <span>Status</span>
-                                <span className={`font-medium ${
-                                    sub?.status === "active" || sub?.status === "trialing"
-                                        ? "text-green-500"
-                                        : "text-red-500"
-                                }`}>
+                                <span className="text-on-surface/50 font-black uppercase tracking-widest text-[0.6rem]">Status</span>
+                                <span className={cn(
+                                    "font-black uppercase tracking-widest text-[0.6rem]",
+                                    sub?.status === "active" || sub?.status === "trialing" ? "text-success" : "text-error"
+                                )}>
                                     {sub?.status ?? "active"}
                                 </span>
                             </div>
                             {sub?.is_annual && (
                                 <div className="flex justify-between">
-                                    <span>Billing</span>
-                                    <span className="text-green-500 font-medium">Annual (20% off)</span>
+                                    <span className="text-on-surface/50 font-black uppercase tracking-widest text-[0.6rem]">Billing</span>
+                                    <span className="text-success font-black uppercase tracking-widest text-[0.6rem]">Annual (20% off)</span>
                                 </div>
                             )}
                             {sub?.byok_discount_applied && (
                                 <div className="flex justify-between">
-                                    <span>BYOK Discount</span>
-                                    <span className="text-green-500 font-medium">Applied (20% off)</span>
+                                    <span className="text-on-surface/50 font-black uppercase tracking-widest text-[0.6rem]">BYOK Discount</span>
+                                    <span className="text-success font-black uppercase tracking-widest text-[0.6rem]">Applied (20% off)</span>
                                 </div>
                             )}
                             {sub?.seat_count && sub.seat_count > 1 && (
                                 <div className="flex justify-between">
-                                    <span>Seats</span>
-                                    <span className="font-medium">{sub.seat_count}</span>
+                                    <span className="text-on-surface/50 font-black uppercase tracking-widest text-[0.6rem]">Seats</span>
+                                    <span className="font-black text-[0.6rem] tracking-widest">{sub.seat_count}</span>
                                 </div>
                             )}
                             {sub?.current_period_end && (
-                                <div className="flex items-center gap-1">
-                                    <Clock className="w-3 h-3" />
-                                    <span>Renews {new Date(sub.current_period_end).toLocaleDateString()}</span>
+                                <div className="flex items-center gap-1 text-on-surface/40">
+                                    <span className="material-symbols-outlined text-xs">schedule</span>
+                                    <span className="text-[0.6rem] font-black uppercase tracking-widest">
+                                        Renews {new Date(sub.current_period_end).toLocaleDateString()}
+                                    </span>
                                 </div>
                             )}
                         </div>
@@ -269,10 +252,10 @@ export default function BillingPage() {
                         {!isPaid && (
                             <button
                                 onClick={() => navigate("/pricing")}
-                                className="w-full py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold flex items-center justify-center gap-1 transition-all"
+                                className="w-full py-2 rounded-full bg-secondary text-on-surface font-black uppercase tracking-widest text-xs flex items-center justify-center gap-1.5 transition-all hover:opacity-90"
                             >
                                 Upgrade Plan
-                                <ArrowUpRight className="w-4 h-4" />
+                                <span className="material-symbols-outlined text-sm">arrow_outward</span>
                             </button>
                         )}
                     </motion.div>
@@ -282,11 +265,13 @@ export default function BillingPage() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.05 }}
-                        className={`rounded-2xl border ${card} p-6 lg:col-span-2`}
+                        className="steel-gradient ghost-border rounded-[var(--radius-module)] p-6 lg:col-span-2"
                     >
-                        <div className="flex items-center gap-2 mb-4">
-                            <BarChart2 className="w-5 h-5 text-purple-500" />
-                            <h2 className="font-semibold">Usage — {sub?.usage.billing_month}</h2>
+                        <div className="flex items-center gap-2 mb-5">
+                            <span className="material-symbols-outlined text-secondary text-lg">bar_chart</span>
+                            <h2 className="font-black uppercase tracking-widest text-xs text-on-surface/80">
+                                Usage — {sub?.usage.billing_month}
+                            </h2>
                         </div>
                         <UsageBar
                             label="C-Suite Analyses"
@@ -308,7 +293,7 @@ export default function BillingPage() {
                             value={sub?.usage.project_count ?? 0}
                             max={sub?.limits.projects ?? null}
                         />
-                        <p className={`text-xs ${textSub} mt-2`}>
+                        <p className="text-[0.6rem] font-black uppercase tracking-widest text-on-surface/30 mt-3">
                             Reset on the 1st of each month.
                         </p>
                     </motion.div>
@@ -320,26 +305,26 @@ export default function BillingPage() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.1 }}
-                        className={`rounded-2xl border ${card} p-6 mb-8`}
+                        className="steel-gradient ghost-border rounded-[var(--radius-module)] p-6 mb-8"
                     >
                         <div className="flex items-center gap-2 mb-4">
-                            <Package className="w-5 h-5 text-blue-500" />
-                            <h2 className="font-semibold">Active Usage Packs</h2>
+                            <span className="material-symbols-outlined text-secondary text-lg">inventory_2</span>
+                            <h2 className="font-black uppercase tracking-widest text-xs text-on-surface/80">Active Usage Packs</h2>
                         </div>
                         <div className="space-y-2">
                             {sub!.packs.map((p, i) => (
-                                <div key={i} className={`flex items-center justify-between p-3 rounded-xl ${isDark ? "bg-white/5" : "bg-gray-50"}`}>
+                                <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-surface-container border border-outline-variant/20">
                                     <div>
-                                        <p className="text-sm font-medium">
+                                        <p className="text-xs font-black uppercase tracking-widest text-on-surface">
                                             {p.pack_type === "csuite_runs" ? "C-Suite Runs" : "Design Screens"} Pack
                                         </p>
-                                        <p className={`text-xs ${textSub}`}>
+                                        <p className="text-[0.6rem] font-black uppercase tracking-widest text-on-surface/40 mt-0.5">
                                             Purchased {new Date(p.purchased_at).toLocaleDateString()}
                                         </p>
                                     </div>
                                     <div className="text-right">
-                                        <p className="font-bold">{p.remaining}</p>
-                                        <p className={`text-xs ${textSub}`}>remaining</p>
+                                        <p className="font-black text-on-surface">{p.remaining}</p>
+                                        <p className="text-[0.6rem] font-black uppercase tracking-widest text-on-surface/40">remaining</p>
                                     </div>
                                 </div>
                             ))}
@@ -352,12 +337,12 @@ export default function BillingPage() {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.15 }}
-                    className={`rounded-2xl border ${card} p-6 mb-8`}
+                    className="steel-gradient ghost-border rounded-[var(--radius-module)] p-6 mb-8"
                 >
                     <div className="flex items-center gap-2 mb-4">
-                        <Package className="w-5 h-5 text-pink-500" />
-                        <h2 className="font-semibold">Buy Usage Packs</h2>
-                        <span className={`text-xs ${textSub} ml-auto`}>One-time purchase, no expiry</span>
+                        <span className="material-symbols-outlined text-secondary text-lg">add_box</span>
+                        <h2 className="font-black uppercase tracking-widest text-xs text-on-surface/80">Buy Usage Packs</h2>
+                        <span className="text-[0.6rem] font-black uppercase tracking-widest text-on-surface/30 ml-auto">One-time purchase, no expiry</span>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {[
@@ -366,16 +351,16 @@ export default function BillingPage() {
                         ].map(pack => (
                             <div
                                 key={pack.type}
-                                className={`flex items-center justify-between rounded-xl p-4 border ${isDark ? "border-white/10 hover:border-white/20" : "border-gray-200 hover:border-gray-300"} transition-all`}
+                                className="flex items-center justify-between rounded-lg p-4 bg-surface-container border border-outline-variant/20 hover:border-outline-variant/50 transition-all"
                             >
                                 <div>
-                                    <p className="font-semibold text-sm">{pack.label} Pack</p>
-                                    <p className={`text-xs ${textSub}`}>{pack.desc} · {pack.price}</p>
+                                    <p className="text-xs font-black uppercase tracking-widest text-on-surface">{pack.label} Pack</p>
+                                    <p className="text-[0.6rem] font-black uppercase tracking-widest text-on-surface/40 mt-0.5">{pack.desc} · {pack.price}</p>
                                 </div>
                                 <button
                                     onClick={() => purchasePack(pack.type)}
                                     disabled={packLoading === pack.type}
-                                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold rounded-lg transition-all disabled:opacity-50"
+                                    className="px-4 py-2 bg-secondary text-on-surface rounded-full font-black uppercase tracking-widest text-xs transition-all hover:opacity-90 disabled:opacity-50"
                                 >
                                     {packLoading === pack.type ? "…" : "Buy"}
                                 </button>
@@ -390,12 +375,12 @@ export default function BillingPage() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.2 }}
-                        className="rounded-2xl border border-purple-500/30 bg-purple-500/10 p-6 text-center"
+                        className="rounded-[var(--radius-module)] border border-primary-container bg-primary-container/10 ember-glow p-6 text-center"
                     >
-                        <h3 className="text-xl font-bold mb-2">
+                        <h3 className="text-xl font-black uppercase mb-2" style={{ letterSpacing: "-0.05em" }}>
                             {tier === "free" ? "Unlock unlimited building" : "Go unlimited with Pro"}
                         </h3>
-                        <p className={`${textSub} mb-4 text-sm`}>
+                        <p className="text-on-surface/50 mb-4 text-sm font-black uppercase tracking-widest">
                             {tier === "free"
                                 ? "Upgrade to Indie or Pro and stop hitting limits mid-build."
                                 : "Pro gives you unlimited projects, 100 C-Suite runs/mo, and 150 design screens/mo."
@@ -403,7 +388,7 @@ export default function BillingPage() {
                         </p>
                         <button
                             onClick={() => navigate("/pricing")}
-                            className="px-6 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-semibold text-sm transition-all"
+                            className="px-6 py-2.5 bg-secondary text-on-surface rounded-full font-black uppercase tracking-widest text-xs transition-all hover:opacity-90"
                         >
                             View Plans
                         </button>

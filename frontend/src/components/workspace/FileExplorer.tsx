@@ -1,15 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import {
-    ChevronRight,
-    ChevronDown,
-    File,
-    Folder,
-    FolderOpen,
-    FilePlus,
-    FolderPlus,
-    Trash2,
-    Search
-} from "lucide-react";
+import { cn } from "../../lib/utils/cn";
 
 // File type icon colors
 const FILE_ICON_COLORS: Record<string, string> = {
@@ -99,38 +89,38 @@ export function FileExplorer({ tree, activeFile, onFileSelect, streamingFile }: 
 
     return (
         <div
-            className="h-full flex flex-col bg-[var(--kf-surface)] select-none"
+            className="h-full flex flex-col bg-surface-container-lowest select-none"
             onClick={() => setContextMenu(null)}
         >
             {/* Header */}
-            <div className="px-3 py-2.5 border-b border-[var(--kf-border)] flex items-center justify-between">
-                <span className="text-[11px] font-semibold text-[var(--kf-text-secondary)] uppercase tracking-wider">Explorer</span>
+            <div className="px-3 py-2.5 border-b border-outline-variant flex items-center justify-between">
+                <span className="text-[11px] font-black text-tertiary uppercase tracking-widest">Explorer</span>
                 <div className="flex items-center gap-1">
                     <button
-                        className="p-1 rounded hover:bg-[var(--kf-hover-bg)]/50 text-zinc-500 hover:text-[var(--kf-text-secondary)] transition-colors"
+                        className="p-1 rounded-full hover:bg-surface-container text-tertiary hover:text-on-surface transition-colors"
                         title="New File"
                     >
-                        <FilePlus className="w-3.5 h-3.5" />
+                        <span className="material-symbols-outlined" style={{ fontSize: 14 }}>add</span>
                     </button>
                     <button
-                        className="p-1 rounded hover:bg-[var(--kf-hover-bg)]/50 text-zinc-500 hover:text-[var(--kf-text-secondary)] transition-colors"
+                        className="p-1 rounded-full hover:bg-surface-container text-tertiary hover:text-on-surface transition-colors"
                         title="New Folder"
                     >
-                        <FolderPlus className="w-3.5 h-3.5" />
+                        <span className="material-symbols-outlined" style={{ fontSize: 14 }}>create_new_folder</span>
                     </button>
                 </div>
             </div>
 
             {/* Search */}
-            <div className="px-2 py-1.5 border-b border-[var(--kf-border)]">
-                <div className="flex items-center gap-1.5 bg-[var(--kf-surface-alt)] rounded px-2 py-1">
-                    <Search className="w-3 h-3 text-zinc-600" />
+            <div className="px-2 py-1.5 border-b border-outline-variant">
+                <div className="flex items-center gap-1.5 bg-surface-container rounded px-2 py-1">
+                    <span className="material-symbols-outlined text-tertiary" style={{ fontSize: 12 }}>search</span>
                     <input
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Search files..."
-                        className="bg-transparent text-xs text-[var(--kf-text-secondary)] placeholder:text-[var(--kf-text-faint)] outline-none w-full"
+                        className="bg-transparent text-xs text-secondary placeholder:text-tertiary outline-none w-full"
                     />
                 </div>
             </div>
@@ -138,7 +128,7 @@ export function FileExplorer({ tree, activeFile, onFileSelect, streamingFile }: 
             {/* Tree */}
             <div className="flex-1 overflow-y-auto overflow-x-hidden py-1">
                 {filteredTree.length === 0 ? (
-                    <div className="px-3 py-4 text-xs text-zinc-600 text-center">
+                    <div className="px-3 py-4 text-xs text-tertiary text-center">
                         {searchQuery ? "No matching files" : "No files yet"}
                     </div>
                 ) : (
@@ -158,13 +148,23 @@ export function FileExplorer({ tree, activeFile, onFileSelect, streamingFile }: 
             {/* Context Menu */}
             {contextMenu && (
                 <div
-                    className="fixed z-50 bg-[#1E1E2A] border border-[var(--kf-border-muted)] rounded-md shadow-xl py-1 min-w-[160px]"
+                    className="fixed z-50 bg-surface-container border border-outline-variant rounded-[var(--radius-module)] shadow-xl py-1 min-w-[160px]"
                     style={{ left: contextMenu.x, top: contextMenu.y }}
                 >
-                    <ContextMenuItem icon={<FilePlus className="w-3.5 h-3.5" />} label="New File" />
-                    <ContextMenuItem icon={<FolderPlus className="w-3.5 h-3.5" />} label="New Folder" />
-                    <div className="h-px bg-zinc-700 my-1" />
-                    <ContextMenuItem icon={<Trash2 className="w-3.5 h-3.5" />} label="Delete" danger />
+                    <ContextMenuItem
+                        icon={<span className="material-symbols-outlined" style={{ fontSize: 14 }}>add</span>}
+                        label="New File"
+                    />
+                    <ContextMenuItem
+                        icon={<span className="material-symbols-outlined" style={{ fontSize: 14 }}>create_new_folder</span>}
+                        label="New Folder"
+                    />
+                    <div className="h-px bg-outline-variant my-1" />
+                    <ContextMenuItem
+                        icon={<span className="material-symbols-outlined" style={{ fontSize: 14 }}>delete</span>}
+                        label="Delete"
+                        danger
+                    />
                 </div>
             )}
         </div>
@@ -175,8 +175,10 @@ function ContextMenuItem({ icon, label, danger, onClick }: { icon: React.ReactNo
     return (
         <button
             onClick={onClick}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-[var(--kf-hover-bg)]/50 transition-colors ${danger ? "text-red-400 hover:text-red-300" : "text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"
-                }`}
+            className={cn(
+                "w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-surface-container transition-colors",
+                danger ? "text-red-400 hover:text-red-300" : "text-secondary hover:text-on-surface"
+            )}
         >
             {icon}
             {label}
@@ -210,20 +212,16 @@ function TreeView({ nodes, depth, expandedDirs, toggleDir, activeFile, onFileSel
                             <button
                                 onClick={() => toggleDir(node.path)}
                                 onContextMenu={(e) => onContextMenu(e, node)}
-                                className="w-full flex items-center gap-1.5 py-[3px] hover:bg-[var(--kf-hover-bg)] transition-colors group"
+                                className="w-full flex items-center gap-1.5 py-[3px] hover:bg-surface-container transition-colors group"
                                 style={{ paddingLeft }}
                             >
-                                {isExpanded ? (
-                                    <ChevronDown className="w-3 h-3 text-zinc-500 shrink-0" />
-                                ) : (
-                                    <ChevronRight className="w-3 h-3 text-zinc-500 shrink-0" />
-                                )}
-                                {isExpanded ? (
-                                    <FolderOpen className="w-3.5 h-3.5 text-amber-400/80 shrink-0" />
-                                ) : (
-                                    <Folder className="w-3.5 h-3.5 text-amber-400/60 shrink-0" />
-                                )}
-                                <span className="text-[12px] text-[var(--kf-text-secondary)] group-hover:text-[var(--kf-text)] truncate">
+                                <span className="material-symbols-outlined text-tertiary shrink-0" style={{ fontSize: 12 }}>
+                                    {isExpanded ? "expand_more" : "chevron_right"}
+                                </span>
+                                <span className="material-symbols-outlined shrink-0" style={{ fontSize: 14, color: "#F59E0B", opacity: isExpanded ? 0.8 : 0.6 }}>
+                                    {isExpanded ? "folder_open" : "folder"}
+                                </span>
+                                <span className="text-[12px] text-secondary group-hover:text-on-surface truncate">
                                     {node.name}
                                 </span>
                             </button>
@@ -248,18 +246,28 @@ function TreeView({ nodes, depth, expandedDirs, toggleDir, activeFile, onFileSel
                         key={node.path}
                         onClick={() => onFileSelect(node.path)}
                         onContextMenu={(e) => onContextMenu(e, node)}
-                        className={`w-full flex items-center gap-1.5 py-[3px] transition-colors group ${isActive
-                            ? "bg-indigo-500/10 text-indigo-300"
-                            : "hover:bg-[var(--kf-hover-bg)] text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)]"
-                            }`}
+                        className={cn(
+                            "w-full flex items-center gap-1.5 py-[3px] transition-colors group",
+                            isActive
+                                ? "bg-primary/10 text-primary"
+                                : "hover:bg-surface-container text-secondary hover:text-on-surface"
+                        )}
                         style={{ paddingLeft: paddingLeft + 14 }}
                     >
-                        <File className="w-3.5 h-3.5 shrink-0" style={{ color: getFileColor(node.name) }} />
+                        <span
+                            className="material-symbols-outlined shrink-0"
+                            style={{ fontSize: 14, color: getFileColor(node.name) }}
+                        >
+                            description
+                        </span>
                         <span className="text-[12px] truncate">{node.name}</span>
                         {isStreaming && (
                             <span className="ml-auto mr-2 w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
                         )}
-                        <span className="ml-auto mr-2 text-[9px] text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity font-mono shrink-0" style={{ marginLeft: isStreaming ? 0 : "auto" }}>
+                        <span
+                            className="text-[9px] text-tertiary opacity-0 group-hover:opacity-100 transition-opacity font-mono shrink-0"
+                            style={{ marginLeft: isStreaming ? 0 : "auto", marginRight: 8 }}
+                        >
                             {getLanguageLabel(node.name)}
                         </span>
                     </button>

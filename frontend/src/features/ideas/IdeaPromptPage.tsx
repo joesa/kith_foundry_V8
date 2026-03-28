@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { getApiBaseUrl } from "../../lib/runtimeConfig";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wand2, ArrowRight, Bookmark, BookmarkCheck, Check, RotateCcw, Sparkles } from "lucide-react";
 
 interface Enhancement {
     name: string;
@@ -97,7 +96,7 @@ export default function IdeaPromptPage() {
 
             if (!resp.ok) throw new Error("Failed to create project");
             const data = await resp.json();
-            navigate(`/csuite/${data.project_id}`);
+            navigate(`/app/projects/${data.project_id}/executive`);
         } catch (e: any) {
             setError(e.message);
             setLoading(false);
@@ -124,7 +123,7 @@ export default function IdeaPromptPage() {
 
             if (!resp.ok) throw new Error("Failed to create project");
             const data = await resp.json();
-            navigate(`/csuite/${data.project_id}`);
+            navigate(`/app/projects/${data.project_id}/executive`);
         } catch (e: any) {
             setError(e.message);
             setLoading(false);
@@ -142,55 +141,54 @@ export default function IdeaPromptPage() {
                         exit={{ opacity: 0, y: -20 }}
                     >
                         <div className="text-center mb-10">
-                            <h1 className="text-3xl font-bold text-[var(--kf-text)] mb-2">Describe Your Vision</h1>
-                            <p className="text-[var(--kf-text-secondary)]">Tell us what you want to build. Our AI will craft 3 enhanced variations.</p>
+                            <h1 className="text-3xl font-black text-on-surface mb-2 uppercase" style={{ letterSpacing: "-0.05em" }}>
+                                Describe Your Vision
+                            </h1>
+                            <p className="text-secondary">Tell us what you want to build. Our AI will craft 3 enhanced variations.</p>
                         </div>
 
                         {/* Prompt input */}
-                        <div className="relative group">
-                            <div className="absolute -inset-0.5 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-2xl opacity-20 group-focus-within:opacity-40 blur transition-opacity" />
-                            <div className="relative bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-2xl p-1 group-focus-within:border-purple-500/30 transition-colors">
-                                <textarea
-                                    value={prompt}
-                                    onChange={(e) => setPrompt(e.target.value)}
-                                    placeholder="e.g. A platform that connects freelance designers with startups needing brand identity work, featuring AI-powered portfolio matching..."
-                                    className="w-full min-h-[200px] p-5 bg-transparent text-[var(--kf-text)] placeholder-[var(--kf-text-faint)] resize-none focus:outline-none text-lg leading-relaxed"
-                                    autoFocus
-                                />
-                                <div className="flex items-center justify-between px-5 pb-4">
-                                    <span className="text-xs text-[var(--kf-text-faint)]">{prompt.length} characters</span>
-                                    <div className="flex items-center gap-3">
-                                        <button
-                                            onClick={handleUseOriginal}
-                                            disabled={!prompt.trim() || loading}
-                                            className="h-10 px-5 rounded-xl border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                        >
-                                            Use as-is
-                                        </button>
-                                        <button
-                                            onClick={handleEnhance}
-                                            disabled={!prompt.trim() || loading}
-                                            className="flex items-center gap-2 h-10 px-6 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20"
-                                        >
-                                            {loading ? (
-                                                <>
-                                                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                                                    Enhancing...
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <Wand2 className="w-4 h-4" />
-                                                    Enhance with AI
-                                                </>
-                                            )}
-                                        </button>
-                                    </div>
+                        <div className="steel-gradient ghost-border rounded-[var(--radius-module)] p-1">
+                            <textarea
+                                value={prompt}
+                                onChange={(e) => setPrompt(e.target.value)}
+                                placeholder="e.g. A platform that connects freelance designers with startups needing brand identity work, featuring AI-powered portfolio matching..."
+                                className="w-full min-h-[200px] p-5 bg-background border border-outline-variant/30 rounded-lg focus:ring-2 focus:ring-primary text-on-surface placeholder:text-tertiary resize-none focus:outline-none text-lg leading-relaxed"
+                                autoFocus
+                            />
+                            <div className="flex items-center justify-between px-5 pb-4 pt-2">
+                                <span className="text-xs text-tertiary font-black uppercase tracking-widest">{prompt.length} chars</span>
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        onClick={handleUseOriginal}
+                                        disabled={!prompt.trim() || loading}
+                                        className="h-10 px-5 rounded-full border border-outline-variant/30 text-secondary text-xs font-black uppercase tracking-widest hover:bg-surface-container transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                    >
+                                        Use as-is
+                                    </button>
+                                    <button
+                                        onClick={handleEnhance}
+                                        disabled={!prompt.trim() || loading}
+                                        className="flex items-center gap-2 h-10 px-6 rounded-full bg-primary-container text-on-primary-container text-xs font-black uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {loading ? (
+                                            <>
+                                                <div className="w-4 h-4 border-2 border-on-primary-container/30 border-t-on-primary-container rounded-full animate-spin" />
+                                                Enhancing...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span className="material-symbols-outlined text-base leading-none">auto_awesome</span>
+                                                Enhance with AI
+                                            </>
+                                        )}
+                                    </button>
                                 </div>
                             </div>
                         </div>
 
                         {error && (
-                            <div className="mt-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                            <div className="mt-4 px-4 py-3 rounded-lg bg-surface-container border border-outline-variant/30 text-on-surface text-sm">
                                 {error}
                             </div>
                         )}
@@ -203,14 +201,16 @@ export default function IdeaPromptPage() {
                         exit={{ opacity: 0, y: -20 }}
                     >
                         <div className="text-center mb-10">
-                            <h1 className="text-3xl font-bold text-[var(--kf-text)] mb-2">Choose Your Direction</h1>
-                            <p className="text-[var(--kf-text-secondary)]">We've crafted 3 unique takes on your idea. Select one to proceed.</p>
+                            <h1 className="text-3xl font-black text-on-surface mb-2 uppercase" style={{ letterSpacing: "-0.05em" }}>
+                                Choose Your Direction
+                            </h1>
+                            <p className="text-secondary">We've crafted 3 unique takes on your idea. Select one to proceed.</p>
                         </div>
 
                         {/* Original prompt reference */}
-                        <div className="bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-xl p-4 mb-8">
-                            <span className="text-xs text-[var(--kf-text-muted)] uppercase tracking-wider font-medium">Your original prompt</span>
-                            <p className="text-[var(--kf-text-secondary)] text-sm mt-1 line-clamp-2">{prompt}</p>
+                        <div className="steel-gradient ghost-border rounded-[var(--radius-module)] p-4 mb-8">
+                            <span className="text-xs text-tertiary uppercase tracking-widest font-black">Your original prompt</span>
+                            <p className="text-secondary text-sm mt-1 line-clamp-2">{prompt}</p>
                         </div>
 
                         {/* Enhancement cards */}
@@ -221,22 +221,22 @@ export default function IdeaPromptPage() {
                                     initial={{ opacity: 0, y: 20 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ delay: i * 0.1 }}
-                                    className="group bg-[var(--kf-surface)] border border-[var(--kf-border)] rounded-xl p-6 hover:border-purple-500/30 transition-all"
+                                    className="steel-gradient ghost-border rounded-[var(--radius-module)] p-6 hover:border-outline-variant/60 transition-all"
                                 >
                                     <div className="flex items-start justify-between mb-3">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 font-bold text-sm">
+                                            <div className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center text-on-primary-container font-black text-sm">
                                                 {i + 1}
                                             </div>
-                                            <h3 className="text-lg font-bold text-[var(--kf-text)]">{enh.name}</h3>
+                                            <h3 className="text-lg font-black text-on-surface uppercase" style={{ letterSpacing: "-0.05em" }}>{enh.name}</h3>
                                         </div>
                                     </div>
-                                    <p className="text-[var(--kf-text-secondary)] text-sm mb-4 leading-relaxed">{enh.description}</p>
+                                    <p className="text-secondary text-sm mb-4 leading-relaxed">{enh.description}</p>
 
                                     {enh.differentiators?.length > 0 && (
                                         <div className="flex flex-wrap gap-2 mb-4">
                                             {enh.differentiators.map((d, j) => (
-                                                <span key={j} className="text-xs px-2.5 py-1 rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-300 border border-purple-500/10">
+                                                <span key={j} className="text-xs px-2.5 py-1 rounded-full bg-primary-container text-on-primary-container border border-outline-variant/20 font-black uppercase tracking-widest">
                                                     {d}
                                                 </span>
                                             ))}
@@ -244,32 +244,32 @@ export default function IdeaPromptPage() {
                                     )}
 
                                     <div className="flex items-center justify-between">
-                                        <span className="text-xs text-zinc-500">
-                                            <Sparkles className="w-3 h-3 inline mr-1" />
+                                        <span className="text-xs text-tertiary flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-sm leading-none">auto_awesome</span>
                                             Target: {enh.target_market}
                                         </span>
                                         <div className="flex items-center gap-2">
                                             <button
                                                 onClick={() => handleSaveEnhancement(enh)}
                                                 disabled={savedIds.has(enh.name) || savingId === enh.name}
-                                                className="flex items-center gap-1.5 h-9 px-3.5 rounded-lg border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors disabled:opacity-50"
+                                                className="flex items-center gap-1.5 h-9 px-3.5 rounded-full border border-outline-variant/30 text-secondary text-xs font-black uppercase tracking-widest hover:bg-surface-container transition-colors disabled:opacity-50"
                                                 title="Save for later"
                                             >
                                                 {savingId === enh.name ? (
                                                     <div className="w-3.5 h-3.5 border border-current border-t-transparent rounded-full animate-spin" />
                                                 ) : savedIds.has(enh.name) ? (
-                                                    <BookmarkCheck className="w-3.5 h-3.5 text-green-400" />
+                                                    <span className="material-symbols-outlined text-sm leading-none text-primary">check_circle</span>
                                                 ) : (
-                                                    <Bookmark className="w-3.5 h-3.5" />
+                                                    <span className="material-symbols-outlined text-sm leading-none">edit</span>
                                                 )}
                                                 {savedIds.has(enh.name) ? "Saved" : "Save"}
                                             </button>
                                             <button
                                                 onClick={() => handleAcceptEnhancement(enh)}
                                                 disabled={loading}
-                                                className="flex items-center gap-2 h-9 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
+                                                className="flex items-center gap-2 h-9 px-4 rounded-full bg-primary-container text-on-primary-container text-xs font-black uppercase tracking-widest hover:opacity-80 transition-opacity disabled:opacity-50"
                                             >
-                                                <Check className="w-3.5 h-3.5" />
+                                                <span className="material-symbols-outlined text-sm leading-none">check_circle</span>
                                                 Select
                                             </button>
                                         </div>
@@ -282,18 +282,18 @@ export default function IdeaPromptPage() {
                         <div className="flex items-center justify-between mt-8">
                             <button
                                 onClick={() => setPhase("input")}
-                                className="flex items-center gap-2 text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] text-sm transition-colors"
+                                className="flex items-center gap-2 text-secondary hover:text-on-surface text-xs font-black uppercase tracking-widest transition-colors"
                             >
-                                <RotateCcw className="w-4 h-4" />
+                                <span className="material-symbols-outlined text-base leading-none">edit</span>
                                 Edit prompt
                             </button>
                             <button
                                 onClick={handleUseOriginal}
                                 disabled={loading}
-                                className="flex items-center gap-2 h-10 px-5 rounded-xl border border-[var(--kf-border-muted)] text-[var(--kf-text-secondary)] text-sm font-medium hover:bg-[var(--kf-hover-bg)] transition-colors disabled:opacity-50"
+                                className="flex items-center gap-2 h-10 px-5 rounded-full border border-outline-variant/30 text-secondary text-xs font-black uppercase tracking-widest hover:bg-surface-container transition-colors disabled:opacity-50"
                             >
                                 Skip — use my original prompt
-                                <ArrowRight className="w-4 h-4" />
+                                <span className="material-symbols-outlined text-base leading-none">arrow_forward</span>
                             </button>
                         </div>
                     </motion.div>

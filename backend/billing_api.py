@@ -47,9 +47,9 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 TIER_LIMITS: dict[str, dict] = {
     "free": {
         "projects": 1,
-        "csuite_runs_mo": 3,
+        "csuite_runs_mo": 50,
         "design_screens_mo": 5,
-        "artifact_sets_mo": 0,        # BYOK only → no hosted LLM artifacts
+        "artifact_sets_mo": 50,
         "byok_required": True,
         "price_monthly_cents": 0,
         "price_annual_cents": 0,

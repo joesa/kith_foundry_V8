@@ -98,8 +98,7 @@ class ProviderUpdate(BaseModel):
     base_url: Optional[str] = None
 
 
-# --- Ensure table exists ---
-Base.metadata.create_all(bind=engine)
+# Tables are created by main.py at startup — no need to call create_all here.
 
 
 def get_db():

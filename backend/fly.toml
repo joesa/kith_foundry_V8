@@ -1,4 +1,4 @@
-app = "kith-sandbox-base"
+app = "kith-sandbox-runtime"
 primary_region = "ord"
 
 [build]

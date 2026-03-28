@@ -12,14 +12,21 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@nhost/nhost-js": "^4.0.0",
+    "@nhost/react": "^3.11.2",
     "@tailwindcss/vite": "^4.2.1",
+    "clsx": "^2.1.1",
     "framer-motion": "^12.34.4",
     "lucide-react": "^0.575.0",
+    "param-case": "^3.0.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.1",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -27,7 +34,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/uuid": "^10.0.0",
-    "@vitejs/plugin-react": "^5.1.1",
+    "@vitejs/plugin-react": "^5.2.0",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",

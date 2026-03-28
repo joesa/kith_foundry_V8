@@ -1,0 +1,634 @@
+C-Suite Analysis Framework
+
+Each C-Suite agent should produce output in a structured format, not loose chat.
+
+Every agent should analyze the same opportunity, but from its own specialist perspective.
+
+Each agent should return:
+
+Executive Summary
+What this agent cares about
+Opportunity assessment
+Risks / concerns
+Recommendations
+Impact on downstream teams
+Decision signal
+Structured output block
+Shared input all C-Suite agents receive
+
+Each agent should receive:
+
+raw user prompt or selected idea
+enhanced prompt if available
+user ideation answers if available
+workspace/project context
+selected product mode if known
+known stack constraints
+known sandbox constraints
+known security constraints
+monetization assumptions if any
+target customer hints if known
+1. CEO Agent Template
+Mission
+
+The CEO agent determines whether this is a strategically meaningful product and whether the direction is worth pursuing.
+
+What CEO cares about
+clarity of business opportunity
+uniqueness
+customer pain severity
+market timing
+strategic wedge
+long-term company potential
+Analysis template
+Executive Summary
+What is the business in one sentence?
+Why should this exist?
+Strategic Opportunity
+What category is this in?
+Is the opportunity strong, average, or weak?
+Why now?
+Market Positioning
+Who is the most likely initial customer?
+What makes this differentiated?
+Is it a wedge product or a full platform play?
+Growth Potential
+Could this become a large business?
+Is it niche but profitable, or potentially venture-scale?
+Key Risks
+market overcrowding
+weak differentiation
+poor urgency
+unclear buyer
+CEO Recommendation
+pursue / pursue with modification / reject
+ideal market angle
+best launch wedge
+Decision Signal
+confidence score: 1–10
+strategic attractiveness: low / medium / high
+Example output structure
+{
+  "agent": "CEO",
+  "one_liner": "",
+  "strategic_opportunity": "",
+  "why_now": "",
+  "best_initial_customer": "",
+  "differentiation": "",
+  "growth_potential": "",
+  "key_risks": [],
+  "recommendation": "",
+  "confidence": 8
+}
+2. CPO Agent Template
+Mission
+
+The CPO agent determines how the product should be shaped, staged, prioritized, and sequenced.
+
+What CPO cares about
+product-market fit
+MVP scope
+feature prioritization
+user value
+roadmap sequencing
+lifecycle strategy
+Analysis template
+Executive Summary
+What product should be built first?
+Core User Problem
+What exact problem is the first version solving?
+What is the smallest meaningful value unit?
+MVP Definition
+What must exist in V1?
+What should not be in V1?
+Product Scope
+essential features
+secondary features
+future features
+Lifecycle Plan
+MVP
+V1
+growth phase
+expansion phase
+User Journey
+first-time user path
+activation moment
+retention hook
+Key Risks
+overbuilding
+unclear core loop
+too many personas
+feature sprawl
+CPO Recommendation
+best MVP scope
+best feature order
+best adoption path
+Decision Signal
+product clarity score
+PMF potential score
+Example output structure
+{
+  "agent": "CPO",
+  "core_problem": "",
+  "mvp_scope": [],
+  "exclude_from_mvp": [],
+  "phase_2_features": [],
+  "activation_moment": "",
+  "retention_hook": "",
+  "product_risks": [],
+  "recommendation": "",
+  "confidence": 9
+}
+3. CTO Agent Template
+Mission
+
+The CTO agent determines whether the product is technically sound, scalable, secure enough, and aligned with platform constraints.
+
+What CTO cares about
+architecture fit
+system complexity
+implementation feasibility
+scalability
+integration complexity
+platform constraint compliance
+Analysis template
+Executive Summary
+Is this technically feasible within Forge’s platform model?
+Architecture Direction
+frontend-only?
+frontend + managed backend?
+AI-heavy?
+integration-heavy?
+Required System Components
+client app
+backend APIs
+auth
+storage
+AI orchestration
+jobs/events
+external cloud services
+Technical Complexity
+low / medium / high
+hardest components
+Platform Fit
+does it fit:
+Nhost platform core rules
+optional generated-app Supabase
+Fly sandbox constraints
+blocked local backend rules
+Scalability View
+major scaling risks
+expected bottlenecks
+caching / queueing needs
+Key Risks
+too many integrations
+hard real-time requirements
+brittle external dependencies
+poor sandbox fit
+CTO Recommendation
+preferred technical shape
+recommended stack decisions
+risk mitigations
+Decision Signal
+implementation feasibility score
+complexity score
+Example output structure
+{
+  "agent": "CTO",
+  "architecture_direction": "",
+  "required_components": [],
+  "technical_complexity": "medium",
+  "platform_fit": "",
+  "scaling_risks": [],
+  "security_risks": [],
+  "recommendation": "",
+  "confidence": 8
+}
+4. CDO Agent Template
+Mission
+
+The CDO agent determines the design direction, product feel, UX hierarchy, and interaction model.
+
+What CDO cares about
+product UX quality
+visual direction
+design mode fit
+user clarity
+information hierarchy
+trust and delight
+Analysis template
+Executive Summary
+What should this product feel like?
+Design Mode Recommendation
+SaaS dashboard
+AI workspace
+marketplace
+mobile app
+admin system
+landing-first product
+etc.
+Style Recommendation
+industrial command
+editorial premium
+stripe-like SaaS
+apple-like minimal
+etc.
+UX Model
+what is the primary surface?
+what is the main job-to-be-done?
+what UI pattern dominates?
+Page/System Priorities
+most important screens
+onboarding need
+dashboard need
+workflow complexity
+Trust/Emotional Goal
+should this feel:
+secure
+fast
+premium
+intelligent
+calm
+operational
+Key Risks
+too much complexity
+wrong interaction model
+weak trust design
+visual mismatch for audience
+CDO Recommendation
+design mode
+style mode
+UX hierarchy
+visual priorities
+Decision Signal
+UX clarity score
+design fit score
+Example output structure
+{
+  "agent": "CDO",
+  "design_mode": "",
+  "style_mode": "",
+  "ux_model": "",
+  "primary_surfaces": [],
+  "trust_goal": "",
+  "design_risks": [],
+  "recommendation": "",
+  "confidence": 9
+}
+5. CFO Agent Template
+Mission
+
+The CFO agent evaluates cost structure, pricing logic, monetization strength, and financial viability.
+
+What CFO cares about
+revenue potential
+business model
+pricing fit
+cost to serve
+LLM/API cost risk
+margin profile
+Analysis template
+Executive Summary
+Can this make money in a healthy way?
+Monetization Model
+subscription
+usage-based
+hybrid
+marketplace fee
+enterprise contract
+services-assisted
+Buyer Willingness to Pay
+who pays?
+why would they pay?
+how often?
+Pricing Logic
+low-end pricing
+expected standard pricing
+premium tier possibility
+Cost Structure
+infra cost
+AI cost
+support cost
+integration cost
+sales cost if relevant
+Margin Outlook
+good / moderate / weak
+what improves margins?
+Revenue Scenarios
+low case monthly
+realistic monthly
+high case monthly
+annualized view
+Key Risks
+weak pricing power
+high AI cost
+long sales cycle
+support-heavy model
+CFO Recommendation
+pricing model
+monetization approach
+margin protections
+Decision Signal
+monetization score
+unit economics score
+Example output structure
+{
+  "agent": "CFO",
+  "monetization_model": "",
+  "buyer": "",
+  "pricing_scenarios": {
+    "low": "",
+    "base": "",
+    "high": ""
+  },
+  "cost_risks": [],
+  "margin_outlook": "",
+  "recommendation": "",
+  "confidence": 7
+}
+6. CMO Agent Template
+Mission
+
+The CMO agent defines the story, positioning, urgency, and go-to-market framing.
+
+What CMO cares about
+positioning clarity
+message strength
+market urgency
+demand generation angle
+wedge channel
+audience resonance
+Analysis template
+Executive Summary
+How should this be explained so people instantly care?
+Positioning
+what category does user think this is in?
+what should the headline promise be?
+Target Audience
+who is the first buyer/user?
+what messaging do they respond to?
+Urgency
+why act now?
+what pain or fear or desire creates action?
+Go-To-Market Wedge
+SEO
+founder-led sales
+outbound
+communities
+product-led
+partnerships
+content
+Message Pillars
+three to five key claims
+trust claims
+ROI claims
+simplicity claims
+Key Risks
+weak message
+category confusion
+no sharp wedge
+low urgency
+CMO Recommendation
+positioning statement
+top messaging
+GTM entry point
+Decision Signal
+message clarity score
+GTM viability score
+Example output structure
+{
+  "agent": "CMO",
+  "positioning": "",
+  "target_audience": "",
+  "urgency": "",
+  "gtm_wedge": "",
+  "message_pillars": [],
+  "marketing_risks": [],
+  "recommendation": "",
+  "confidence": 8
+}
+7. COO Agent Template
+Mission
+
+The COO agent determines execution practicality, rollout order, dependencies, and operational readiness.
+
+What COO cares about
+implementation sequencing
+dependencies
+operational complexity
+delivery order
+cross-functional coordination
+execution risk
+Analysis template
+Executive Summary
+What is the smartest execution path?
+Build Sequence
+phase 1
+phase 2
+phase 3
+Dependency Mapping
+what must happen first?
+what can happen in parallel?
+what blocks launch?
+Operational Needs
+support requirements
+admin tooling
+compliance needs
+customer success needs
+Rollout Strategy
+private alpha
+beta
+public launch
+enterprise rollout
+Key Risks
+too much complexity too early
+wrong launch order
+operational load too high
+missing support infrastructure
+COO Recommendation
+rollout sequence
+phase plan
+operational safeguards
+Decision Signal
+execution viability score
+operational complexity score
+Example output structure
+{
+  "agent": "COO",
+  "phase_plan": [],
+  "dependency_map": [],
+  "rollout_strategy": "",
+  "operational_needs": [],
+  "execution_risks": [],
+  "recommendation": "",
+  "confidence": 8
+}
+8. CISO Agent Template
+Mission
+
+The CISO agent evaluates security, credential handling, compliance posture, attack surface, and safe architecture.
+
+What CISO cares about
+secret handling
+auth safety
+data sensitivity
+sandbox restrictions
+integration risk
+compliance exposure
+Analysis template
+Executive Summary
+What are the main security implications of building this?
+Security Posture
+what sensitive data may exist?
+what secrets are required?
+what trust boundaries are involved?
+Credential Handling
+what credentials are needed?
+where should they live?
+should browser ever see them?
+Auth/Data Risk
+PII?
+regulated data?
+business-sensitive workflows?
+tenant isolation risk?
+Sandbox / Runtime Risk
+does this attempt prohibited local infrastructure?
+does it require external managed services?
+any elevated runtime concerns?
+Compliance Considerations
+HIPAA?
+SOC2 implications?
+GDPR?
+audit needs?
+Key Risks
+unsafe secret handling
+overexposed client-side credentials
+weak auth architecture
+prohibited sandbox behavior
+CISO Recommendation
+secure handling pattern
+auth/data restrictions
+required safeguards
+Decision Signal
+security confidence score
+compliance complexity score
+Example output structure
+{
+  "agent": "CISO",
+  "sensitive_data_types": [],
+  "required_credentials": [],
+  "recommended_secret_strategy": "",
+  "auth_risks": [],
+  "sandbox_risks": [],
+  "compliance_notes": [],
+  "recommendation": "",
+  "confidence": 9
+}
+9. Executive Synthesizer Template
+Mission
+
+The Executive Synthesizer converts all C-Suite outputs into one aligned decision.
+
+What it does
+compares all recommendations
+resolves conflicts
+identifies shared consensus
+defines one product direction
+produces clear next steps
+Analysis template
+Executive Summary
+what should be built?
+Consensus Points
+what did most agents agree on?
+Tensions / Tradeoffs
+where did agents disagree?
+how were those disagreements resolved?
+Final Product Recommendation
+best version of the idea
+recommended target audience
+recommended MVP shape
+recommended design mode
+recommended business model
+recommended execution path
+Required Constraints
+security rules
+sandbox rules
+scope limits
+launch constraints
+Go / No-Go
+proceed
+proceed with changes
+reject
+Final Confidence
+overall confidence score
+Example output structure
+{
+  "agent": "ExecutiveSynthesizer",
+  "consensus_points": [],
+  "tradeoffs": [],
+  "final_recommendation": "",
+  "recommended_target_user": "",
+  "recommended_mvp": [],
+  "recommended_design_mode": "",
+  "recommended_business_model": "",
+  "required_constraints": [],
+  "decision": "proceed",
+  "confidence": 8
+}
+10. Unified output contract for all C-Suite agents
+
+You can use this as the master response schema:
+
+{
+  "agent": "",
+  "role_mandate": "",
+  "executive_summary": "",
+  "core_analysis": {
+    "opportunity": "",
+    "customer": "",
+    "market": "",
+    "risks": [],
+    "constraints": []
+  },
+  "recommendations": {
+    "mvp": [],
+    "strategy": "",
+    "design_or_technical_direction": "",
+    "business_or_operational_direction": ""
+  },
+  "decision_signal": {
+    "recommendation": "proceed|proceed_with_changes|reject",
+    "confidence": 0
+  }
+}
+11. Best practice for how they should work together
+
+The C-Suite should not run as one giant blended prompt.
+
+The best flow is:
+
+each specialist agent runs independently
+each returns structured analysis
+results are normalized into shared schema
+Executive Synthesizer merges them
+downstream agents consume the synthesized result
+
+That gives:
+
+better specialization
+cleaner traceability
+better UI presentation
+stronger user trust
+12. What the user should see in the UI
+
+To build trust, the user should see:
+
+each C-Suite role as a distinct card/panel
+what each role focused on
+short analysis summary
+confidence level
+where agents agree/disagree
+final executive synthesis
+
+This makes the system feel like:
+a coordinated boardroom + product org + design/engineering org working on the user’s behalf

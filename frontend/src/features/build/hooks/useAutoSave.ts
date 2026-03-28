@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef } from "react";
-import { getApiBaseUrl } from "../lib/runtimeConfig";
-import { useAuth } from "../contexts/AuthContext";
+import { getApiBaseUrl } from "../../../lib/runtimeConfig";
+import { useAuth } from "../../../contexts/AuthContext";
 
 /**
  * Debounced auto-save hook for manual Monaco Editor changes.

@@ -1,0 +1,1739 @@
+“Show the production-level AI builder architecture.”
+
+Below is a production-level AI builder architecture—the kind used by modern AI development platforms inspired by tools like Vercel’s v0, Framer’s AI site builder, and Lovable’s full-stack app generator.
+
+This version is not just conceptual—it’s structured as a deployable system architecture you can implement in your vibe-coding editor.
+
+1. System Overview
+
+Your platform should operate as an AI Development Engine.
+
+Instead of one model call, it orchestrates multiple AI agents + sandbox infrastructure.
+
+User Prompt
+     ↓
+Intent Engine
+     ↓
+Project Context Engine
+     ↓
+AI Orchestrator
+     ↓
+Multi-Agent AI System
+     ↓
+Code Generation Engine
+     ↓
+Patch/Diff Engine
+     ↓
+Validation Engine
+     ↓
+Sandbox Runtime
+     ↓
+Live Preview
+2. Core Infrastructure Layers
+
+Production systems divide into 5 infrastructure layers.
+
+1. Frontend Editor
+2. AI Orchestration Layer
+3. Agent Runtime Layer
+4. Code Execution Sandbox
+5. Storage & State Layer
+3. Frontend Editor Layer
+
+This is your vibe coding editor UI.
+
+Typical structure:
+
+Editor Layout
+├── File Tree
+├── Code Editor
+├── Preview Window
+└── AI Assistant Panel
+
+Key components:
+
+Component	Purpose
+File Tree	Project structure
+Code Editor	Editing files
+Preview	Running UI
+AI Panel	Natural language commands
+
+Recommended stack:
+
+React
+Monaco Editor
+Tailwind
+WebSocket streaming
+4. AI Orchestration Layer
+
+The orchestrator controls how AI agents interact.
+
+Responsibilities:
+
+• routing tasks
+• managing prompt pipelines
+• coordinating agents
+• merging outputs
+
+Example orchestrator flow:
+
+const intent = await intentAgent(userPrompt)
+
+const design = await designAgent(intent)
+
+const layout = await layoutAgent(design)
+
+const components = await componentAgent(layout)
+
+const code = await codeAgent(components)
+
+const validated = await validationAgent(code)
+
+return validated
+5. AI Agent Layer
+
+Production builders use specialized agents, not a single model call.
+
+Recommended agents:
+
+Agent	Purpose
+Intent Agent	understand user request
+Design Agent	generate design system
+Layout Agent	generate page layouts
+Component Agent	create components
+Code Agent	generate code
+Patch Agent	edit existing code
+Validation Agent	test generated code
+6. Intent Engine
+
+Transforms user prompt into structured intent.
+
+Example:
+
+Prompt:
+
+Create a SaaS habit tracker
+
+Intent output:
+
+{
+  "productType": "SaaS",
+  "industry": "productivity",
+  "features": [
+    "habit tracking",
+    "analytics",
+    "streaks"
+  ],
+  "pages": [
+    "dashboard",
+    "habits",
+    "analytics"
+  ]
+}
+7. Project Context Engine
+
+Before generating code, the system analyzes the existing project.
+
+Context includes:
+
+{
+  "framework": "Next.js",
+  "uiLibrary": "Tailwind",
+  "existingFiles": [],
+  "components": []
+}
+
+This prevents overwriting user code.
+
+8. Design Generation Engine
+
+The design agent generates a design system.
+
+Output:
+
+{
+  "tokens": {
+    "colors": {},
+    "typography": {},
+    "spacing": {}
+  }
+}
+
+These tokens are reused across all pages.
+
+9. Layout Generation Engine
+
+Creates page layouts.
+
+Example:
+
+{
+  "dashboard": {
+    "sections": [
+      "welcomeHeader",
+      "habitCards",
+      "analyticsCharts"
+    ]
+  }
+}
+10. Component Generation Engine
+
+Generates reusable components.
+
+Example:
+
+{
+  "component": "HabitCard",
+  "props": ["title", "streak", "completed"],
+  "layout": "card"
+}
+11. Code Generation Engine
+
+Transforms component definitions into code.
+
+Example output:
+
+/components/HabitCard.tsx
+/pages/dashboard.tsx
+
+Recommended stack:
+
+Next.js
+React
+TailwindCSS
+Shadcn UI
+12. Patch/Diff Engine (CRITICAL)
+
+This is the most important system for AI builders.
+
+Instead of rewriting files, AI produces code diffs.
+
+Example:
+
++ import { HabitCard } from "@/components/HabitCard"
+
+Benefits:
+
+• avoids breaking code
+• safe modifications
+• easy rollback
+
+13. Validation Engine
+
+Before executing code, run validation.
+
+Checks:
+
+• syntax errors
+• missing imports
+• runtime errors
+• dependency issues
+
+14. Sandbox Runtime
+
+Generated apps run in an isolated environment.
+
+Recommended tools:
+
+WebContainers
+Docker sandbox
+Node runtime
+
+Flow:
+
+Generated Code
+     ↓
+Sandbox Runtime
+     ↓
+Live Preview
+15. File System Engine
+
+Your AI builder needs a virtual file system.
+
+Example:
+
+{
+  "/pages/dashboard.tsx": "...",
+  "/components/HabitCard.tsx": "...",
+  "/styles/globals.css": "..."
+}
+
+The editor UI reads from this.
+
+16. Streaming AI Responses
+
+Production builders stream generation steps.
+
+Example:
+
+Generating design system…
+Generating layouts…
+Generating components…
+Generating code…
+
+This improves UX dramatically.
+
+17. Memory Layer
+
+Store:
+
+• design tokens
+• generated components
+• user preferences
+• project context
+
+Database options:
+
+PostgreSQL
+Redis
+Vector database
+18. AI Prompt Layer
+
+Your prompts should follow layered prompting.
+
+Structure:
+
+SYSTEM PROMPT
+Design architect rules
+
+↓
+
+TASK PROMPT
+Generate design system
+
+↓
+
+PROJECT CONTEXT
+Existing project files
+
+↓
+
+OUTPUT FORMAT
+Structured JSON
+
+This guarantees predictable output.
+
+19. Performance Optimizations
+
+Production systems implement:
+
+Partial Regeneration
+Regenerate only analytics page
+Token Caching
+
+Reuse design tokens across pages.
+
+Component Reuse
+
+Prevent duplicate components.
+
+20. Recommended Tech Stack
+
+Frontend:
+
+React
+Monaco Editor
+Tailwind
+
+Backend:
+
+Node.js
+Express / Next API
+
+AI:
+
+Claude
+OpenAI
+multi-agent orchestration
+
+Infrastructure:
+
+Docker
+WebContainers
+Redis
+PostgreSQL
+21. Final System Diagram
+User
+ ↓
+React Editor
+ ↓
+AI Orchestrator
+ ↓
+Intent Agent
+ ↓
+Design Agent
+ ↓
+Layout Agent
+ ↓
+Component Agent
+ ↓
+Code Agent
+ ↓
+Patch Engine
+ ↓
+Validation Engine
+ ↓
+Sandbox Runtime
+ ↓
+Live App Preview
+22. What This Enables
+
+Your editor becomes a full AI application builder capable of:
+
+• generating complete applications
+• designing UI systems
+• generating components
+• editing code safely
+• running apps instantly
+
+This is the same architectural philosophy used by next-generation AI builders.
+
+If you want, I can also show you something extremely valuable for your project:
+
+The exact “AI agent prompt system” used inside builders like v0 and Lovable—including:
+
+orchestrator prompts
+agent prompts
+patch prompts
+validation prompts
+
+This is what actually makes the AI reliable for coding entire apps.
+
+Just say:
+
+“Show the agent prompt system.” 🚀
+
+Show the agent prompt system.
+
+Below is the Agent Prompt System—the internal prompt framework that powers reliable AI builders. This is the missing piece that makes multi-agent builders actually work well. Systems inspired by platforms like Vercel’s v0, Framer, and Lovable rely on a set of specialized prompts per agent plus strict output schemas.
+
+You can implement this in your orchestrator so each AI call is predictable and safe.
+
+1. Prompt System Overview
+
+Every agent call uses 4 prompt layers:
+
+SYSTEM PROMPT
+↓
+AGENT ROLE PROMPT
+↓
+TASK PROMPT
+↓
+PROJECT CONTEXT
+↓
+OUTPUT SCHEMA
+
+This structure ensures:
+
+consistent AI behavior
+structured outputs
+safe code generation
+easy orchestration
+2. Intent Agent Prompt
+
+Purpose: understand what the user wants to build.
+
+System Prompt
+You are a senior product architect.
+
+Your job is to interpret the user's request and convert it into a structured product specification.
+
+You must extract:
+- product type
+- target users
+- core features
+- required pages
+- suggested tech stack
+
+Respond only in JSON.
+Task Prompt
+Analyze the user's request and produce a structured product intent.
+Example Input
+Build a SaaS habit tracking app with analytics and streak tracking.
+Output
+{
+  "productType": "SaaS Dashboard",
+  "industry": "productivity",
+  "targetUsers": "individual productivity users",
+  "coreFeatures": [
+    "habit tracking",
+    "streak tracking",
+    "analytics",
+    "calendar"
+  ],
+  "pages": [
+    "dashboard",
+    "habits",
+    "analytics",
+    "settings"
+  ],
+  "recommendedStack": [
+    "Next.js",
+    "React",
+    "TailwindCSS"
+  ]
+}
+3. Design Agent Prompt
+
+Purpose: generate the design system.
+
+System Prompt
+You are a world-class UI/UX design architect.
+
+Generate a scalable design system for the application.
+
+Include:
+- design tokens
+- color palette
+- typography
+- spacing system
+- shadows
+- border radius
+Output Schema
+{
+  "designTokens": {
+    "colors": {},
+    "typography": {},
+    "spacing": {},
+    "radius": {},
+    "shadows": {}
+  }
+}
+4. Layout Agent Prompt
+
+Purpose: create page layouts.
+
+System Prompt
+You are a product UI layout architect.
+
+Generate layouts for all pages using modern design patterns.
+
+Each page must include sections and hierarchy.
+Output
+{
+  "pages": {
+    "dashboard": {
+      "sections": [
+        "welcomeHeader",
+        "habitCards",
+        "analyticsChart",
+        "streakTracker"
+      ]
+    }
+  }
+}
+5. Component Agent Prompt
+
+Purpose: generate UI components.
+
+System Prompt
+You are a senior frontend architect.
+
+Generate reusable UI components based on the layout.
+
+Each component must include:
+- name
+- props
+- purpose
+- layout description
+- interactions
+Output
+{
+  "components": [
+    {
+      "name": "HabitCard",
+      "props": ["title", "streak", "completed"],
+      "purpose": "Display a habit and allow completion toggle",
+      "layout": "card",
+      "interactions": ["hover", "completion animation"]
+    }
+  ]
+}
+6. Code Generation Agent Prompt
+
+Purpose: convert components into code files.
+
+System Prompt
+You are a senior React engineer.
+
+Generate production-ready code based on the provided design system, layouts, and components.
+
+Use:
+- React
+- Next.js
+- TailwindCSS
+- Shadcn UI
+
+Follow modern best practices.
+Output
+{
+  "files": {
+    "/components/HabitCard.tsx": "...code...",
+    "/pages/dashboard.tsx": "...code..."
+  }
+}
+7. Patch Agent Prompt
+
+Purpose: edit existing code safely.
+
+System Prompt
+You are a code modification engine.
+
+Never rewrite entire files unless necessary.
+
+Generate minimal patches using diff format.
+Output
++ import { HabitCard } from "@/components/HabitCard"
+
+This protects existing code.
+
+8. Validation Agent Prompt
+
+Purpose: verify generated code.
+
+System Prompt
+You are a code validation system.
+
+Check the code for:
+- syntax errors
+- missing imports
+- invalid React patterns
+- runtime risks
+
+Return validation results and suggested fixes.
+9. Orchestrator Prompt
+
+This controls all agents.
+
+System Prompt
+You are the AI orchestrator for an AI application builder.
+
+Coordinate the following agents:
+
+1. Intent Agent
+2. Design Agent
+3. Layout Agent
+4. Component Agent
+5. Code Generation Agent
+6. Patch Agent
+7. Validation Agent
+
+Execute them sequentially and combine outputs into a final response.
+10. Orchestrator Flow
+
+Pseudo-code:
+
+const intent = await intentAgent(userPrompt)
+
+const design = await designAgent(intent)
+
+const layout = await layoutAgent(intent, design)
+
+const components = await componentAgent(layout)
+
+const code = await codeAgent(design, layout, components)
+
+const validated = await validationAgent(code)
+
+return validated
+11. Example Final Output
+
+The orchestrator merges results into one payload:
+
+{
+  "productOverview": {},
+  "designTokens": {},
+  "pages": {},
+  "components": [],
+  "files": {},
+  "builderPrompt": ""
+}
+
+Your React app then:
+
+writes files
+renders preview
+updates editor state
+12. Key Reliability Techniques
+
+Production builders rely on:
+
+Structured JSON outputs
+
+Prevents hallucinated text.
+
+Minimal patch edits
+
+Avoids breaking projects.
+
+Context-aware prompts
+
+AI sees the entire project.
+
+Multi-agent separation
+
+Each agent has a clear role.
+
+13. Recommended Folder for Prompts
+/ai/prompts
+   intent.prompt.ts
+   design.prompt.ts
+   layout.prompt.ts
+   component.prompt.ts
+   code.prompt.ts
+   patch.prompt.ts
+   validation.prompt.ts
+14. Result
+
+With this system your platform can:
+
+generate full apps
+generate design systems
+generate UI components
+safely modify projects
+maintain stable code
+
+This is the core prompt architecture used by modern AI development tools.
+
+If you'd like, I can also show you the most advanced part of AI builders:
+
+The AI patch-safety algorithm that ensures the AI never breaks existing projects while editing code.
+
+Just say:
+
+“Show the patch safety algorithm.” 🚀
+
+“Show the patch safety algorithm.” 🚀
+
+Below is the Patch Safety Algorithm used in advanced AI builders to ensure the AI never breaks existing projects while editing code. This is one of the most critical systems behind reliable AI development tools inspired by platforms like Vercel’s v0 and Lovable.
+
+The algorithm combines AST analysis, diff patching, validation checks, and sandbox testing before any change is applied.
+
+1. Why Patch Safety Is Critical
+
+Naive AI editing often:
+
+rewrites entire files
+breaks imports
+removes working code
+introduces syntax errors
+
+A patch-safe system ensures:
+
+Only minimal changes are applied.
+Existing functionality remains intact.
+New code integrates correctly.
+2. Core Patch Safety Strategy
+
+Instead of replacing files, the system applies surgical code patches.
+
+Old File
+   ↓
+AST Analysis
+   ↓
+Diff Patch Generation
+   ↓
+Validation
+   ↓
+Sandbox Execution
+   ↓
+Apply Patch
+3. Patch Algorithm Overview
+1. Parse existing file into AST
+2. Locate modification region
+3. Generate minimal diff
+4. Validate syntax
+5. Run sandbox tests
+6. Apply patch if safe
+4. Step 1 — Parse Code into AST
+
+Use an Abstract Syntax Tree so the AI understands the code structure.
+
+Example:
+
+import { parse } from "@babel/parser"
+
+const ast = parse(code, {
+  sourceType: "module",
+  plugins: ["typescript", "jsx"]
+})
+
+This allows the system to understand:
+
+components
+imports
+functions
+JSX structure
+5. Step 2 — Identify Safe Edit Zones
+
+The system marks safe regions for modification.
+
+Example safe zones:
+
+Component body
+JSX children
+Props definitions
+
+Unsafe zones:
+
+Core imports
+Framework setup
+Routing configuration
+
+Example:
+
+function HabitCard() {
+  // SAFE EDIT ZONE
+  return (...)
+}
+6. Step 3 — Generate Minimal Diff
+
+Instead of rewriting the file, the AI produces a diff patch.
+
+Example:
+
++ import { Badge } from "@/components/ui/badge"
+
+This ensures minimal impact.
+
+Tools commonly used:
+
+diff
+git patches
+line-level diff
+7. Step 4 — Structural Validation
+
+Before applying the patch:
+
+Check:
+
+syntax correctness
+JSX validity
+missing imports
+duplicate components
+
+Example validation:
+
+try {
+  parse(updatedCode)
+} catch (error) {
+  rejectPatch()
+}
+8. Step 5 — Dependency Validation
+
+Ensure new code imports exist.
+
+Example check:
+
+if (!componentExists("Badge")) {
+  generateComponent("Badge")
+}
+
+This avoids broken imports.
+
+9. Step 6 — Sandbox Execution
+
+Run the patched code in a sandbox runtime.
+
+Recommended tools:
+
+WebContainers
+Docker
+Node sandbox
+
+Flow:
+
+Patched Code
+     ↓
+Sandbox Build
+     ↓
+Runtime Check
+
+Check for:
+
+compile errors
+runtime exceptions
+React hydration issues
+10. Step 7 — Patch Acceptance Rules
+
+Only apply the patch if:
+
+Syntax valid
+Dependencies resolved
+Runtime passes
+No file conflicts
+
+Otherwise:
+
+Rollback patch
+Regenerate fix
+11. Example Patch Flow
+
+User prompt:
+
+Add habit categories to HabitCard
+
+AI generates patch:
+
++ category: string
+
+Validation:
+
+AST valid
+Import valid
+Build success
+
+Patch applied.
+
+12. Multi-Patch Editing
+
+For complex changes:
+
+Patch 1 → component
+Patch 2 → page
+Patch 3 → styles
+
+Each patch validated separately.
+
+13. Patch Queue System
+
+Maintain a queue:
+
+const patchQueue = [
+  patch1,
+  patch2,
+  patch3
+]
+
+Apply sequentially.
+
+14. Patch Conflict Detection
+
+Before applying patch:
+
+Check if file changed.
+
+if (fileHash !== expectedHash) {
+  regeneratePatch()
+}
+
+Prevents overwriting manual edits.
+
+15. Patch Safety Rules
+
+AI must follow these rules:
+
+1️⃣ Never delete code unless requested
+2️⃣ Prefer additive changes
+3️⃣ Keep imports intact
+4️⃣ Avoid modifying unrelated components
+
+16. Patch Scoring System
+
+Each patch gets a safety score.
+
+Example:
+
+Syntax Score: 100
+Dependency Score: 90
+Runtime Score: 95
+Final Score: 95
+
+Only patches above threshold applied.
+
+17. Self-Healing Regeneration
+
+If validation fails:
+
+Reject patch
+Send error to AI
+Regenerate patch
+
+Example prompt to AI:
+
+The previous patch caused a build error.
+Fix the patch while preserving existing code.
+18. Patch Logging
+
+Log every change.
+
+Example:
+
+{
+  "file": "/components/HabitCard.tsx",
+  "patch": "...",
+  "timestamp": "2026-03-13"
+}
+
+This enables:
+
+undo
+history
+debugging
+19. Visual Diff Preview
+
+Show user the change.
+
+Example UI:
+
+Old Code | New Code
+
+Users can approve patches.
+
+20. Full Patch Safety Pipeline
+AI Suggestion
+     ↓
+Patch Generator
+     ↓
+AST Validation
+     ↓
+Dependency Check
+     ↓
+Sandbox Build
+     ↓
+Runtime Test
+     ↓
+Apply Patch
+21. Result
+
+With this system your AI builder can:
+
+safely modify projects
+add features without breaking code
+maintain stable apps
+support continuous AI editing
+
+This is one of the key technologies behind modern AI app builders.
+
+If you'd like, I can also show you the final missing piece for your platform:
+
+The AI Layout Reasoning Engine that allows AI to intelligently design entire UI layouts across multiple pages, not just components.
+
+Just say:
+
+“Show the layout reasoning engine.” 🚀
+
+“Show the layout reasoning engine.” 🚀
+
+Below is the Layout Reasoning Engine — the system that allows your AI builder to design complete UI layouts across multiple pages intelligently, not just generate isolated components.
+
+This is the missing layer used in modern AI builders inspired by tools from Vercel, Framer, and Lovable.
+
+Without this engine, AI tends to produce random components instead of coherent product layouts.
+
+1. What the Layout Reasoning Engine Does
+
+The Layout Reasoning Engine determines:
+
+• what pages exist
+• what sections each page contains
+• how sections are ordered
+• which components belong to each section
+• how everything responds across screen sizes
+
+It converts product intent → UI architecture.
+
+2. Core Layout Reasoning Pipeline
+User Prompt
+     ↓
+Product Intent Model
+     ↓
+Page Structure Generator
+     ↓
+Section Generator
+     ↓
+Component Assignment
+     ↓
+Responsive Layout System
+     ↓
+Final Page Layout
+3. Step 1 — Product Intent Model
+
+First the AI converts the request into product structure.
+
+Example user prompt:
+
+Build a SaaS habit tracking app
+
+Intent model:
+
+{
+  "productType": "SaaS",
+  "category": "productivity",
+  "features": [
+    "habit tracking",
+    "streak tracking",
+    "analytics",
+    "calendar"
+  ]
+}
+4. Step 2 — Page Structure Generator
+
+The AI determines which pages exist.
+
+Example:
+
+{
+  "pages": [
+    "dashboard",
+    "habits",
+    "analytics",
+    "calendar",
+    "settings"
+  ]
+}
+
+Rules vary by product type.
+
+Example mappings:
+
+Product Type	Pages
+Landing Page	hero, features, pricing, CTA
+SaaS	dashboard, settings, analytics
+Portfolio	gallery, about, contact
+Marketplace	listings, product page
+5. Step 3 — Section Generator
+
+Each page is broken into sections.
+
+Example:
+
+{
+  "dashboard": {
+    "sections": [
+      "welcomeHeader",
+      "habitOverview",
+      "dailyProgress",
+      "analyticsSummary"
+    ]
+  }
+}
+
+The system ensures sections follow UX best practices.
+
+Example for dashboards:
+
+Header
+Primary widgets
+Secondary analytics
+Actions
+6. Step 4 — Component Assignment
+
+Each section receives components.
+
+Example:
+
+{
+  "habitOverview": {
+    "components": [
+      "HabitCard",
+      "CompletionToggle"
+    ]
+  }
+}
+
+The engine ensures component reuse across pages.
+
+Example:
+
+Navbar
+Sidebar
+Card
+Button
+Modal
+7. Step 5 — Layout Grid System
+
+The engine selects a layout grid.
+
+Example web layout:
+
+{
+  "grid": {
+    "columns": 12,
+    "maxWidth": "1280px"
+  }
+}
+
+Example dashboard layout:
+
+Sidebar | Main Content
+
+Example landing page:
+
+Full width sections
+8. Step 6 — Responsive Layout Logic
+
+Each layout adapts to device size.
+
+Example rules:
+
+Device	Layout
+Desktop	sidebar + content
+Tablet	collapsible sidebar
+Mobile	stacked layout
+
+Example output:
+
+{
+  "breakpoints": {
+    "mobile": "640px",
+    "tablet": "1024px",
+    "desktop": "1280px"
+  }
+}
+9. Layout Reasoning Rules
+
+The engine follows rules like:
+
+Hero Sections
+
+Always contain:
+
+headline
+subheadline
+primary CTA
+visual
+Dashboard Sections
+
+Must contain:
+
+navigation
+data widgets
+actions
+analytics
+Portfolio Sections
+
+Must contain:
+
+gallery
+project details
+contact
+10. Layout Scoring System
+
+Layouts are evaluated with heuristics.
+
+Example score:
+
+Hierarchy Score
+Consistency Score
+Responsiveness Score
+Accessibility Score
+
+Layouts below threshold are regenerated.
+
+11. Layout JSON Output
+
+The layout engine outputs structured layout data.
+
+Example:
+
+{
+  "pages": {
+    "dashboard": {
+      "layout": "sidebar + main",
+      "sections": [
+        {
+          "name": "welcomeHeader",
+          "components": ["Greeting", "StreakCounter"]
+        },
+        {
+          "name": "habitCards",
+          "components": ["HabitCard"]
+        },
+        {
+          "name": "analyticsChart",
+          "components": ["BarChart"]
+        }
+      ]
+    }
+  }
+}
+12. Layout → Code Mapping
+
+The Code Generation Agent converts layouts to files.
+
+Example:
+
+/pages/dashboard.tsx
+/components/HabitCard.tsx
+/components/StreakCounter.tsx
+13. Layout Visualization in Editor
+
+Your vibe coding editor should render layout previews.
+
+Example UI:
+
+Page Tree
+Dashboard
+  ├ Welcome Header
+  ├ Habit Cards
+  ├ Analytics Chart
+
+Users can click to edit.
+
+14. Layout Evolution Engine
+
+When user requests:
+
+Add social sharing
+
+The layout engine decides:
+
+Where the feature belongs
+
+Example:
+
+Habit Detail Page
+15. Partial Layout Regeneration
+
+Instead of rebuilding the whole app:
+
+Regenerate only analytics page
+
+This improves performance.
+
+16. Layout Prompt Template
+
+Your Layout Agent should use this prompt:
+
+You are a senior UI layout architect.
+
+Based on the product intent and features, generate a complete page architecture.
+
+Each page must include:
+- layout type
+- sections
+- components within each section
+- responsive behavior
+
+Return structured JSON.
+17. Layout Engine Pseudocode
+const intent = await intentAgent(prompt)
+
+const pages = await pageStructureAgent(intent)
+
+const sections = await sectionAgent(pages)
+
+const components = await componentAssignmentAgent(sections)
+
+const responsiveLayout = await responsiveAgent(components)
+
+return responsiveLayout
+18. Example Final Output
+{
+  "pages": {
+    "dashboard": {
+      "layout": "sidebar + main",
+      "sections": [
+        "welcomeHeader",
+        "habitCards",
+        "analyticsChart"
+      ]
+    }
+  }
+}
+19. Why This Engine Matters
+
+Without layout reasoning:
+
+AI produces random components.
+
+With it:
+
+AI generates coherent product interfaces.
+
+20. What This Enables
+
+Your vibe coding editor can now:
+
+• generate entire application layouts
+• automatically structure pages
+• intelligently place components
+• evolve UI as features grow
+
+This is the key system that enables full AI product generation.
+
+If you'd like, I can now show you the final piece that ties everything together:
+
+The AI Project Brain — the system that lets your builder remember the entire project and reason about future changes.
+
+Just say:
+
+“Show the AI project brain.” 🧠
+
+Show the AI project brain.
+
+Below is the AI Project Brain — the system that allows your AI builder to understand, remember, and reason about the entire application over time.
+
+This is the layer that makes AI tools behave like a real senior engineer working on a project, instead of a stateless code generator. Platforms inspired by tools from Vercel, Framer, and Lovable rely on this type of persistent project intelligence.
+
+Without this layer, the AI cannot reliably evolve an application as it grows.
+
+1. What the AI Project Brain Does
+
+The Project Brain is a persistent knowledge system that stores:
+
+project architecture
+file structure
+design system
+components
+pages
+database schema
+user goals
+previous AI decisions
+
+It enables the AI to answer questions like:
+
+What components already exist?
+Where should a new feature go?
+What page owns this UI element?
+How should this feature affect the database?
+2. Project Brain Architecture
+User Request
+     ↓
+Project Brain
+     ↓
+Context Builder
+     ↓
+AI Agents
+     ↓
+Code / Design Generation
+
+The Project Brain feeds complete project context into every AI decision.
+
+3. Core Data Model
+
+The brain maintains a structured representation of the project.
+
+Example:
+
+{
+  "project": {
+    "name": "HabitFlow",
+    "type": "SaaS",
+    "framework": "Next.js"
+  },
+  "designSystem": {},
+  "pages": [],
+  "components": [],
+  "database": {},
+  "features": []
+}
+
+This model is updated continuously.
+
+4. Key Knowledge Domains
+
+The Project Brain tracks five domains.
+
+1️⃣ Product Domain
+{
+  "productType": "SaaS",
+  "industry": "productivity",
+  "coreFeatures": [
+    "habit tracking",
+    "analytics",
+    "calendar"
+  ]
+}
+2️⃣ UI Domain
+
+Tracks the design system.
+
+{
+  "designTokens": {
+    "colors": {},
+    "typography": {},
+    "spacing": {}
+  }
+}
+3️⃣ Layout Domain
+
+Tracks pages and sections.
+
+{
+  "pages": [
+    {
+      "name": "dashboard",
+      "sections": [
+        "welcomeHeader",
+        "habitCards",
+        "analyticsChart"
+      ]
+    }
+  ]
+}
+4️⃣ Component Domain
+
+Tracks reusable UI components.
+
+{
+  "components": [
+    {
+      "name": "HabitCard",
+      "props": ["title", "streak"]
+    }
+  ]
+}
+5️⃣ Code Domain
+
+Tracks the file system.
+
+{
+  "files": [
+    "/components/HabitCard.tsx",
+    "/pages/dashboard.tsx"
+  ]
+}
+5. Memory Storage Layer
+
+The Project Brain uses three types of memory.
+
+Short-Term Memory
+
+Used for the current prompt.
+
+Example:
+
+User wants to add social sharing.
+Session Memory
+
+Stores decisions during a session.
+
+Example:
+
+HabitCard component already exists.
+Long-Term Project Memory
+
+Stored in database.
+
+Example:
+
+{
+  "components": ["HabitCard", "Navbar", "Button"]
+}
+6. Vector Memory Layer
+
+For large projects, store embeddings.
+
+Example:
+
+Component descriptions
+Page summaries
+Design documentation
+
+Recommended tools:
+
+Postgres + pgvector
+Pinecone
+Weaviate
+
+This allows semantic search.
+
+7. Context Builder
+
+Before each AI call, the system builds context.
+
+Example:
+
+const context = {
+  project: projectBrain.project,
+  pages: projectBrain.pages,
+  components: projectBrain.components,
+  files: projectBrain.files
+}
+
+This context is injected into prompts.
+
+8. Change Impact Analysis
+
+The brain determines what parts of the project will be affected.
+
+Example request:
+
+Add habit categories
+
+Impact analysis:
+
+{
+  "affectedComponents": ["HabitCard"],
+  "affectedPages": ["habits"],
+  "affectedDatabaseTables": ["habits"]
+}
+9. Dependency Graph
+
+The Project Brain maintains a component dependency graph.
+
+Example:
+
+DashboardPage
+ ├ HabitCard
+ ├ AnalyticsChart
+ └ StreakCounter
+
+This helps AI understand relationships.
+
+10. Feature Evolution Tracking
+
+Every feature added updates the brain.
+
+Example:
+
+{
+  "features": [
+    "habit tracking",
+    "analytics",
+    "calendar",
+    "goal tracking"
+  ]
+}
+
+This prevents duplicate implementations.
+
+11. Decision Memory
+
+The brain records AI decisions.
+
+Example:
+
+{
+  "decisions": [
+    {
+      "reason": "Use card layout for habit display",
+      "date": "2026-03-13"
+    }
+  ]
+}
+
+Future prompts can reference these decisions.
+
+12. Architecture Reasoning
+
+The Project Brain can answer questions like:
+
+Where should a notification system go?
+
+It analyzes:
+
+existing architecture
+components
+pages
+
+Then suggests placement.
+
+13. Code Awareness
+
+The brain parses the entire codebase.
+
+Example:
+
+React components
+imports
+hooks
+API routes
+
+Tools commonly used:
+
+Babel parser
+TypeScript compiler
+AST analysis
+14. Automatic Documentation
+
+The brain generates documentation.
+
+Example:
+
+{
+  "components": {
+    "HabitCard": "Displays habit progress and streak."
+  }
+}
+
+This improves AI reasoning.
+
+15. Project Brain Update Loop
+
+Each AI action updates the brain.
+
+User Prompt
+     ↓
+AI Generates Code
+     ↓
+Files Updated
+     ↓
+Project Brain Updated
+16. Brain Query API
+
+Your app should expose queries.
+
+Example:
+
+projectBrain.getComponents()
+
+projectBrain.getPages()
+
+projectBrain.getDependencies("HabitCard")
+17. Brain Persistence Layer
+
+Recommended storage:
+
+PostgreSQL
+Redis
+Vector DB
+
+Example structure:
+
+/projects
+/components
+/pages
+/features
+/designTokens
+18. Brain Safety Rules
+
+The Project Brain enforces rules.
+
+Example:
+
+Do not duplicate components
+Reuse design tokens
+Maintain layout consistency
+19. Brain + Agent Integration
+
+Agents always read the brain.
+
+const context = projectBrain.getFullContext()
+
+await codeAgent(context)
+
+This ensures consistency.
+
+20. Final System Architecture
+User Prompt
+     ↓
+Project Brain
+     ↓
+Intent Agent
+     ↓
+Layout Reasoning Engine
+     ↓
+Component Agent
+     ↓
+Code Agent
+     ↓
+Patch Engine
+     ↓
+Validation Engine
+     ↓
+Sandbox Preview
+     ↓
+Project Brain Update
+21. What This Enables
+
+With the Project Brain your AI builder can:
+
+understand the entire project
+safely evolve code
+design new features intelligently
+maintain consistent UI architecture
+
+This transforms your system from a code generator into an AI development platform.

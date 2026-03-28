@@ -1,15 +1,11 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
-import { useTheme } from "../../contexts/ThemeContext";
 import { getApiBaseUrl } from "../../lib/runtimeConfig";
 import { motion } from "framer-motion";
-import {
-    FileText, Palette, Code2, Rocket,
-    Crown, BarChart3, Users, Lightbulb, Map, Layers,
-    FileCode, Target, Loader2, Sparkles, ChevronDown, RefreshCw
-} from "lucide-react";
-import { ExportMenu } from "../shared/ExportMenu";
+import { cn } from "../../lib/utils/cn";
+import { pageTransition, staggerContainer, cardEntrance } from "../../lib/utils/motion";
+import { ExportMenu } from "../../components/system/ExportMenu";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,23 +34,22 @@ interface BootstrapPromptData {
     token_estimate: number;
 }
 
-const ARTIFACT_META: Record<string, { label: string; icon: any; color: string; description: string }> = {
-    executive_brief: { label: "Executive Brief", icon: FileText, color: "text-amber-400", description: "High-level vision and strategy overview" },
-    prd: { label: "Product Requirements", icon: Layers, color: "text-blue-400", description: "Detailed feature requirements and specs" },
-    tech_spec: { label: "Technical Spec", icon: FileCode, color: "text-cyan-400", description: "Architecture, stack, and technical decisions" },
-    market_analysis: { label: "Market Analysis", icon: BarChart3, color: "text-green-400", description: "Market size, competition, positioning" },
-    go_to_market: { label: "Go-to-Market Plan", icon: Rocket, color: "text-orange-400", description: "Launch strategy and growth channels" },
-    user_personas: { label: "User Personas", icon: Users, color: "text-pink-400", description: "Target user profiles and behavior patterns" },
-    competitive_matrix: { label: "Competitive Matrix", icon: Target, color: "text-red-400", description: "Feature comparison with competitors" },
-    roadmap: { label: "Product Roadmap", icon: Map, color: "text-purple-400", description: "Phased development timeline" },
-    monetization: { label: "Monetization Plan", icon: Crown, color: "text-emerald-400", description: "Revenue model and pricing strategy" },
-    design_system: { label: "Design System Foundation", icon: Palette, color: "text-violet-400", description: "Colors, typography, components, and tokens" },
+const ARTIFACT_META: Record<string, { label: string; icon: string; description: string }> = {
+    executive_brief:   { label: "Executive Brief",           icon: "article",         description: "High-level vision and strategy overview" },
+    prd:               { label: "Product Requirements",      icon: "layers",          description: "Detailed feature requirements and specs" },
+    tech_spec:         { label: "Technical Spec",            icon: "code",            description: "Architecture, stack, and technical decisions" },
+    market_analysis:   { label: "Market Analysis",           icon: "bar_chart",       description: "Market size, competition, positioning" },
+    go_to_market:      { label: "Go-to-Market Plan",         icon: "rocket_launch",   description: "Launch strategy and growth channels" },
+    user_personas:     { label: "User Personas",             icon: "group",           description: "Target user profiles and behavior patterns" },
+    competitive_matrix:{ label: "Competitive Matrix",        icon: "target",          description: "Feature comparison with competitors" },
+    roadmap:           { label: "Product Roadmap",           icon: "map",             description: "Phased development timeline" },
+    monetization:      { label: "Monetization Plan",         icon: "payments",        description: "Revenue model and pricing strategy" },
+    design_system:     { label: "Design System Foundation",  icon: "palette",         description: "Colors, typography, components, and tokens" },
 };
 
 export default function ProjectDashboardPage() {
     const { projectId } = useParams<{ projectId: string }>();
     const { getAccessToken } = useAuth();
-    const { theme } = useTheme();
 
     const [project, setProject] = useState<ProjectInfo | null>(null);
     const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
@@ -241,7 +236,7 @@ export default function ProjectDashboardPage() {
     if (loading) {
         return (
             <div className="flex items-center justify-center h-[60vh]">
-                <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+                <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
             </div>
         );
     }
@@ -254,45 +249,43 @@ export default function ProjectDashboardPage() {
     const canAccessBuildFlow = bootstrapReady;
     const nextStep = !allArtifactsComplete ? "artifacts" : !bootstrapReady ? "bootstrap" : null;
     const lockedActionClass = "opacity-45 saturate-50 cursor-not-allowed pointer-events-none";
-    const isDark = theme === "dark";
-    const headingClass = isDark ? "text-white" : "text-zinc-900";
-    const bodyClass = isDark ? "text-zinc-400" : "text-zinc-700";
-    const mutedClass = isDark ? "text-zinc-500" : "text-zinc-500";
-    const cardClass = isDark
-        ? "bg-[#12121A] border border-zinc-800/50"
-        : "bg-white border border-zinc-200 shadow-sm shadow-zinc-200/70";
-    const elevatedSurfaceClass = isDark
-        ? "bg-[#0E0E16] border border-zinc-800"
-        : "bg-zinc-50 border border-zinc-200";
-    const secondaryButtonClass = isDark
-        ? "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-        : "border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-100";
-    const disabledButtonClass = isDark
-        ? "bg-zinc-800/60 text-zinc-500"
-        : "bg-zinc-100 text-zinc-400 border border-zinc-200";
+
     const pulseAnimation = {
         boxShadow: [
-            "0 0 0 rgba(168,85,247,0)",
-            "0 0 0 1px rgba(168,85,247,0.32), 0 0 24px rgba(168,85,247,0.18)",
-            "0 0 0 rgba(168,85,247,0)",
+            "0 0 0 rgba(var(--color-primary-rgb, 168,85,247),0)",
+            "0 0 0 1px rgba(var(--color-primary-rgb, 168,85,247),0.32), 0 0 24px rgba(var(--color-primary-rgb, 168,85,247),0.18)",
+            "0 0 0 rgba(var(--color-primary-rgb, 168,85,247),0)",
         ],
         scale: [1, 1.01, 1],
     };
     const pulseTransition = { duration: 2.2, repeat: Infinity, ease: "easeInOut" as const };
 
     return (
-        <div className="max-w-6xl mx-auto px-6 py-10">
-            {/* Header */}
+        <motion.div
+            {...pageTransition}
+            className="max-w-6xl mx-auto px-6 py-10"
+        >
+            {/* Page Header */}
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-10">
-                <div className="flex items-start justify-between">
-                    <div>
-                        <h1 className={`text-3xl font-bold mb-1 ${headingClass}`}>{project?.name}</h1>
-                        <p className={`max-w-2xl ${bodyClass}`}>{project?.description}</p>
+                <div className="flex items-start justify-between gap-6">
+                    <div className="min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-secondary mb-2">
+                            Project
+                        </p>
+                        <h1
+                            className="text-4xl sm:text-5xl md:text-7xl font-black uppercase tracking-tighter leading-none text-on-surface truncate"
+                            style={{ letterSpacing: "-0.05em" }}
+                        >
+                            {project?.name}
+                        </h1>
+                        <p className="text-tertiary text-sm max-w-2xl leading-relaxed mt-3">
+                            {project?.description}
+                        </p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 shrink-0 pt-1">
                         {canAccessBuildFlow ? (
                             <motion.div
-                                className="rounded-xl"
+                                className="rounded-full"
                                 animate={{
                                     boxShadow: [
                                         "0 0 0px 0px rgba(168,85,247,0)",
@@ -303,27 +296,36 @@ export default function ProjectDashboardPage() {
                                 transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut", delay: 0.4 }}
                             >
                                 <Link
-                                    to={`/project/${projectId}/design-studio`}
-                                    className="flex items-center gap-2 h-10 px-5 rounded-xl border border-purple-500/50 text-purple-300 text-sm font-medium hover:bg-purple-500/10 hover:border-purple-400 transition-colors"
+                                    to={`/app/projects/${projectId}/design`}
+                                    className={cn(
+                                        "flex items-center gap-2 h-10 px-5 rounded-full border border-outline-variant",
+                                        "text-on-surface font-black uppercase tracking-widest text-[11px]",
+                                        "hover:bg-surface-container transition-colors"
+                                    )}
                                 >
-                                    <motion.div
+                                    <motion.span
+                                        className="material-symbols-outlined text-[18px] text-secondary"
                                         animate={{ rotate: [0, -14, 14, -8, 8, 0] }}
                                         transition={{ duration: 1.8, repeat: Infinity, repeatDelay: 2.5, ease: "easeInOut" }}
                                     >
-                                        <Palette className="w-4 h-4" />
-                                    </motion.div>
+                                        palette
+                                    </motion.span>
                                     Design Studio
                                 </Link>
                             </motion.div>
                         ) : (
-                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl text-sm font-medium ${disabledButtonClass} ${lockedActionClass}`}>
-                                <Palette className="w-4 h-4" />
+                            <div className={cn(
+                                "flex items-center gap-2 h-10 px-5 rounded-full border border-outline-variant",
+                                "text-on-surface font-black uppercase tracking-widest text-[11px]",
+                                lockedActionClass
+                            )}>
+                                <span className="material-symbols-outlined text-[18px] text-secondary">palette</span>
                                 Design Studio
                             </div>
                         )}
                         {canAccessBuildFlow ? (
                             <motion.div
-                                className="rounded-xl"
+                                className="rounded-full"
                                 animate={{
                                     boxShadow: [
                                         "0 4px 20px rgba(168,85,247,0.18)",
@@ -335,16 +337,25 @@ export default function ProjectDashboardPage() {
                                 transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
                             >
                                 <Link
-                                    to={`/project/${projectId}/editor?autobuild=1`}
-                                    className="flex items-center gap-2 h-10 px-5 rounded-xl bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 transition-all"
+                                    to={`/app/projects/${projectId}/build?autobuild=1`}
+                                    className={cn(
+                                        "flex items-center gap-2 h-10 px-6 rounded-full",
+                                        "bg-primary-container text-on-primary-container",
+                                        "font-black uppercase tracking-widest text-[11px]",
+                                        "hover:opacity-90 transition-opacity"
+                                    )}
                                 >
-                                    <Code2 className="w-4 h-4" />
+                                    <span className="material-symbols-outlined text-[18px]">code</span>
                                     Open Editor
                                 </Link>
                             </motion.div>
                         ) : (
-                            <div className={`flex items-center gap-2 h-10 px-5 rounded-xl text-sm font-medium ${disabledButtonClass} ${lockedActionClass}`}>
-                                <Code2 className="w-4 h-4" />
+                            <div className={cn(
+                                "flex items-center gap-2 h-10 px-6 rounded-full border border-outline-variant",
+                                "text-on-surface font-black uppercase tracking-widest text-[11px]",
+                                lockedActionClass
+                            )}>
+                                <span className="material-symbols-outlined text-[18px] text-secondary">code</span>
                                 Open Editor
                             </div>
                         )}
@@ -353,28 +364,43 @@ export default function ProjectDashboardPage() {
 
                 {/* Score badge */}
                 {project?.overall_score != null && (
-                    <div className="flex items-center gap-4 mt-4">
-                        <div className={`flex items-center gap-2 px-4 py-2 rounded-xl ${cardClass}`}>
-                            <Crown className="w-4 h-4 text-amber-400" />
-                            <span className={`text-sm ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>C-Suite Score:</span>
-                            <span className="text-lg font-bold text-purple-400">{project.overall_score}/100</span>
+                    <div className="flex items-center gap-4 mt-5">
+                        <div className="flex items-center gap-2 px-4 py-2 rounded-[var(--radius-module)] steel-gradient ghost-border">
+                            <span className="material-symbols-outlined text-[18px] text-secondary">workspace_premium</span>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-secondary">C-Suite Score</span>
+                            <span className="text-lg font-black text-on-surface" style={{ letterSpacing: "-0.05em" }}>
+                                {project.overall_score}/100
+                            </span>
                         </div>
                         {project.overall_verdict && (
-                            <span className={`text-sm font-bold uppercase ${project.overall_verdict === "go" ? "text-green-400" : project.overall_verdict === "no_go" ? "text-red-400" : "text-amber-400"}`}>
+                            <span className={cn(
+                                "text-[10px] font-black uppercase tracking-widest",
+                                project.overall_verdict === "go" ? "text-[#34d399]"
+                                : project.overall_verdict === "no_go" ? "text-[#f87171]"
+                                : "text-[#fbbf24]"
+                            )}>
                                 {project.overall_verdict === "no_go" ? "NO GO" : project.overall_verdict.toUpperCase()}
                             </span>
                         )}
                         {canAccessBuildFlow ? (
                             <Link
-                                to={`/csuite/${projectId}`}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/20 transition-colors"
+                                to={`/app/projects/${projectId}/executive`}
+                                className={cn(
+                                    "flex items-center gap-1.5 h-8 px-4 rounded-full border border-outline-variant",
+                                    "text-[10px] font-black uppercase tracking-widest text-on-surface",
+                                    "hover:bg-surface-container transition-colors"
+                                )}
                             >
-                                <Rocket className="w-3.5 h-3.5" />
+                                <span className="material-symbols-outlined text-[14px] text-secondary">rocket_launch</span>
                                 Improve
                             </Link>
                         ) : (
-                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium ${disabledButtonClass} ${lockedActionClass}`}>
-                                <Rocket className="w-3.5 h-3.5" />
+                            <div className={cn(
+                                "flex items-center gap-1.5 h-8 px-4 rounded-full border border-outline-variant",
+                                "text-[10px] font-black uppercase tracking-widest text-on-surface",
+                                lockedActionClass
+                            )}>
+                                <span className="material-symbols-outlined text-[14px] text-secondary">rocket_launch</span>
                                 Improve
                             </div>
                         )}
@@ -398,24 +424,29 @@ export default function ProjectDashboardPage() {
                                 ],
                             }}
                             transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-                            className="flex items-center gap-3 px-4 py-3 rounded-xl bg-purple-500/8 border border-purple-500/25"
+                            className="flex items-center gap-3 px-4 py-3 rounded-[var(--radius-module)] border border-outline-variant bg-surface-container"
                         >
-                            <motion.div
+                            <motion.span
+                                className="material-symbols-outlined text-[20px] text-secondary shrink-0"
                                 animate={{ scale: [1, 1.3, 1], rotate: [0, 12, -12, 0] }}
                                 transition={{ duration: 2.2, repeat: Infinity, repeatDelay: 1.5, ease: "easeInOut" }}
                             >
-                                <Sparkles className="w-4 h-4 text-purple-400 flex-shrink-0" />
-                            </motion.div>
-                                <span className={`text-sm font-medium ${isDark ? "text-purple-300" : "text-purple-700"}`}>
-                                    Your project is ready — click <strong className={isDark ? "text-purple-200" : "text-purple-900"}>Design Studio</strong> to generate screens or <strong className={isDark ? "text-purple-200" : "text-purple-900"}>Open Editor</strong> to build with AI.
+                                auto_awesome
+                            </motion.span>
+                            <span className="text-sm text-on-surface leading-snug">
+                                Your project is ready — click{" "}
+                                <strong className="font-black">Design Studio</strong>{" "}
+                                to generate screens or{" "}
+                                <strong className="font-black">Open Editor</strong>{" "}
+                                to build with AI.
                             </span>
-                            <motion.div
+                            <motion.span
                                 animate={{ x: [0, 5, 0] }}
                                 transition={{ duration: 1, repeat: Infinity, ease: "easeInOut" }}
-                                className="ml-auto text-purple-400 text-sm font-bold flex-shrink-0"
+                                className="ml-auto text-[10px] font-black uppercase tracking-widest text-secondary shrink-0"
                             >
                                 →
-                            </motion.div>
+                            </motion.span>
                         </motion.div>
                     </motion.div>
                 )}
@@ -423,11 +454,22 @@ export default function ProjectDashboardPage() {
 
             {/* Bootstrap prompt section */}
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-                <div className={`${cardClass} rounded-xl p-5 transition-opacity ${canGenerateBootstrap ? "opacity-100" : "opacity-60"}`}>
-                    <div className="flex items-center justify-between gap-3 mb-3">
+                <div className={cn(
+                    "steel-gradient ghost-border rounded-[var(--radius-module)] p-6 transition-opacity",
+                    canGenerateBootstrap ? "opacity-100" : "opacity-60"
+                )}>
+                    <div className="flex items-start justify-between gap-4 mb-4">
                         <div>
-                            <h2 className={`text-lg font-bold ${headingClass}`}>AI Bootstrap Prompt</h2>
-                            <p className={`text-xs mt-1 ${bodyClass}`}>
+                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-secondary mb-1">
+                                Bootstrap
+                            </p>
+                            <h2
+                                className="font-black uppercase text-on-surface text-lg leading-none"
+                                style={{ letterSpacing: "-0.05em" }}
+                            >
+                                AI Bootstrap Prompt
+                            </h2>
+                            <p className="text-tertiary text-xs mt-2 leading-relaxed">
                                 {bootstrapReady
                                     ? "The AI bootstrap prompt is ready. You can copy it, open Design Studio, or jump into the editor."
                                     : allArtifactsComplete
@@ -435,33 +477,61 @@ export default function ProjectDashboardPage() {
                                     : "Locked until all project artifacts have been generated."}
                             </p>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap justify-end shrink-0">
                             <motion.button
                                 onClick={handleGenerateBootstrapPrompt}
                                 disabled={bootstrapLoading || !canGenerateBootstrap}
                                 title={!canGenerateBootstrap ? "Generate all project artifacts first" : undefined}
                                 animate={nextStep === "bootstrap" && !bootstrapLoading ? pulseAnimation : undefined}
                                 transition={nextStep === "bootstrap" && !bootstrapLoading ? pulseTransition : undefined}
-                                className="h-9 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                className={cn(
+                                    "flex items-center gap-1.5 h-9 px-4 rounded-full",
+                                    "bg-primary-container text-on-primary-container",
+                                    "font-black uppercase tracking-widest text-[10px]",
+                                    "hover:opacity-90 transition-opacity",
+                                    "disabled:opacity-50 disabled:cursor-not-allowed"
+                                )}
                             >
-                                {bootstrapLoading ? "Generating..." : bootstrapReady ? "Regenerate AI Bootstrap Prompt" : "Generate AI Bootstrap Prompt"}
+                                {bootstrapLoading
+                                    ? <><span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span> Generating…</>
+                                    : bootstrapReady
+                                    ? <><span className="material-symbols-outlined text-[14px]">refresh</span> Regenerate</>
+                                    : <><span className="material-symbols-outlined text-[14px]">auto_awesome</span> Generate</>
+                                }
                             </motion.button>
                             <button
                                 onClick={handleCopyPrompt}
                                 disabled={!bootstrapData?.prompt}
-                                className={`h-9 px-4 rounded-lg text-sm font-medium disabled:opacity-50 ${secondaryButtonClass}`}
+                                className={cn(
+                                    "flex items-center gap-1.5 h-9 px-4 rounded-full border border-outline-variant",
+                                    "text-on-surface font-black uppercase tracking-widest text-[10px]",
+                                    "hover:bg-surface-container transition-colors",
+                                    "disabled:opacity-50 disabled:cursor-not-allowed"
+                                )}
                             >
+                                <span className="material-symbols-outlined text-[14px] text-secondary">
+                                    {copied ? "check" : "content_copy"}
+                                </span>
                                 {copied ? "Copied" : "Copy Prompt"}
                             </button>
                             {canAccessBuildFlow ? (
                                 <Link
-                                    to={`/project/${projectId}/editor?autobuild=1`}
-                                    className="h-9 px-4 rounded-lg bg-gradient-to-r from-purple-600 to-purple-500 text-white text-sm font-medium hover:from-purple-500 hover:to-purple-400 flex items-center"
+                                    to={`/app/projects/${projectId}/build?autobuild=1`}
+                                    className={cn(
+                                        "flex items-center gap-1.5 h-9 px-4 rounded-full",
+                                        "bg-primary-container text-on-primary-container",
+                                        "font-black uppercase tracking-widest text-[10px]",
+                                        "hover:opacity-90 transition-opacity"
+                                    )}
                                 >
                                     Build with Kith
                                 </Link>
                             ) : (
-                                <div className={`h-9 px-4 rounded-lg text-sm font-medium flex items-center ${disabledButtonClass} ${lockedActionClass}`}>
+                                <div className={cn(
+                                    "flex items-center gap-1.5 h-9 px-4 rounded-full border border-outline-variant",
+                                    "text-on-surface font-black uppercase tracking-widest text-[10px]",
+                                    lockedActionClass
+                                )}>
                                     Build with Kith
                                 </div>
                             )}
@@ -470,47 +540,61 @@ export default function ProjectDashboardPage() {
 
                     {bootstrapData ? (
                         <>
-                            <div className={`flex items-center gap-4 text-xs mb-3 ${bodyClass}`}>
+                            <div className="flex items-center gap-4 text-[10px] font-black uppercase tracking-widest text-secondary mb-3">
                                 <span>{bootstrapData.word_count} words</span>
                                 <span>~{bootstrapData.token_estimate} tokens</span>
                             </div>
-                            <div className={`max-h-44 overflow-y-auto rounded-lg p-3 text-xs whitespace-pre-wrap ${elevatedSurfaceClass} ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
+                            <div className="max-h-44 overflow-y-auto rounded-[var(--radius-module)] p-3 text-xs whitespace-pre-wrap bg-background border border-outline-variant text-on-surface leading-relaxed">
                                 {bootstrapData.prompt}
                             </div>
                         </>
                     ) : (
-                        <div className={`rounded-lg p-3 text-xs ${elevatedSurfaceClass} ${mutedClass}`}>
+                        <div className="rounded-[var(--radius-module)] p-3 text-xs bg-background border border-outline-variant text-tertiary">
                             No bootstrap prompt generated yet.
                         </div>
                     )}
                 </div>
             </motion.div>
 
-            {/* Artifacts section */}
-            <div className="mb-6 flex items-center justify-between">
+            {/* Artifacts section header */}
+            <div className="mb-6 flex items-center justify-between gap-4">
                 <div>
-                    <h2 className={`text-xl font-bold ${headingClass}`}>Project Artifacts</h2>
-                    <p className={`text-sm mt-1 ${bodyClass}`}>
+                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-secondary mb-1">
+                        Deliverables
+                    </p>
+                    <h2
+                        className="font-black uppercase text-on-surface text-xl leading-none"
+                        style={{ letterSpacing: "-0.05em" }}
+                    >
+                        Project Artifacts
+                    </h2>
+                    <p className="text-tertiary text-sm mt-1">
                         {artifacts.length === 0 ? "No artifacts yet" : `${completedArtifacts}/${totalArtifacts} generated`}
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap justify-end">
                     {(completedArtifacts < totalArtifacts || artifacts.length === 0) && (
                         <motion.button
                             onClick={handleGenerateArtifacts}
                             disabled={generating}
                             animate={nextStep === "artifacts" && !generating ? pulseAnimation : undefined}
                             transition={nextStep === "artifacts" && !generating ? pulseTransition : undefined}
-                            className="flex items-center gap-2 h-10 px-5 rounded-xl bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
+                            className={cn(
+                                "flex items-center gap-2 h-10 px-5 rounded-full",
+                                "bg-primary-container text-on-primary-container",
+                                "font-black uppercase tracking-widest text-[11px]",
+                                "hover:opacity-90 transition-opacity",
+                                "disabled:opacity-50 disabled:cursor-not-allowed"
+                            )}
                         >
                             {generating ? (
                                 <>
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                    Generating...
+                                    <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
+                                    Generating…
                                 </>
                             ) : (
                                 <>
-                                    <Lightbulb className="w-4 h-4" />
+                                    <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
                                     Generate All Artifacts
                                 </>
                             )}
@@ -520,10 +604,17 @@ export default function ProjectDashboardPage() {
                         <button
                             onClick={handleRegenerateAllArtifacts}
                             disabled={regenerating || generating}
-                            className={`flex items-center gap-2 h-10 px-5 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 ${secondaryButtonClass}`}
+                            className={cn(
+                                "flex items-center gap-2 h-10 px-5 rounded-full border border-outline-variant",
+                                "text-on-surface font-black uppercase tracking-widest text-[11px]",
+                                "hover:bg-surface-container transition-colors",
+                                "disabled:opacity-50 disabled:cursor-not-allowed"
+                            )}
                         >
-                            <RefreshCw className={`w-4 h-4 ${regenerating ? "animate-spin" : ""}`} />
-                            Regenerate All Artifacts
+                            <span className={cn("material-symbols-outlined text-[16px] text-secondary", regenerating ? "animate-spin" : "")}>
+                                refresh
+                            </span>
+                            Regenerate All
                         </button>
                     )}
                     {allArtifactsComplete && projectId && (
@@ -537,31 +628,31 @@ export default function ProjectDashboardPage() {
             </div>
 
             {/* Artifact grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {Object.entries(ARTIFACT_META).map(([type, meta], i) => {
+            <motion.div
+                variants={staggerContainer}
+                initial="hidden"
+                animate="visible"
+                className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
+            >
+                {Object.entries(ARTIFACT_META).map(([type, meta]) => {
                     const artifact = artifacts.find(a => a.type === type);
                     const isComplete = artifact?.status === "complete";
                     const isGenerating = artifact?.status === "generating";
                     const isPending = !artifact || artifact.status === "pending";
-                    const Icon = meta.icon;
                     const isExpanded = expandedArtifact === type;
                     const preview = isComplete && artifact?.content
-                        ? artifact.content.slice(0, 120).replace(/\n/g, " ").trim() + (artifact.content.length > 120 ? ".\.\." : "")
+                        ? artifact.content.slice(0, 120).replace(/\n/g, " ").trim() + (artifact.content.length > 120 ? "..." : "")
                         : null;
 
                     return (
                         <motion.div
                             key={type}
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: i * 0.04 }}
-                            className={`${cardClass} rounded-xl overflow-hidden transition-all ${
-                                isComplete
-                                    ? isDark ? "border-zinc-700/50 hover:border-purple-500/30 cursor-pointer" : "border-zinc-200 hover:border-purple-300 cursor-pointer"
-                                    : isGenerating
-                                        ? "border-purple-500/30"
-                                        : isDark ? "border-zinc-800/30" : "border-zinc-200"
-                            }`}
+                            variants={cardEntrance}
+                            className={cn(
+                                "steel-gradient ghost-border rounded-[var(--radius-module)] overflow-hidden transition-all",
+                                isComplete && "hover:border-outline cursor-pointer",
+                                isGenerating && "border-outline"
+                            )}
                             onClick={() => {
                                 if (isComplete) {
                                     setExpandedArtifact(isExpanded ? null : type);
@@ -569,33 +660,59 @@ export default function ProjectDashboardPage() {
                             }}
                         >
                             <div className="p-5">
-                                <div className="flex items-center gap-3 mb-1">
-                                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${isComplete ? (isDark ? "bg-zinc-800/80" : "bg-zinc-100") : (isDark ? "bg-zinc-800/40" : "bg-zinc-100/60")}`}>
-                                        <Icon className={`w-4.5 h-4.5 ${isComplete ? meta.color : "text-zinc-600"}`} />
+                                <div className="flex items-start gap-3 mb-2">
+                                    <div className={cn(
+                                        "w-9 h-9 rounded-full flex items-center justify-center shrink-0",
+                                        isComplete ? "bg-primary-container" : "bg-surface-container"
+                                    )}>
+                                        <span className={cn(
+                                            "material-symbols-outlined text-[18px]",
+                                            isComplete ? "text-on-primary-container" : "text-tertiary"
+                                        )}>
+                                            {meta.icon}
+                                        </span>
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                        <h3 className={`text-sm font-bold ${isComplete ? headingClass : mutedClass}`}>{meta.label}</h3>
-                                        <p className={`text-xs ${bodyClass}`}>{meta.description}</p>
+                                        <h3 className={cn(
+                                            "text-[11px] font-black uppercase tracking-tight mb-0.5",
+                                            isComplete ? "text-on-surface" : "text-tertiary"
+                                        )}>
+                                            {meta.label}
+                                        </h3>
+                                        <p className="text-tertiary text-xs leading-relaxed">
+                                            {meta.description}
+                                        </p>
                                     </div>
-                                    {isComplete && (
-                                        <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform flex-shrink-0 ${isExpanded ? "rotate-180" : ""}`} />
-                                    )}
-                                    {isComplete && projectId && (
-                                        <span onClick={(e) => e.stopPropagation()}>
-                                            <ExportMenu
-                                                projectId={projectId}
-                                                target={`artifact/${type}`}
-                                                size="sm"
-                                                label=""
-                                            />
-                                        </span>
-                                    )}
-                                    {isGenerating && <Loader2 className="w-4 h-4 text-purple-400 animate-spin flex-shrink-0" />}
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        {isComplete && (
+                                            <span className={cn(
+                                                "material-symbols-outlined text-[18px] text-tertiary transition-transform",
+                                                isExpanded ? "rotate-180" : ""
+                                            )}>
+                                                expand_more
+                                            </span>
+                                        )}
+                                        {isComplete && projectId && (
+                                            <span onClick={(e) => e.stopPropagation()}>
+                                                <ExportMenu
+                                                    projectId={projectId}
+                                                    target={`artifact/${type}`}
+                                                    size="sm"
+                                                    label=""
+                                                />
+                                            </span>
+                                        )}
+                                        {isGenerating && (
+                                            <span className="material-symbols-outlined text-[18px] text-secondary animate-spin">
+                                                progress_activity
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
 
                                 {/* Content preview for completed artifacts */}
                                 {isComplete && preview && !isExpanded && (
-                                    <p className={`mt-2 text-[11px] leading-relaxed line-clamp-2 ml-12 ${bodyClass}`}>
+                                    <p className="mt-2 text-[11px] leading-relaxed line-clamp-2 pl-12 text-tertiary">
                                         {preview}
                                     </p>
                                 )}
@@ -634,9 +751,15 @@ export default function ProjectDashboardPage() {
                                                 }, 2000);
                                             } catch { /* ignore */ }
                                         }}
-                                        className="mt-2 ml-12 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-500 text-[11px] font-medium hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                        className={cn(
+                                            "mt-3 ml-12 flex items-center gap-1.5 h-7 px-3 rounded-full",
+                                            "border border-outline-variant text-on-surface",
+                                            "text-[10px] font-black uppercase tracking-widest",
+                                            "hover:bg-surface-container transition-colors",
+                                            "disabled:opacity-40 disabled:cursor-not-allowed"
+                                        )}
                                     >
-                                        <Sparkles className="w-3 h-3" />
+                                        <span className="material-symbols-outlined text-[12px] text-secondary">auto_awesome</span>
                                         Generate
                                     </button>
                                 )}
@@ -647,9 +770,9 @@ export default function ProjectDashboardPage() {
                                 <motion.div
                                     initial={{ height: 0, opacity: 0 }}
                                     animate={{ height: "auto", opacity: 1 }}
-                                    className={`px-5 py-4 max-h-96 overflow-y-auto ${isDark ? "border-t border-zinc-800/50" : "border-t border-zinc-200"}`}
+                                    className="px-5 py-4 max-h-96 overflow-y-auto border-t border-outline-variant"
                                 >
-                                    <div className={`max-w-none text-xs leading-relaxed whitespace-pre-wrap ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
+                                    <div className="text-xs leading-relaxed whitespace-pre-wrap text-on-surface">
                                         {artifact.content}
                                     </div>
                                 </motion.div>
@@ -657,13 +780,14 @@ export default function ProjectDashboardPage() {
                         </motion.div>
                     );
                 })}
-            </div>
+            </motion.div>
 
+            {/* Error state */}
             {error && (
-                <div className="mt-6 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm text-center">
+                <div className="mt-6 px-4 py-3 rounded-[var(--radius-module)] border border-error/20 bg-error/10 text-[#f87171] text-sm text-center font-black uppercase tracking-widest">
                     {error}
                 </div>
             )}
-        </div>
+        </motion.div>
     );
 }

@@ -1,0 +1,26 @@
+name = "kith-unicorn"
+main = "unicorn.js"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+account_id = "88e6d48400b36d7948eee769db9e7959"
+
+# Route over the forgeoperator.com zone (already active on this account).
+[[routes]]
+pattern = "api.forgeoperator.com/*"
+zone_name = "forgeoperator.com"
+
+# KV namespace bindings — create with:
+#   npx wrangler kv:namespace create TELEMETRY_KV
+#   npx wrangler kv:namespace create AI_CACHE_KV
+# then replace the ids below.
+[[kv_namespaces]]
+binding = "TELEMETRY_KV"
+id = "e937232f8eb74629a894a1210002fef3"
+
+[[kv_namespaces]]
+binding = "AI_CACHE_KV"
+id = "eb04ec804dff48f79ec52cf8d6e449a2"
+
+[vars]
+ENVIRONMENT = "production"

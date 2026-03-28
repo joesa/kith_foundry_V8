@@ -249,6 +249,18 @@ def _build_code_agent_prompt(
 - Scope: {intent.get('scope', 'unknown')}
 - Description: {intent.get('description', '')}""")
 
+        if intent.get("intent_type") == "initial_build":
+            parts.append(
+                """
+**Initial Build Guardrails:**
+- This is an initial build. Treat any existing scaffold/template files as non-authoritative.
+- Requirements/design context override existing file contents.
+- Replace unrelated scaffold branding/copy/navigation if present.
+- Build the requested product domain exactly; do not preserve a house-template app shell.
+- Output full root app files in this generation: src/main.tsx, src/App.tsx, and src/App.css, plus required feature pages/components.
+"""
+            )
+
         new_pages = intent.get("new_pages_needed", [])
         if new_pages:
             parts.append("- New pages needed:")
@@ -259,17 +271,17 @@ def _build_code_agent_prompt(
         parts.append(f"""
 **Agent Pipeline Context — Layout Plan:**
 ```json
-{json.dumps(layout_plan, indent=2)[:6000]}
+{json.dumps(layout_plan, indent=2)[:3000]}
 ```""")
 
     if component_manifest:
-        # Include design_token_css if present
+        # Include design_token_css if present (capped to avoid TPM overflow)
         token_css = component_manifest.get("design_token_css", "")
         if token_css:
             parts.append(f"""
 **Agent Pipeline Context — Design Token CSS:**
 ```css
-{token_css}
+{token_css[:2_000]}
 ```""")
 
         # Include file order
@@ -373,16 +385,24 @@ async def run_multi_agent_pipeline(
         compressed_context = project_context[:16_000]
 
     # Full project context for the Code Agent (needs complete file content)
+    # Hard cap at ~12 000 chars (~3 000 tokens) so we never blow past the provider TPM limit
+    # on gpt-4o tier-1 accounts (30k TPM) — SURGEON_PROMPT + layout plan already consume ~10k.
+    _CODE_CONTEXT_LIMIT = 12_000
     full_project_context = ""
     if all_files:
         for path, content in sorted(all_files.items()):
             ext = path.rsplit('.', 1)[-1] if '.' in path else 'txt'
             lang = {'tsx': 'tsx', 'ts': 'typescript', 'css': 'css', 'jsx': 'jsx', 'js': 'javascript'}.get(ext, ext)
-            full_project_context += f"\n--- {path} ---\n```{lang}\n{content}\n```\n"
+            chunk = f"\n--- {path} ---\n```{lang}\n{content}\n```\n"
+            if len(full_project_context) + len(chunk) > _CODE_CONTEXT_LIMIT:
+                full_project_context += "\n... (remaining files omitted to stay within token budget)\n"
+                break
+            full_project_context += chunk
     else:
         full_project_context = "\n(No existing files — this is a fresh project)\n"
 
     # ── Load Design System (GPT Engine or legacy) ──────────────────────────
+    _DESIGN_REF_LIMIT = 8_000  # ~2k tokens — hard cap to stay within TPM budget
     design_system = get_design_system_from_artifacts(db, project_id)
     if design_system:
         design_ref = build_design_context_for_agent(design_system)
@@ -400,12 +420,12 @@ async def run_multi_agent_pipeline(
                 design_ref = ""
             if not design_ref:
                 design_ref = await asyncio.to_thread(get_design_context_compact, project_id)
-            if design_ref and len(design_ref) > 12_000:
-                compact = await asyncio.to_thread(get_design_context_compact, project_id)
-                design_ref = compact or design_ref[:12_000]
         except Exception as e:
             print(f"[pipeline] Design context fetch skipped: {e}")
             design_ref = ""
+    # Universal cap — applies to both artifacts and legacy paths
+    if design_ref and len(design_ref) > _DESIGN_REF_LIMIT:
+        design_ref = design_ref[:_DESIGN_REF_LIMIT]
 
     # ── Load Brain context ─────────────────────────────────────────────────
     try:
@@ -510,6 +530,7 @@ async def _stream_code_generation(
                 {"role": "user", "content": user_content},
             ],
             temperature=0.2,
+            max_tokens=6000,
             stream=True,
             timeout=llm_breaker.default_timeout,
             **llm_kwargs,
@@ -659,6 +680,27 @@ async def _stream_code_generation(
                     edits.append({"file_path": fp, "action": "write", "content": content})
 
         if edits:
+            # Strip duplicate BrowserRouter from non-main.tsx files
+            for _edit in edits:
+                _fp = _edit.get("file_path", "")
+                if _fp and not _fp.endswith("main.tsx"):
+                    _content = _edit.get("content", "")
+                    if "BrowserRouter" in _content:
+                        # Remove BrowserRouter import
+                        _content = re.sub(
+                            r',?\s*BrowserRouter\s*,?',
+                            lambda m: ', ' if m.group().startswith(',') and m.group().rstrip().endswith(',') else '',
+                            _content
+                        )
+                        # Remove <BrowserRouter> and </BrowserRouter> wrapper tags
+                        _content = re.sub(r'\s*<BrowserRouter>\s*\n?', '\n', _content)
+                        _content = re.sub(r'\s*</BrowserRouter>\s*\n?', '\n', _content)
+                        # Clean up any leftover empty imports like "import {  } from ..."
+                        _content = re.sub(r"import\s*\{\s*\}\s*from\s*['\"]react-router-dom['\"]\s*;?\n?", '', _content)
+                        if _content != _edit["content"]:
+                            print(f"[Sanitizer] Stripped BrowserRouter from {_fp}")
+                            _edit["content"] = _content
+
             # Design contract enforcement
             try:
                 _contract = await asyncio.to_thread(get_design_contract_css, project_id)

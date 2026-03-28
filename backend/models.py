@@ -26,6 +26,15 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+# Strip pgbouncer=true from the raw URL — psycopg2 doesn't understand it.
+# Nhost pooler URLs often include it; we handle pgbouncer behaviour ourselves.
+DATABASE_URL = DATABASE_URL.replace("&pgbouncer=true", "").replace("?pgbouncer=true", "")
+
+# Capture the direct-Postgres URL (port 5432) BEFORE the pgbouncer block may
+# switch the port to 6543.  The sync (psycopg2) engine always uses this so
+# that module-level create_all / DDL calls don't hang on PgBouncer.
+_DIRECT_DATABASE_URL = DATABASE_URL
+
 # ── PgBouncer support ─────────────────────────────────────────────────────────
 # Set PGBOUNCER=true in the environment (fly-backend.toml [env]) to route
 # connections through Nhost's built-in PgBouncer (port 6543, transaction
@@ -42,33 +51,54 @@ if _is_pgbouncer and DATABASE_URL.startswith("postgresql"):
     if "pgbouncer=true" not in DATABASE_URL:
         DATABASE_URL += ("&" if "?" in DATABASE_URL else "?") + "pgbouncer=true"
 
-# Use generous connection pool for high-throughput production workloads.
-# With PgBouncer in transaction mode, each worker only needs a small pool
-# (PgBouncer does the real multiplexing).  Without it, keep the larger pool.
+# Connection pool sizing: each gunicorn worker runs up to 7 concurrent CSuite agents
+# plus regular API handlers — all sharing one pool.  pool_size=8 ensures every agent
+# can hold a connection simultaneously without waiting; pool_timeout=15 catches
+# runaway exhaustion quickly.  With PgBouncer (transaction mode), the SQLAlchemy pool
+# maps to fewer real Postgres connections, so a larger SQLAlchemy pool is still safe.
 # SQLite (dev fallback) does not support pool args, so skip them entirely.
 if DATABASE_URL.startswith("postgresql"):
     _pool_kwargs = (
-        dict(pool_size=2, max_overflow=3, pool_recycle=300, pool_pre_ping=True)
+        dict(pool_size=8, max_overflow=4, pool_recycle=300, pool_pre_ping=True, pool_timeout=15)
         if _is_pgbouncer else
-        dict(pool_size=20, max_overflow=40, pool_recycle=300, pool_pre_ping=True)
+        dict(pool_size=8, max_overflow=4, pool_recycle=300, pool_pre_ping=True, pool_timeout=15)
     )
+    _pool_kwargs["connect_args"] = {
+        "connect_timeout": 5,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+        "sslmode": "require",
+    }
 else:
     _pool_kwargs = dict(pool_pre_ping=True)
 
-engine = create_engine(DATABASE_URL, **_pool_kwargs)
+# psycopg2 (sync) always connects to direct Postgres (port 5432), never PgBouncer
+# (port 6543).  Using _DIRECT_DATABASE_URL avoids a hang when PgBouncer is
+# enabled and create_all / DDL calls are made at module-import time.
+_sync_database_url = _DIRECT_DATABASE_URL
+# use_native_hstore=False prevents psycopg2 from running HstoreAdapter.get_oids()
+# on every new connection — that extra query hangs when PgBouncer has no slots.
+engine = create_engine(_sync_database_url, **_pool_kwargs, use_native_hstore=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # ── Async engine (asyncpg) for non-blocking DB access in async handlers ───────
 if DATABASE_URL.startswith("postgresql"):
+    import ssl as _ssl
+    _ssl_ctx = _ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = _ssl.CERT_NONE  # skip slow OCSP/CA lookup on remote Nhost DB
     _async_connect_args = (
-        {"prepared_statement_cache_size": 0}  # required for PgBouncer transaction mode
-        if _is_pgbouncer else {}
+        {"prepared_statement_cache_size": 0, "command_timeout": 8, "ssl": _ssl_ctx, "timeout": 10}
+        if _is_pgbouncer else
+        {"command_timeout": 8, "ssl": _ssl_ctx, "timeout": 10}
     )
     _async_pool_kwargs = (
-        dict(pool_size=2, max_overflow=3, pool_recycle=300, pool_pre_ping=True)
+        dict(pool_size=8, max_overflow=4, pool_recycle=300, pool_pre_ping=True, pool_timeout=15)
         if _is_pgbouncer else
-        dict(pool_size=20, max_overflow=40, pool_recycle=300, pool_pre_ping=True)
+        dict(pool_size=8, max_overflow=4, pool_recycle=300, pool_pre_ping=True, pool_timeout=15)
     )
     _ASYNC_DATABASE_URL = (
         DATABASE_URL
@@ -130,11 +160,29 @@ async def run_db(fn):
 # ── Enums ────────────────────────────────────────────────────────────────────
 
 class ProjectStatus(str, enum.Enum):
+    # Legacy compatibility values (older rows may still contain these)
+    draft = "draft"
+    executive_review = "executive_review"
+    planning = "planning"
+    waiting_for_secrets = "waiting_for_secrets"
+    ready_for_preview = "ready_for_preview"
+    running = "running"
+    stopped = "stopped"
+    error = "error"
+
+    # Current canonical lifecycle values
     ideation = "ideation"
     csuite_pending = "csuite_pending"
     csuite_running = "csuite_running"
     csuite_complete = "csuite_complete"
+    prd_generating = "prd_generating"
+    prd_complete = "prd_complete"
+    design_generating = "design_generating"
+    design_complete = "design_complete"
+    capability_gate = "capability_gate"
+    secrets_pending = "secrets_pending"
     building = "building"
+    build_complete = "build_complete"
     deployed = "deployed"
 
 
@@ -152,9 +200,17 @@ class CSuiteRole(str, enum.Enum):
     cpo = "cpo"
     coo = "coo"
     cdo = "cdo"
+    ciso = "ciso"
+    synthesizer = "synthesizer"
 
 
 class AgentStatus(str, enum.Enum):
+    # Legacy/compatibility values that may exist in older rows
+    generating = "generating"
+    stopped = "stopped"
+    cancelled = "cancelled"
+
+    # Canonical values
     pending = "pending"
     running = "running"
     complete = "complete"
@@ -165,6 +221,9 @@ class ArtifactType(str, enum.Enum):
     exec_summary = "exec_summary"
     product_requirements = "product_requirements"
     tech_architecture = "tech_architecture"
+    db_plan = "db_plan"
+    auth_plan = "auth_plan"
+    implementation_phases = "implementation_phases"
     design_tokens = "design_tokens"
     design_system = "design_system"
     design_components = "design_components"
@@ -288,6 +347,8 @@ class SavedIdea(Base):
     source = Column(SAEnum(IdeaSource), nullable=False)
     idea_hash = Column(String, nullable=True, index=True)  # links to GeneratedIdeaGlobal
     is_claimed = Column(Boolean, default=False)  # True = user started building, idea is exclusive
+    saved_expires_at = Column(DateTime, nullable=True)  # 7-day soft-hold expiry
+    uniqueness_degraded = Column(Boolean, default=False, server_default="false")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
@@ -603,3 +664,67 @@ class ProjectEmbedding(Base):
 
     project = relationship("Project", back_populates="embeddings")
 
+
+class CapabilityChoice(Base):
+    __tablename__ = "project_capability_choices"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    wants_database = Column(Boolean, default=False, nullable=False)
+    wants_auth = Column(Boolean, default=False, nullable=False)
+    wants_ai = Column(Boolean, default=False, nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project")
+
+
+class EncryptedUserSecret(Base):
+    __tablename__ = "encrypted_user_secrets"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    provider = Column(String, nullable=False)
+    label = Column(String, nullable=False)
+    encrypted_value = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_accessed_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+    project = relationship("Project")
+
+
+class SecretAccessAudit(Base):
+    __tablename__ = "secret_access_audit"
+    id = Column(String, primary_key=True, index=True)
+    secret_id = Column(String, ForeignKey("encrypted_user_secrets.id", ondelete="CASCADE"), nullable=False, index=True)
+    accessed_by = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CodePatch(Base):
+    __tablename__ = "code_patches"
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_path = Column(String, nullable=False)
+    diff = Column(Text, nullable=False)
+    status = Column(String, default="proposed", nullable=False)
+    agent_role = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    applied_at = Column(DateTime, nullable=True)
+
+    project = relationship("Project")
+
+
+class PatchValidation(Base):
+    __tablename__ = "patch_validations"
+    id = Column(String, primary_key=True, index=True)
+    patch_id = Column(String, ForeignKey("code_patches.id", ondelete="CASCADE"), nullable=False, index=True)
+    validator = Column(String, nullable=False)
+    passed = Column(Boolean, nullable=False)
+    details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    patch = relationship("CodePatch")

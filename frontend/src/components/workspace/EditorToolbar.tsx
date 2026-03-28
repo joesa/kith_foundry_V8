@@ -1,18 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import {
-  Settings2,
-  Minus,
-  Plus,
-  Map,
-  WrapText,
-  Paintbrush,
-  ChevronDown,
-  Indent,
-  Type,
-  Hash,
-  SplitSquareHorizontal,
-  Search,
-} from "lucide-react";
+import { cn } from "../../lib/utils/cn";
 import { THEMES, type ThemeMeta } from "./EditorThemes";
 
 export interface EditorSettings {
@@ -65,7 +52,7 @@ function Dropdown({ children, trigger }: { children: React.ReactNode; trigger: R
     <div ref={ref} className="relative">
       <div onClick={() => setOpen(v => !v)}>{trigger}</div>
       {open && (
-        <div className="absolute top-full mt-1 right-0 z-50 min-w-[200px] max-h-[360px] overflow-y-auto bg-[#1E1E2A] border border-[var(--kf-border-muted)] rounded-lg shadow-2xl shadow-black/50 py-1">
+        <div className="absolute top-full mt-1 right-0 z-50 min-w-[200px] max-h-[360px] overflow-y-auto bg-surface-container border border-outline-variant rounded-[var(--radius-module)] shadow-2xl shadow-black/50 py-1">
           {children}
         </div>
       )}
@@ -88,11 +75,12 @@ function ToolbarButton({
     <button
       onClick={onClick}
       title={title}
-      className={`p-1 rounded transition-colors ${
+      className={cn(
+        "p-1 rounded-full transition-colors",
         active
-          ? "text-indigo-400 bg-indigo-500/15"
-          : "text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]/50"
-      }`}
+          ? "text-primary bg-primary/15"
+          : "text-tertiary hover:text-on-surface hover:bg-surface-container"
+      )}
     >
       {children}
     </button>
@@ -103,63 +91,63 @@ export function EditorToolbar({ settings, onChange, onFindReplace }: EditorToolb
   const currentTheme = THEMES.find(t => t.id === settings.theme);
 
   return (
-    <div className="flex items-center gap-0.5 px-2 py-1 bg-[#0F0F17] border-b border-[var(--kf-border)]/60 text-[11px]">
+    <div className="flex items-center gap-0.5 px-2 py-1 bg-surface border-b border-outline-variant/60 text-[11px]">
       {/* Theme picker */}
       <Dropdown
         trigger={
-          <button className="flex items-center gap-1.5 px-2 py-1 rounded text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] hover:bg-[var(--kf-hover-bg)]/50 transition-colors">
-            <Paintbrush className="w-3 h-3" />
+          <button className="flex items-center gap-1.5 px-2 py-1 rounded-full text-secondary hover:text-on-surface hover:bg-surface-container transition-colors">
+            <span className="material-symbols-outlined" style={{ fontSize: 12 }}>motion_blur</span>
             <span className="max-w-[100px] truncate">{currentTheme?.label ?? "Theme"}</span>
-            <ChevronDown className="w-2.5 h-2.5 opacity-50" />
+            <span className="material-symbols-outlined opacity-50" style={{ fontSize: 10 }}>expand_more</span>
           </button>
         }
       >
-        <div className="px-2 py-1.5 text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Dark Themes</div>
+        <div className="px-2 py-1.5 text-[10px] text-tertiary uppercase tracking-widest font-black">Dark Themes</div>
         {THEMES.filter(t => t.base === "vs-dark" || t.base === "hc-black").map(t => (
           <ThemeOption key={t.id} theme={t} active={settings.theme === t.id} onSelect={() => onChange({ theme: t.id })} />
         ))}
-        <div className="h-px bg-zinc-700/50 my-1" />
-        <div className="px-2 py-1.5 text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Light Themes</div>
+        <div className="h-px bg-outline-variant/50 my-1" />
+        <div className="px-2 py-1.5 text-[10px] text-tertiary uppercase tracking-widest font-black">Light Themes</div>
         {THEMES.filter(t => t.base === "vs").map(t => (
           <ThemeOption key={t.id} theme={t} active={settings.theme === t.id} onSelect={() => onChange({ theme: t.id })} />
         ))}
       </Dropdown>
 
-      <div className="w-px h-4 bg-zinc-700/50 mx-1" />
+      <div className="w-px h-4 bg-outline-variant/50 mx-1" />
 
       {/* Font size */}
       <div className="flex items-center gap-0.5">
         <button
           onClick={() => onChange({ fontSize: Math.max(10, settings.fontSize - 1) })}
-          className="p-1 rounded text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]/50 transition-colors"
+          className="p-1 rounded-full text-tertiary hover:text-on-surface hover:bg-surface-container transition-colors"
           title="Decrease font size"
         >
-          <Minus className="w-3 h-3" />
+          <span className="material-symbols-outlined" style={{ fontSize: 12 }}>text_decrease</span>
         </button>
-        <span className="text-[var(--kf-text-secondary)] w-6 text-center tabular-nums" title="Font size">{settings.fontSize}</span>
+        <span className="text-secondary w-6 text-center tabular-nums" title="Font size">{settings.fontSize}</span>
         <button
           onClick={() => onChange({ fontSize: Math.min(28, settings.fontSize + 1) })}
-          className="p-1 rounded text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]/50 transition-colors"
+          className="p-1 rounded-full text-tertiary hover:text-on-surface hover:bg-surface-container transition-colors"
           title="Increase font size"
         >
-          <Plus className="w-3 h-3" />
+          <span className="material-symbols-outlined" style={{ fontSize: 12 }}>text_increase</span>
         </button>
       </div>
 
-      <div className="w-px h-4 bg-zinc-700/50 mx-1" />
+      <div className="w-px h-4 bg-outline-variant/50 mx-1" />
 
       {/* Quick toggles */}
       <ToolbarButton active={settings.minimap} title="Toggle minimap" onClick={() => onChange({ minimap: !settings.minimap })}>
-        <Map className="w-3 h-3" />
+        <span className="material-symbols-outlined" style={{ fontSize: 12 }}>map</span>
       </ToolbarButton>
 
       <ToolbarButton active={settings.wordWrap === "on"} title="Toggle word wrap" onClick={() => onChange({ wordWrap: settings.wordWrap === "on" ? "off" : "on" })}>
-        <WrapText className="w-3 h-3" />
+        <span className="material-symbols-outlined" style={{ fontSize: 12 }}>wrap_text</span>
       </ToolbarButton>
 
       {onFindReplace && (
         <ToolbarButton title="Find & Replace (Ctrl+H)" onClick={onFindReplace}>
-          <Search className="w-3 h-3" />
+          <span className="material-symbols-outlined" style={{ fontSize: 12 }}>find_replace</span>
         </ToolbarButton>
       )}
 
@@ -168,19 +156,19 @@ export function EditorToolbar({ settings, onChange, onFindReplace }: EditorToolb
       {/* Settings dropdown */}
       <Dropdown
         trigger={
-          <button className="p-1 rounded text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]/50 transition-colors" title="Editor settings">
-            <Settings2 className="w-3.5 h-3.5" />
+          <button className="p-1 rounded-full text-tertiary hover:text-on-surface hover:bg-surface-container transition-colors" title="Editor settings">
+            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>settings</span>
           </button>
         }
       >
-        <div className="px-2 py-1.5 text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Display</div>
+        <div className="px-2 py-1.5 text-[10px] text-tertiary uppercase tracking-widest font-black">Display</div>
 
         {/* Tab Size */}
-        <SettingsRow icon={<Indent className="w-3 h-3" />} label="Tab Size">
+        <SettingsRow icon={<span className="material-symbols-outlined" style={{ fontSize: 12 }}>tab</span>} label="Tab Size">
           <select
             value={settings.tabSize}
             onChange={e => onChange({ tabSize: Number(e.target.value) })}
-            className="bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] text-[11px] rounded px-1.5 py-0.5 border border-[var(--kf-border-muted)] outline-none"
+            className="bg-surface-container text-secondary text-[11px] rounded-full px-1.5 py-0.5 border border-outline-variant outline-none"
           >
             <option value={2}>2</option>
             <option value={4}>4</option>
@@ -189,11 +177,11 @@ export function EditorToolbar({ settings, onChange, onFindReplace }: EditorToolb
         </SettingsRow>
 
         {/* Line Numbers */}
-        <SettingsRow icon={<Hash className="w-3 h-3" />} label="Line Numbers">
+        <SettingsRow icon={<span className="material-symbols-outlined" style={{ fontSize: 12 }}>format_list_numbered</span>} label="Line Numbers">
           <select
             value={settings.lineNumbers}
             onChange={e => onChange({ lineNumbers: e.target.value as EditorSettings["lineNumbers"] })}
-            className="bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] text-[11px] rounded px-1.5 py-0.5 border border-[var(--kf-border-muted)] outline-none"
+            className="bg-surface-container text-secondary text-[11px] rounded-full px-1.5 py-0.5 border border-outline-variant outline-none"
           >
             <option value="on">On</option>
             <option value="off">Off</option>
@@ -202,11 +190,11 @@ export function EditorToolbar({ settings, onChange, onFindReplace }: EditorToolb
         </SettingsRow>
 
         {/* Cursor Style */}
-        <SettingsRow icon={<Type className="w-3 h-3" />} label="Cursor Blink">
+        <SettingsRow icon={<span className="material-symbols-outlined" style={{ fontSize: 12 }}>text_increase</span>} label="Cursor Blink">
           <select
             value={settings.cursorBlinking}
             onChange={e => onChange({ cursorBlinking: e.target.value as EditorSettings["cursorBlinking"] })}
-            className="bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] text-[11px] rounded px-1.5 py-0.5 border border-[var(--kf-border-muted)] outline-none"
+            className="bg-surface-container text-secondary text-[11px] rounded-full px-1.5 py-0.5 border border-outline-variant outline-none"
           >
             <option value="smooth">Smooth</option>
             <option value="blink">Blink</option>
@@ -217,11 +205,11 @@ export function EditorToolbar({ settings, onChange, onFindReplace }: EditorToolb
         </SettingsRow>
 
         {/* Whitespace */}
-        <SettingsRow icon={<SplitSquareHorizontal className="w-3 h-3" />} label="Whitespace">
+        <SettingsRow icon={<span className="material-symbols-outlined" style={{ fontSize: 12 }}>wrap_text</span>} label="Whitespace">
           <select
             value={settings.renderWhitespace}
             onChange={e => onChange({ renderWhitespace: e.target.value as EditorSettings["renderWhitespace"] })}
-            className="bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] text-[11px] rounded px-1.5 py-0.5 border border-[var(--kf-border-muted)] outline-none"
+            className="bg-surface-container text-secondary text-[11px] rounded-full px-1.5 py-0.5 border border-outline-variant outline-none"
           >
             <option value="none">None</option>
             <option value="boundary">Boundary</option>
@@ -229,8 +217,8 @@ export function EditorToolbar({ settings, onChange, onFindReplace }: EditorToolb
           </select>
         </SettingsRow>
 
-        <div className="h-px bg-zinc-700/50 my-1" />
-        <div className="px-2 py-1.5 text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Features</div>
+        <div className="h-px bg-outline-variant/50 my-1" />
+        <div className="px-2 py-1.5 text-[10px] text-tertiary uppercase tracking-widest font-black">Features</div>
 
         <SettingsToggle label="Sticky Scroll" checked={settings.stickyScroll} onChange={v => onChange({ stickyScroll: v })} />
         <SettingsToggle label="Bracket Colorization" checked={settings.bracketPairColorization} onChange={v => onChange({ bracketPairColorization: v })} />
@@ -246,13 +234,15 @@ function ThemeOption({ theme, active, onSelect }: { theme: ThemeMeta; active: bo
   return (
     <button
       onClick={onSelect}
-      className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
-        active ? "bg-indigo-500/15 text-indigo-300" : "text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]/50 hover:text-[var(--kf-text)]"
-      }`}
+      className={cn(
+        "w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors",
+        active ? "bg-primary/15 text-primary" : "text-secondary hover:bg-surface-container hover:text-on-surface"
+      )}
     >
-      <span className={`w-2.5 h-2.5 rounded-full border ${
-        active ? "bg-indigo-500 border-indigo-400" : "border-zinc-600"
-      }`} />
+      <span className={cn(
+        "w-2.5 h-2.5 rounded-full border",
+        active ? "bg-primary border-primary/70" : "border-outline-variant"
+      )} />
       {theme.label}
     </button>
   );
@@ -260,8 +250,8 @@ function ThemeOption({ theme, active, onSelect }: { theme: ThemeMeta; active: bo
 
 function SettingsRow({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-[var(--kf-text-secondary)]">
-      <div className="flex items-center gap-2 text-[var(--kf-text-secondary)]">
+    <div className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-secondary">
+      <div className="flex items-center gap-2 text-secondary">
         {icon}
         <span>{label}</span>
       </div>
@@ -274,11 +264,11 @@ function SettingsToggle({ label, checked, onChange }: { label: string; checked: 
   return (
     <button
       onClick={() => onChange(!checked)}
-      className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]/50 transition-colors"
+      className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-secondary hover:bg-surface-container transition-colors"
     >
       <span>{label}</span>
-      <div className={`w-7 h-4 rounded-full flex items-center px-0.5 transition-colors ${checked ? "bg-indigo-500" : "bg-zinc-700"}`}>
-        <div className={`w-3 h-3 rounded-full bg-white transition-transform ${checked ? "translate-x-3" : "translate-x-0"}`} />
+      <div className={cn("w-7 h-4 rounded-full flex items-center px-0.5 transition-colors", checked ? "bg-primary" : "bg-outline-variant")}>
+        <div className={cn("w-3 h-3 rounded-full bg-white transition-transform", checked ? "translate-x-3" : "translate-x-0")} />
       </div>
     </button>
   );

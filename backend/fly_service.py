@@ -26,9 +26,11 @@ load_dotenv(_BACKEND_DIR / ".env", override=False)
 FLY_API_TOKEN = ""
 FLY_ORG_SLUG = os.getenv("FLY_ORG_SLUG", "personal")
 FLY_API_HOST = os.getenv("FLY_API_HOSTNAME", "https://api.machines.dev")
-FLY_REGION = os.getenv("FLY_SANDBOX_REGION", "ord")
-FLY_SANDBOX_BASE_APP = os.getenv("FLY_SANDBOX_BASE_APP", "kith-sandbox-base")
+FLY_REGION = os.getenv("FLY_SANDBOX_REGION", os.getenv("SANDBOX_REGION", "ord"))
+FLY_SANDBOX_BASE_APP = os.getenv("FLY_SANDBOX_BASE_APP", os.getenv("SANDBOX_APP", "kith-sandbox-base"))
 BRIDGE_SECRET = os.getenv("FLY_BRIDGE_SECRET") or secrets.token_urlsafe(32)
+# The URL the sandbox bootstrap uses to call home and fetch the workspace bundle.
+SANDBOX_CONTROL_PLANE_URL = os.getenv("SANDBOX_CONTROL_PLANE_URL", "https://api.forgeoperator.com")
 
 # Shared IPv4s are allocated per app. We resolve and use the app's actual
 # shared ingress IPv4 directly to bypass local DNS propagation delays.
@@ -209,10 +211,11 @@ def _resolve_sandbox_image() -> str:
     if _resolved_image:
         return _resolved_image
 
-    env_override = os.getenv("FLY_SANDBOX_IMAGE", "")
+    # Check both FLY_SANDBOX_IMAGE (explicit override) and SANDBOX_IMAGE (imported from .env)
+    env_override = os.getenv("FLY_SANDBOX_IMAGE", "") or os.getenv("SANDBOX_IMAGE", "")
     if env_override:
         _resolved_image = env_override
-        print(f"[fly] Using image from FLY_SANDBOX_IMAGE env: {_resolved_image}")
+        print(f"[fly] Using image from env: {_resolved_image}")
         return _resolved_image
 
     token = _get_fly_api_token()
@@ -363,6 +366,7 @@ class FlySandboxWorker:
                 "env": {
                     "FLY_APP_NAME": self.app_name,
                     "BRIDGE_SECRET": self._bridge_secret,
+                    "CONTROL_PLANE_URL": SANDBOX_CONTROL_PLANE_URL,
                 },
                 "guest": {"cpu_kind": "shared", "cpus": 2, "memory_mb": 4096},
                 "services": [
@@ -372,8 +376,9 @@ class FlySandboxWorker:
                         "ports": [{"port": 80, "handlers": ["http"]}, {"port": 443, "handlers": ["tls", "http"]}],
                         # Keep the machine alive — Fly's default is to stop idle machines,
                         # which causes ERR_CONNECTION_CLOSED for users still looking at the preview.
-                        "auto_stop_machines": "off",
-                        "auto_start_machines": True,
+                        # Field names per Machines API v1 schema: "autostop" / "autostart"
+                        "autostop": "off",
+                        "autostart": True,
                         "min_machines_running": 1,
                     }
                 ],
@@ -383,6 +388,7 @@ class FlySandboxWorker:
                 "POST",
                 f"/apps/{self.app_name}/machines",
                 json_body={"config": config, "region": FLY_REGION, "lease_ttl": 120},
+                timeout=30.0,
             )
             self.machine_id = machine.get("id")
             self.preview_url = f"https://{app_name}.fly.dev"
@@ -636,7 +642,7 @@ class FlySandboxWorker:
         return w
 
 
-def get_or_create_worker(project_id: str, max_retries: int = 2) -> FlySandboxWorker:
+def get_or_create_worker(project_id: str, max_retries: int = 3) -> FlySandboxWorker:
     """Get existing Fly sandbox worker or create new one.
 
     Lookup order:
@@ -738,7 +744,9 @@ def get_or_create_worker(project_id: str, max_retries: int = 2) -> FlySandboxWor
                 print(f"[fly] Traceback:\n{traceback.format_exc()}")
                 worker.destroy()
                 if attempt < max_retries - 1:
-                    time.sleep(3)
+                    backoff = 8 * (attempt + 1)
+                    print(f"[fly] Retrying sandbox creation in {backoff}s...")
+                    time.sleep(backoff)
         raise RuntimeError(f"Failed to create Fly sandbox for {project_id}")
 
 

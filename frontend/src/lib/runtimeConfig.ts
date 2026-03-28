@@ -3,6 +3,25 @@ function getEnv(name: string): string | undefined {
     return value?.trim() || undefined;
 }
 
+const CHALLENGED_API_HOSTS = new Set(["sandbox-api.forgeoperator.com", "api.forgeoperator.com"]);
+const FALLBACK_API_BASE = "https://kith-backend.fly.dev";
+
+function normalizeApiBase(base: string | undefined): string {
+    if (!base) return "";
+    const cleaned = base.replace(/\/+$/, "");
+    try {
+        const u = new URL(cleaned);
+        // Production safeguard: Cloudflare challenge pages from sandbox-api
+        // can return HTML for API calls. Route directly to Fly backend.
+        if (CHALLENGED_API_HOSTS.has(u.hostname)) {
+            return FALLBACK_API_BASE;
+        }
+    } catch {
+        // ignore parse errors and return as-is
+    }
+    return cleaned;
+}
+
 /**
  * Returns the API base URL.
  * - Explicit VITE_API_BASE_URL env var: use it (for staging/prod pointing at separate backend)
@@ -12,7 +31,7 @@ function getEnv(name: string): string | undefined {
 export function getApiBaseUrl(): string {
     const explicit = getEnv("VITE_API_BASE_URL");
     if (explicit) {
-        return explicit.replace(/\/+$/, "");
+        return normalizeApiBase(explicit);
     }
     return ""; // same-origin: let proxy/server handle routing
 }
@@ -31,7 +50,7 @@ export function getWsUrl(path: string): string {
     }
 
     // Derive from API base URL so one env var controls both (WSL, Docker, etc.)
-    const apiBase = getEnv("VITE_API_BASE_URL");
+    const apiBase = getApiBaseUrl();
     if (apiBase) {
         try {
             const url = new URL(apiBase);

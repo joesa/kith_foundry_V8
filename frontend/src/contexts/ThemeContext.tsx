@@ -3,68 +3,49 @@ import { createContext, useContext, useEffect, useState, useCallback, type React
 export type ThemeMode = "dark" | "light";
 
 interface ThemeContextType {
-    theme: ThemeMode;
-    toggleTheme: () => void;
-    setTheme: (theme: ThemeMode) => void;
+  theme: ThemeMode;
+  toggleTheme: () => void;
+  setTheme: (theme: ThemeMode) => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-// Default to dark mode for better visual impact
+const STORAGE_KEY = "forge-theme";
 const DEFAULT_THEME: ThemeMode = "dark";
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-    const [theme, setThemeState] = useState<ThemeMode>(DEFAULT_THEME);
+  const [theme, setThemeState] = useState<ThemeMode>(() => {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return (stored === "light" || stored === "dark") ? stored : DEFAULT_THEME;
+  });
 
-    // Apply theme to document and localStorage
-    useEffect(() => {
-        const root = window.document.documentElement;
-        root.classList.remove("dark", "light");
-        root.classList.add(theme);
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "light") {
+      root.setAttribute("data-theme", "light");
+    } else {
+      root.removeAttribute("data-theme");
+    }
+    localStorage.setItem(STORAGE_KEY, theme);
+  }, [theme]);
 
-        // Save to localStorage
-        localStorage.setItem("kith-theme", theme);
+  const toggleTheme = useCallback(() => {
+    setThemeState((prev) => (prev === "dark" ? "light" : "dark"));
+  }, []);
 
-        // Set CSS variables for generated mockups
-        const generatedMockup = document.getElementById("generated-mockup-frame");
-        if (generatedMockup) {
-            const style = document.createElement("style");
-            style.id = "mockup-theme-vars";
-            const isDark = theme === "dark";
-            style.textContent = `
-                :root {
-                    --mockup-bg: ${isDark ? "#0A0D1A" : "#F8F9FA"};
-                    --mockup-surface: ${isDark ? "#121832" : "#FFFFFF"};
-                    --mockup-border: ${isDark ? "#2D3A66" : "#E5E7EB"};
-                    --mockup-text: ${isDark ? "#E8EEFF" : "#1F2937"};
-                    --mockup-muted: ${isDark ? "#9DB0DE" : "#6B7280"};
-                    --mockup-primary: ${isDark ? "#7C5CFF" : "#4F46E5"};
-                    --mockup-accent: ${isDark ? "#A855F7" : "#8B5CF6"};
-                }
-            `;
-            generatedMockup.appendChild(style);
-        }
-    }, [theme]);
+  const setTheme = useCallback((newTheme: ThemeMode) => {
+    setThemeState(newTheme);
+  }, []);
 
-    const toggleTheme = useCallback(() => {
-        setThemeState((prev) => (prev === "dark" ? "light" : "dark"));
-    }, []);
-
-    const setTheme = useCallback((newTheme: ThemeMode) => {
-        setThemeState(newTheme);
-    }, []);
-
-    return (
-        <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
-            {children}
-        </ThemeContext.Provider>
-    );
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
 }
 
 export function useTheme() {
-    const context = useContext(ThemeContext);
-    if (context === undefined) {
-        throw new Error("useTheme must be used within a ThemeProvider");
-    }
-    return context;
+  const context = useContext(ThemeContext);
+  if (context === undefined) throw new Error("useTheme must be used within a ThemeProvider");
+  return context;
 }

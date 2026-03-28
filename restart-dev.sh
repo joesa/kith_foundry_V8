@@ -49,19 +49,22 @@ REDIS_LOG="$LOG_DIR/redis-proxy.log"
 
 ACTION="restart"
 WSL_SHUTDOWN=0
+FOLLOW_LOGS=0
 
 usage() {
   cat <<'EOF'
-Usage: ./restart-dev.sh [start|stop|restart|status] [--wsl-shutdown]
+Usage: ./restart-dev.sh [start|stop|restart|status|logs] [--wsl-shutdown] [--logs]
 
 Commands:
   start           Start backend and frontend
   stop            Stop backend and frontend
   restart         Stop then start backend and frontend
   status          Show current status and recent log locations
+  logs            Tail all service logs in one combined stream
 
 Options:
   --wsl-shutdown  If a port listener survives normal stop, also run `wsl --shutdown`
+  --logs          After start/restart, attach combined log stream
 
 Environment overrides:
   KITH_CONDA_EXE=/c/Users/treas/miniconda3/Scripts/conda.exe
@@ -75,17 +78,22 @@ Environment overrides:
   BACKEND_PORT=8000
   FRONTEND_PORT=5173
   INNGEST_PORT=8288
+  KITH_LOG_TAIL_LINES=80
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    start|stop|restart|status)
+    start|stop|restart|status|logs)
       ACTION="$1"
       shift
       ;;
     --wsl-shutdown)
       WSL_SHUTDOWN=1
+      shift
+      ;;
+    --logs)
+      FOLLOW_LOGS=1
       shift
       ;;
     -h|--help)
@@ -101,6 +109,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
+touch "$BACKEND_LOG" "$FRONTEND_LOG" "$INNGEST_LOG" "$REDIS_LOG"
 
 log() {
   printf '[kith-dev] %s\n' "$*"
@@ -424,6 +433,48 @@ status_services() {
   log "Redis proxy log: $REDIS_LOG"
 }
 
+stream_logs() {
+  local lines="${KITH_LOG_TAIL_LINES:-80}"
+  local pids=()
+
+  log "Streaming combined logs (Ctrl+C to exit)"
+  log "Showing last $lines lines per service, then following live output"
+
+  (
+    tail -n "$lines" -F "$BACKEND_LOG" 2>/dev/null \
+      | sed -u $'s/^/\033[36m[backend]\033[0m /'
+  ) &
+  pids+=("$!")
+
+  (
+    tail -n "$lines" -F "$FRONTEND_LOG" 2>/dev/null \
+      | sed -u $'s/^/\033[35m[frontend]\033[0m /'
+  ) &
+  pids+=("$!")
+
+  (
+    tail -n "$lines" -F "$INNGEST_LOG" 2>/dev/null \
+      | sed -u $'s/^/\033[33m[inngest]\033[0m /'
+  ) &
+  pids+=("$!")
+
+  (
+    tail -n "$lines" -F "$REDIS_LOG" 2>/dev/null \
+      | sed -u $'s/^/\033[32m[redis]\033[0m /'
+  ) &
+  pids+=("$!")
+
+  cleanup_stream_logs() {
+    local pid
+    for pid in "${pids[@]}"; do
+      kill "$pid" >/dev/null 2>&1 || true
+    done
+  }
+
+  trap cleanup_stream_logs INT TERM EXIT
+  wait
+}
+
 start_services() {
   stop_port_listeners "$BACKEND_PORT"
   stop_port_listeners "$FRONTEND_PORT"
@@ -441,6 +492,11 @@ start_services() {
 
   log "Restart complete"
   status_services
+  if [[ "$FOLLOW_LOGS" == "1" ]]; then
+    stream_logs
+  else
+    log "Tip: run ./restart-dev.sh logs to watch a unified live log stream"
+  fi
 }
 
 case "$ACTION" in
@@ -456,5 +512,8 @@ case "$ACTION" in
     ;;
   status)
     status_services
+    ;;
+  logs)
+    stream_logs
     ;;
 esac

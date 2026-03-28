@@ -15,6 +15,7 @@ Pipeline:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -238,35 +239,46 @@ async def _call_llm(
     model_id: str,
     llm_kwargs: dict,
     temperature: float = 0.4,
+    timeout: float = 90.0,
 ) -> dict | None:
-    """Make a single LLM call and parse JSON output."""
+    """Make a single LLM call (streaming internally) and parse JSON output."""
     provider = llm_breaker.extract_provider(model_id)
     try:
         llm_breaker.check(provider)
-        response = await llm_breaker.call(
-            provider,
-            litellm.acompletion(
+
+        async def _stream() -> str:
+            chunks: list[str] = []
+            resp = await litellm.acompletion(
                 model=model_id,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=temperature,
-                stream=False,
-                timeout=llm_breaker.default_timeout,
+                stream=True,
                 **llm_kwargs,
-            ),
-        )
-        raw = response.choices[0].message.content or ""
+            )
+            async for chunk in resp:
+                delta = chunk.choices[0].delta.content or ""
+                chunks.append(delta)
+            return "".join(chunks)
+
+        raw = await asyncio.wait_for(_stream(), timeout=timeout)
+        llm_breaker.record_success(provider)
         result = _extract_json(raw)
         if isinstance(result, dict):
             return result
         print(f"[design_engine] LLM returned non-dict JSON: {type(result)}")
         return None
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        llm_breaker.record_failure(provider)
+        print(f"[design_engine] LLM call timed out after {timeout}s: {e}")
+        return None
     except CircuitOpenError as e:
         print(f"[design_engine] Circuit open: {e}")
         return None
     except Exception as e:
+        llm_breaker.record_failure(provider)
         print(f"[design_engine] LLM call failed: {e}")
         return None
 
@@ -315,7 +327,13 @@ async def generate_design_brief(
 Output strict JSON as specified. Focus on making the design direction authentic
 to this specific product — not a generic template."""
 
-    return await _call_llm(DESIGN_BRIEF_PROMPT, user_prompt, model_id, llm_kwargs)
+    return await _call_llm(
+        DESIGN_BRIEF_PROMPT,
+        user_prompt,
+        model_id,
+        llm_kwargs,
+        timeout=60.0,
+    )
 
 
 async def generate_design_system(
@@ -390,7 +408,14 @@ Generate ALL pages needed for a fully functional application.
 Every navigation link must have a corresponding page. No placeholder pages.
 Output strict JSON as specified."""
 
-    return await _call_llm(DESIGN_ARCHITECT_PROMPT, user_prompt, model_id, llm_kwargs, temperature=0.5)
+    return await _call_llm(
+        DESIGN_ARCHITECT_PROMPT,
+        user_prompt,
+        model_id,
+        llm_kwargs,
+        temperature=0.5,
+        timeout=180.0,
+    )
 
 
 async def run_full_design_pipeline(
@@ -457,6 +482,8 @@ async def run_full_design_pipeline(
         project, db, model_id, llm_kwargs,
         design_mode=resolved_mode, design_style=resolved_style, mode_context=mode_context,
     )
+    if not brief:
+        return {"error": "Design brief generation timed out or failed. Please retry.", "brief": None}
     if progress_callback:
         await progress_callback("design_brief_complete", {"brief": brief})
 
@@ -470,7 +497,7 @@ async def run_full_design_pipeline(
     )
 
     if not design_system:
-        return {"error": "Design system generation failed", "brief": brief}
+        return {"error": "Design system generation timed out or failed. Please retry.", "brief": brief}
 
     framework = design_system.setdefault("design_framework", {})
     framework["design_mode"] = resolved_mode

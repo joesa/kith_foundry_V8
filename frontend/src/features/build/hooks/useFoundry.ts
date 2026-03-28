@@ -1,18 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { TreeNode } from "../components/FileExplorer";
-import { getWsUrl } from "../lib/runtimeConfig";
-import { useAuth } from "../contexts/AuthContext";
+import type { TreeNode } from "../../../components/workspace/FileExplorer";
+import { getWsUrl } from "../../../lib/runtimeConfig";
+import { useAuth } from "../../../contexts/AuthContext";
 
 const DEFAULT_APP_TSX = `// Your app will appear here after generation
 import './App.css'
 
 function App() {
-  return (
-    <div className="kith-container">
-      <h1>Kith Foundry</h1>
-      <p>Describe what you want to build...</p>
-    </div>
-  )
+    return (
+        <main style={{ padding: '24px', fontFamily: 'system-ui, sans-serif' }}>
+            <h1>Preview Ready</h1>
+            <p>Describe the product requirements and generate the app.</p>
+        </main>
+    )
 }
 
 export default App
@@ -64,11 +64,19 @@ export function useFoundry(projectId?: string) {
 
     const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
     const ws = useRef<WebSocket | null>(null);
+    const pendingCommandRef = useRef<{ prompt: string; model: string; images: string[] } | null>(null);
 
     // Conversation streaming state
     const [assistantStreaming, setAssistantStreaming] = useState(false);
     const [streamingAssistantMessage, setStreamingAssistantMessage] = useState("");
     const assistantMessageRef = useRef("");
+
+    // Build pipeline state (orchestration stages, patches, sandbox logs, security scans)
+    const [buildStage, setBuildStage] = useState<{ stage: string; status: string } | null>(null);
+    const [patchProposals, setPatchProposals] = useState<Array<{ file: string; diff: string; status: string }>>([]);
+    const [sandboxLogs, setSandboxLogs] = useState<Array<{ ts: number; level: string; message: string }>>([]);
+    const [securityScan, setSecurityScan] = useState<{ status: string; violations: Array<{ category: string; detail: string }> } | null>(null);
+    const [sandboxFailed, setSandboxFailed] = useState(false);
 
     // Auto-fix: debounced error collection from preview iframe
     const pendingErrors = useRef<Array<{ source: string, message: string, stack?: string }>>([]);
@@ -180,6 +188,16 @@ export function useFoundry(projectId?: string) {
                 reconnectAttempts.current = 0;
                 setWsConnected(true);
                 setStatus("idle");
+
+                // Flush one queued command if send was attempted during reconnect.
+                const pending = pendingCommandRef.current;
+                if (pending) {
+                    socket.send(JSON.stringify(pending));
+                    pendingCommandRef.current = null;
+                    setStatus("analyzing");
+                    setMessages(prev => [...prev, { role: "system", content: "Reconnected. Resuming generation..." }]);
+                }
+
                 // Clear stale sandbox URL — new sandbox_ready will set the fresh one.
                 // This prevents the iframe from showing a 404 from the previous session's sandbox.
                 probeGen.current++; // invalidate any in-flight probe chains
@@ -189,11 +207,25 @@ export function useFoundry(projectId?: string) {
                 setPreviewUrl(null);
             };
 
+            socket.onerror = () => {
+                if (destroyed) return;
+                setMessages(prev => [...prev, { role: "system", content: "Connection hiccup detected. Reconnecting..." }]);
+                setStatus("reconnecting");
+            };
+
             socket.onclose = (e) => {
                 if (destroyed) return;
                 setWsConnected(false);
                 // Don't reconnect on auth failure (4401) or not found (4404)
-                if (e.code === 4401 || e.code === 4404) return;
+                    if (e.code === 4401) {
+                        getAccessToken().then((freshToken) => {
+                            if (freshToken && freshToken !== wsToken) {
+                                setWsToken(freshToken);
+                            }
+                        });
+                        return;
+                    }
+                    if (e.code === 4404) return;
                 const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 15000);
                 reconnectAttempts.current += 1;
                 console.log(`WS closed (${e.code}), reconnecting in ${delay}ms...`);
@@ -202,17 +234,36 @@ export function useFoundry(projectId?: string) {
             };
 
             socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
+            let data: any;
+            try {
+                data = JSON.parse(event.data);
+            } catch {
+                setMessages(prev => [...prev, { role: "system", content: "Received an invalid server message. Please retry." }]);
+                setStatus("idle");
+                return;
+            }
 
             if (data.type === "status") {
                 setStatus(data.status);
                 if (data.message) {
                     setMessages(prev => [...prev, { role: "system", content: data.message }]);
                 }
+            } else if (data.type === "sandbox_failed") {
+                setSandboxFailed(true);
+                // Unblock the auto-build gate — hasExistingFiles must be set so
+                // the editor is usable even without a live sandbox.
+                setHasExistingFiles(prev => prev ?? false);
+                if (data.message) {
+                    setMessages(prev => [...prev, { role: "system", content: data.message }]);
+                }
             } else if (data.type === "sandbox_ready") {
-                const pUrl: string | null = data.previewUrl && data.previewUrl !== "null" ? data.previewUrl : null;
-                setPreviewUrl(pUrl);
-                previewUrlRef.current = pUrl;
+                setSandboxFailed(false);
+                setStatus("idle"); // build gate passed — clear verifying_build
+                const pUrl: string | null = (data.previewUrl && data.previewUrl !== "null" && data.previewUrl !== "") ? data.previewUrl : null;
+                if (pUrl) {
+                    setPreviewUrl(pUrl);
+                    previewUrlRef.current = pUrl;
+                }
                 if (typeof data.fileCount === "number") {
                     setHasExistingFiles(data.fileCount > 0);
                 }
@@ -303,11 +354,12 @@ export function useFoundry(projectId?: string) {
                 }));
                 setMessages(prev => [...prev, { role: "system", content: `✓ Generated ${data.file}` }]);
             } else if (data.type === "stream_end") {
-                // All files done streaming
+                // All files done streaming — backend is now running the Vite gate
                 console.log("Stream ended");
                 setIsStreaming(false);
                 setStreamingFile(null);
                 streamBuffer.current = "";
+                setStatus("verifying_build");
             } else if (data.type === "file_written") {
                 if (!data.file || data.file === "unknown") return;
                 console.log(`File written: ${data.file}`);
@@ -338,6 +390,9 @@ export function useFoundry(projectId?: string) {
                     setStatus("fixing");
                 } else if (data.status === "fixed" && data.message) {
                     setMessages(prev => [...prev, { role: "system", content: data.message }]);
+                    setStatus("idle");
+                } else if (data.status === "skipped" || data.status === "failed") {
+                    setStatus("idle");
                 }
                 // "skipped" and "failed" are silent
             } else if (data.type === "chat_token") {
@@ -351,6 +406,23 @@ export function useFoundry(projectId?: string) {
                 if (data.message) {
                     setMessages(prev => [...prev, { role: "assistant", content: data.message }]);
                 }
+            } else if (data.type === "build_stage") {
+                setBuildStage({ stage: data.stage, status: data.status });
+                if (data.stage && data.status) {
+                    setMessages(prev => [...prev, { role: "system", content: `Build: ${data.stage} — ${data.status}` }]);
+                }
+            } else if (data.type === "patch_proposal") {
+                setPatchProposals(prev => [...prev, { file: data.file, diff: data.diff, status: data.status || "pending" }]);
+            } else if (data.type === "sandbox_log") {
+                setSandboxLogs(prev => {
+                    const next = [...prev, { ts: data.ts || Date.now(), level: data.level || "info", message: data.message }];
+                    return next.slice(-200);
+                });
+            } else if (data.type === "security_scan") {
+                setSecurityScan({ status: data.status, violations: data.violations || [] });
+                if (data.violations?.length) {
+                    setMessages(prev => [...prev, { role: "system", content: `Security scan: ${data.violations.length} issue(s) found` }]);
+                }
             } else if (data.type === "error") {
                 if (data.message === "Authentication failed") {
                     // Token may have expired — force refresh and reconnect
@@ -362,6 +434,7 @@ export function useFoundry(projectId?: string) {
                     });
                 }
                 setMessages(prev => [...prev, { role: "system", content: `Error: ${data.message}` }]);
+                setStatus("idle");
                 setIsStreaming(false);
                 setStreamingFile(null);
                 setAssistantStreaming(false);
@@ -387,10 +460,14 @@ export function useFoundry(projectId?: string) {
 
     const sendCommand = useCallback((prompt: string, model: string = "", images: string[] = []) => {
         setMessages(prev => [...prev, { role: "user", content: prompt || `[${images.length} image(s) attached]` }]);
+        const payload = { prompt, model, images };
         if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-            ws.current.send(JSON.stringify({ prompt, model, images }));
+            ws.current.send(JSON.stringify(payload));
         } else {
-            console.error("WebSocket not connected");
+            pendingCommandRef.current = payload;
+            setStatus("reconnecting");
+            setMessages(prev => [...prev, { role: "system", content: "Connection is recovering. Your request is queued and will send automatically." }]);
+            console.error("WebSocket not connected; queued command for resend");
         }
     }, []);
 
@@ -409,7 +486,12 @@ export function useFoundry(projectId?: string) {
         streamingFile,
         isStreaming,
         assistantStreaming,
-        streamingAssistantMessage
+        streamingAssistantMessage,
+        buildStage,
+        patchProposals,
+        sandboxLogs,
+        securityScan,
+        sandboxFailed,
     };
 }
 

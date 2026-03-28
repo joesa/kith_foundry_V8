@@ -232,6 +232,26 @@ def get_design_context(project_id: str) -> str:
                     "## CDO Design Foundation\n\n" + "\n".join(parts)
                 )
 
+        # ── Executive Strategy (Synthesizer) ─────────────────────────────
+        synth = db.query(CSuiteAnalysis).filter(
+            CSuiteAnalysis.project_id == project_id,
+            CSuiteAnalysis.agent_role == CSuiteRole.synthesizer,
+        ).first()
+
+        if synth and synth.analysis:
+            sa = synth.analysis if isinstance(synth.analysis, dict) else {}
+            synth_parts = []
+            if sa.get("recommendation"):
+                synth_parts.append(f"Strategic Direction: {sa['recommendation']}")
+            if sa.get("priority_actions"):
+                synth_parts.append("Priority Actions:")
+                for a in sa["priority_actions"][:5]:
+                    synth_parts.append(f"  - {a}")
+            if synth_parts:
+                sections.append(
+                    "## Executive Strategy\n\n" + "\n".join(synth_parts)
+                )
+
         # ── Design System Foundation artifact ────────────────────────────
         dsf = _engine_art or db.query(Artifact).filter(
             Artifact.project_id == project_id,

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { Sparkles, Code2, Layers, Zap, Palette, Globe } from "lucide-react";
-import { useTheme } from "../contexts/ThemeContext";
+import { useTheme } from "../../contexts/ThemeContext";
 
 const TIPS = [
     "\"Build me a beautiful todo app with dark mode\"",
@@ -30,7 +29,7 @@ export function WelcomeScreen() {
 
     return (
         <div
-            className={`flex flex-col items-center justify-center h-full w-full transition-opacity duration-700 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+            className={`flex flex-col items-center justify-center h-full w-full transition-opacity duration-700 bg-surface ${fadeIn ? "opacity-100" : "opacity-0"}`}
             style={{
                 background: isDark
                     ? "linear-gradient(145deg, #0c0c14, #0e0f1a 40%, #110e1c 70%, #0c0c14)"
@@ -68,18 +67,19 @@ export function WelcomeScreen() {
                         ? "0 0 40px rgba(99,102,241,0.3), 0 0 80px rgba(168,85,247,0.15)"
                         : "0 0 40px rgba(99,102,241,0.15), 0 0 80px rgba(168,85,247,0.08)",
                 }}>
-                    <Sparkles size={28} color="white" />
+                    <span className="material-symbols-outlined" style={{ fontSize: 28, color: "white" }}>auto_awesome</span>
                 </div>
             </div>
 
             {/* Title */}
-            <h2 style={{
-                fontSize: 26, fontWeight: 700,
+            <h2 className="cinematic-tracking" style={{
+                fontSize: 26, fontWeight: 900,
                 background: "linear-gradient(135deg, #818cf8, #c084fc, #f472b6)",
                 WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
                 backgroundClip: "text",
                 letterSpacing: -0.5,
                 marginBottom: 8,
+                textTransform: "uppercase",
             }}>
                 Kith Foundry
             </h2>
@@ -93,11 +93,11 @@ export function WelcomeScreen() {
                 gap: 10, marginBottom: 32, width: "100%", maxWidth: 300, padding: "0 16px",
             }}>
                 {[
-                    { icon: Code2, label: "Multi-file generation", delay: "0s" },
-                    { icon: Layers, label: "Component architecture", delay: "0.1s" },
-                    { icon: Palette, label: "Design system aware", delay: "0.2s" },
-                    { icon: Globe, label: "Live preview", delay: "0.3s" },
-                ].map(({ icon: Icon, label, delay }) => (
+                    { icon: "code", label: "Multi-file generation", delay: "0s" },
+                    { icon: "architecture", label: "Component architecture", delay: "0.1s" },
+                    { icon: "palette", label: "Design system aware", delay: "0.2s" },
+                    { icon: "preview", label: "Live preview", delay: "0.3s" },
+                ].map(({ icon, label, delay }) => (
                     <div
                         key={label}
                         style={{
@@ -108,7 +108,7 @@ export function WelcomeScreen() {
                             animation: `slideUp 0.5s ease ${delay} both`,
                         }}
                     >
-                        <Icon size={14} style={{ color: "#818cf8", flexShrink: 0 }} />
+                        <span className="material-symbols-outlined" style={{ fontSize: 14, color: "#818cf8", flexShrink: 0 }}>{icon}</span>
                         <span style={{ color: isDark ? "#a1a1aa" : "#52525b", fontSize: 11, lineHeight: 1.3 }}>{label}</span>
                     </div>
                 ))}
@@ -122,7 +122,7 @@ export function WelcomeScreen() {
                 borderRadius: 8, padding: "8px 14px",
                 maxWidth: 300,
             }}>
-                <Zap size={12} style={{ color: "#6366f1", flexShrink: 0 }} />
+                <span className="material-symbols-outlined" style={{ fontSize: 12, color: "#6366f1", flexShrink: 0 }}>bolt</span>
                 <p
                     key={activeTip}
                     style={{

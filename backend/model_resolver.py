@@ -136,10 +136,10 @@ def _env_fallback() -> dict:
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if anthropic_key:
-        return {"model": "anthropic/claude-sonnet-4-20250514", "api_key": anthropic_key, "api_base": None, "provider_name": "Server (Anthropic)"}
     if openai_key:
         return {"model": "gpt-4o", "api_key": openai_key, "api_base": None, "provider_name": "Server (OpenAI)"}
+    if anthropic_key:
+        return {"model": "anthropic/claude-sonnet-4-20250514", "api_key": anthropic_key, "api_base": None, "provider_name": "Server (Anthropic)"}
     if gemini_key:
         return {"model": "gemini/gemini-2.5-flash", "api_key": gemini_key, "api_base": None, "provider_name": "Server (Google AI)"}
     return {"model": None, "api_key": None, "api_base": None, "provider_name": None,

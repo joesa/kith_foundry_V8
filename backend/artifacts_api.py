@@ -75,6 +75,52 @@ Format as a professional PRD with numbered sections.""",
 
 Format as a professional technical document.""",
     },
+    "db_plan": {
+        "type": ArtifactType.db_plan,
+        "title": "Database Plan",
+        "prompt": """Write a detailed Database Plan. Include:
+- Data model overview and entity-relationship diagram description
+- Table definitions with columns, types, and constraints
+- Primary and foreign key relationships
+- Indexing strategy
+- Data migration plan
+- Seed data requirements
+- Query patterns and optimization notes
+- Backup and disaster recovery strategy
+
+Format as a professional database design document with clear table schemas.""",
+    },
+    "auth_plan": {
+        "type": ArtifactType.auth_plan,
+        "title": "Authentication & Authorization Plan",
+        "prompt": """Write a detailed Authentication and Authorization Plan. Include:
+- Authentication strategy (OAuth2, JWT, session-based, etc.)
+- Identity provider integration
+- User roles and permissions matrix
+- Row-level security policies
+- API endpoint authorization rules
+- Token management (refresh, expiry, revocation)
+- Multi-factor authentication considerations
+- Security headers and CORS policy
+- Rate limiting and brute-force protection
+
+Format as a professional security architecture document.""",
+    },
+    "implementation_phases": {
+        "type": ArtifactType.implementation_phases,
+        "title": "Implementation Phases",
+        "prompt": """Write a detailed Implementation Phases plan. Include:
+- Phase 1: Foundation (Week 1-2) — project setup, CI/CD, core infrastructure
+- Phase 2: Core Features (Week 3-4) — primary user-facing functionality
+- Phase 3: Integration (Week 5-6) — third-party services, auth, payments
+- Phase 4: Polish (Week 7-8) — UX refinement, edge cases, accessibility
+- Phase 5: Launch Prep (Week 9-10) — testing, staging, documentation, deployment
+- For each phase: specific tasks, deliverables, acceptance criteria, and dependencies
+- Risk mitigation per phase
+- Team allocation recommendations
+
+Format as an actionable sprint plan with clear milestones.""",
+    },
     "market_analysis": {
         "type": ArtifactType.market_analysis,
         "title": "Market Analysis",
@@ -228,7 +274,7 @@ Provide exact CSS variable names and values where applicable. Format tokens as C
     },
 }
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+DEFAULT_MODEL = "gpt-4o"
 
 def _get_model():
     return os.getenv("ARTIFACT_MODEL", DEFAULT_MODEL)
@@ -241,10 +287,31 @@ def _build_project_context(project: Project) -> str:
         idea_context = json.dumps(project.idea.content, indent=2)
 
     csuite_summaries = []
+    synth_strategy = ""
     for analysis in project.csuite_analyses:
-        if analysis.analysis:
+        if not analysis.analysis:
+            continue
+        role = analysis.agent_role.value
+        if role == "synthesizer":
+            # The synthesizer's deep output is the aligned executive strategy
+            data = analysis.analysis
+            synth_parts = [f"**EXECUTIVE SYNTHESIZER** (Score: {analysis.score}/100)"]
+            if data.get("recommendation"):
+                synth_parts.append(f"Recommendation: {data['recommendation']}")
+            if data.get("deep_analysis"):
+                synth_parts.append(f"Strategic Analysis:\n{data['deep_analysis']}")
+            if data.get("priority_actions"):
+                synth_parts.append("Priority Actions:\n" + "\n".join(f"- {a}" for a in data["priority_actions"]))
+            if data.get("risks"):
+                synth_parts.append("Existential Risks:\n" + "\n".join(f"- {r}" for r in data["risks"]))
+            if data.get("strengths"):
+                synth_parts.append("Core Strengths:\n" + "\n".join(f"- {s}" for s in data["strengths"]))
+            if data.get("timeline"):
+                synth_parts.append(f"Timeline: {data['timeline']}")
+            synth_strategy = "\n".join(synth_parts)
+        else:
             csuite_summaries.append(
-                f"**{analysis.agent_role.value.upper()}** (Score: {analysis.score}/100): "
+                f"**{role.upper()}** (Score: {analysis.score}/100): "
                 f"{analysis.analysis.get('recommendation', 'N/A')}"
             )
 
@@ -256,7 +323,10 @@ Problem Statement: {project.problem_statement or 'N/A'}
 Idea Details:
 {idea_context}
 
-C-Suite Analysis Summaries:
+Executive Strategy (Synthesized from all C-Suite agents):
+{synth_strategy if synth_strategy else 'Not yet synthesized'}
+
+Individual C-Suite Agent Summaries:
 {chr(10).join(csuite_summaries) if csuite_summaries else 'Not yet analyzed'}"""
 
 
@@ -349,61 +419,25 @@ Available libraries (pre-installed, ready to import):
 
 Implementation requirements:
 - Build the COMPLETE application in a single generation — every page fully built
+- Treat the Requirements package above as the source of truth for domain, entities, workflows, and routes
+- If current scaffold/default files conflict with the requirements, REPLACE them
+- Do NOT build a generic app-builder shell, "Kith Foundry" UI, or unrelated template pages unless explicitly required
+- Do NOT include unrelated navigation like "How it works", "Stories", or pricing marketing pages unless those are explicitly in the requirements
+- Ensure route structure matches the PRD workflow (for StockShelf: onboarding, POS connect, recommendation actions, execution tracking, impact view, integration health, billing/support)
 - Use react-router-dom for all navigation between pages
 - Use Tailwind CSS utility classes with CSS custom properties for theming
-- Use framer-motion for all animations, transitions, and scroll effects
+- Use framer-motion for animations where appropriate to product UX (not decorative by default)
 - Use lucide-react for all icons throughout the application
 - CSS validity is mandatory: generated files must compile on first run (no PostCSS/Tailwind errors)
 - Never use `@apply font-body` or `@apply font-heading` unless those classes are explicitly defined in `@layer utilities`
 - For typography tokens, prefer direct utilities like `font-[var(--font-body)]` and `font-[var(--font-heading)]`
 - Keep `src/App.css` pure CSS (no markdown fences, no prose, no JSON blobs)
 
-BUILD PHASES (all in one output):
-
-Phase 1 — STUNNING LANDING PAGE:
-- Hero with framer-motion entrance animations (fade-up stagger), parallax scroll via useScroll/useTransform
-- Floating animated decorative elements (gradient orbs, glowing accents)
-- Feature grid with useInView scroll-triggered staggered reveal animations
-- Social proof / testimonials section with animated cards
-- Pricing or value proposition section
-- Strong CTA sections with animated gradient backgrounds
-- Professional footer with nav links and copyright
-- ALL copy must be compelling and specific to the product — NEVER lorem ipsum
-
-Phase 2 — AUTH FLOW (Login + Register):
-- Beautiful full-screen auth layouts with animated form transitions
-- Mock authentication — accept ANY email/password, store in localStorage, redirect to dashboard
-- NO real backend — simulate a brief loading animation then redirect
-- Animated transitions between Login and Register pages
-- Social login buttons (Google, GitHub) as beautiful non-functional UI
-- "Forgot password" link (can show a simple message)
-
-Phase 3 — DASHBOARD:
-- Full layout with collapsible sidebar (lucide-react icons, active states, animated collapse)
-- Top header with user avatar, notification bell, search
-- Metrics/KPI cards (4-6) with animated number counters and trend indicators
-- Recent activity list with staggered entrance animations
-- Quick action buttons
-- Data table or content grid with proper structure
-- All sidebar links navigate to real routes
-- Responsive: sidebar collapses to hamburger on mobile
-
-Phase 4 — ALL REMAINING SCREENS:
-- Build every screen referenced in the design system and requirements as a full route
-- Each page has real structured content, not placeholder text
-- Wrap authenticated pages in the dashboard layout
-
 Design standards:
-- Dark mode by default with premium SaaS aesthetic
-- CSS custom properties for theme colors, Tailwind utilities for layout/spacing
-- Glass-morphism effects (backdrop-blur, semi-transparent surfaces)
-- Smooth transitions on ALL interactive elements
-- Consistent border-radius, shadows, and spacing throughout
-- Professional typography hierarchy
-- If a Design Reference is provided above, use it as the PRIMARY visual reference.
-  Translate the colors, typography, layout, spacing, and component structure
-  into React/TSX components + Tailwind + App.css variables. Preserve the exact look and feel.
-- Follow any CDO Design Foundation guidelines (color palette, spacing, UX patterns).
+- Follow the Design Reference and CDO Design Foundation as PRIMARY visual guidance
+- Avoid generic boilerplate visual patterns that do not match the product domain
+- Every route/page must contain complete, product-specific UI with realistic mock data
+- Never output placeholders like "coming soon", "under construction", or generic stubs
 """
 
     payload = {
@@ -502,6 +536,7 @@ async def _generate_single_artifact(project_id: str, artifact_key: str, artifact
     """Generate a single artifact via LLM."""
     from models import SessionLocal
 
+    model_config = None
     db = SessionLocal()
     try:
         artifact = db.query(Artifact).filter(
@@ -513,11 +548,21 @@ async def _generate_single_artifact(project_id: str, artifact_key: str, artifact
 
         artifact.status = AgentStatus.running
         db.commit()
+        model_config = _resolve_artifact_model(user_id, db=db)
+    except Exception as e:
+        print(f"❌ Error initializing artifact [{artifact_key}]: {e}")
+        return
+    finally:
+        db.close()
 
+    error_text = None
+    content_text = None
+    new_status = AgentStatus.error
+
+    if model_config.get("error"):
+        error_text = model_config["error"]
+    else:
         try:
-            model_config = _resolve_artifact_model(user_id, db=db)
-            if model_config.get("error"):
-                raise HTTPException(status_code=400, detail=model_config["error"])
             call_kwargs = {
                 "model": model_config["model"],
                 "messages": [
@@ -532,20 +577,33 @@ async def _generate_single_artifact(project_id: str, artifact_key: str, artifact
             if model_config.get("api_base"):
                 call_kwargs["api_base"] = model_config["api_base"]
             print(f"📄 Artifact [{artifact_key}] using: {model_config['model']} via {model_config['provider_name']}")
+            
             resp = await litellm.acompletion(**call_kwargs)
             content_text = resp.choices[0].message.content.strip()
-            artifact.content = {"text": content_text}
-            artifact.status = AgentStatus.complete
+            new_status = AgentStatus.complete
         except Exception as e:
             print(f"❌ Artifact [{artifact_key}] error: {e}")
-            artifact.status = AgentStatus.error
-            artifact.content = {"error": str(e)}
+            error_text = str(e)
 
-        artifact.updated_at = datetime.utcnow()
-        db.commit()
+    db = SessionLocal()
+    try:
+        artifact = db.query(Artifact).filter(
+            Artifact.project_id == project_id,
+            Artifact.title == artifact_def["title"],
+        ).first()
+        if artifact:
+            artifact.status = new_status
+            if error_text:
+                artifact.content = {"error": error_text}
+            else:
+                artifact.content = {"text": content_text}
+            artifact.updated_at = datetime.utcnow()
+            db.commit()
 
-        if artifact.status == AgentStatus.complete:
-            _maybe_refresh_bootstrap_prompt(db, project_id)
+            if artifact.status == AgentStatus.complete:
+                _maybe_refresh_bootstrap_prompt(db, project_id)
+    except Exception as e:
+        print(f"❌ Error saving artifact [{artifact_key}]: {e}")
     finally:
         db.close()
 
@@ -554,6 +612,24 @@ async def _throttled_artifact(project_id, key, artifact_def, context, user_id):
     """Wrapper that throttles concurrent API calls."""
     async with _ARTIFACT_SEMAPHORE:
         await _generate_single_artifact(project_id, key, artifact_def, context, user_id)
+
+
+def _ensure_artifact_records(db, project_id: str):
+    """Create any missing Artifact rows so _generate_all_artifacts can find them."""
+    existing_titles = {
+        row.title for row in
+        db.query(Artifact.title).filter(Artifact.project_id == project_id).all()
+    }
+    for key, defn in ARTIFACT_DEFS.items():
+        if defn["title"] not in existing_titles:
+            db.add(Artifact(
+                id=str(uuid.uuid4()),
+                project_id=project_id,
+                artifact_type=defn["type"],
+                title=defn["title"],
+                status=AgentStatus.pending,
+            ))
+    db.commit()
 
 
 async def _generate_all_artifacts(project_id: str, user_id: str | None = None):
@@ -569,21 +645,29 @@ async def _generate_all_artifacts(project_id: str, user_id: str | None = None):
         context = _build_project_context(project)
         uid = user_id or project.user_id
 
-        # Only generate artifacts that aren't already complete
+        _ensure_artifact_records(db, project_id)
+
         pending = db.query(Artifact).filter(
             Artifact.project_id == project_id,
             Artifact.status != AgentStatus.complete,
         ).all()
         pending_titles = {a.title for a in pending}
+    except Exception as e:
+        print(f"❌ Error preparing artifacts: {e}")
+        return
+    finally:
+        db.close()
+        
+    tasks = []
+    for key, artifact_def in ARTIFACT_DEFS.items():
+        if artifact_def["title"] in pending_titles:
+            tasks.append(_throttled_artifact(project_id, key, artifact_def, context, uid))
 
-        tasks = []
-        for key, artifact_def in ARTIFACT_DEFS.items():
-            if artifact_def["title"] in pending_titles:
-                tasks.append(_throttled_artifact(project_id, key, artifact_def, context, uid))
+    if tasks:
+        await asyncio.gather(*tasks)
 
-        if tasks:
-            await asyncio.gather(*tasks)
-
+    db = SessionLocal()
+    try:
         _maybe_refresh_bootstrap_prompt(db, project_id)
     finally:
         db.close()

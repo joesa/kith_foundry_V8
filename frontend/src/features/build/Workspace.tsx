@@ -1,16 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom";
 import Editor from "@monaco-editor/react";
-import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X, ChevronDown, ChevronRight, MessageSquare, PanelLeftClose, LogOut, CreditCard, Cpu, Settings } from "lucide-react";
-import { useFoundry } from "../hooks/useFoundry";
-import { useAutoSave } from "../hooks/useAutoSave";
-import { ModelSelector } from "./ModelSelector";
-import { FileExplorer } from "./FileExplorer";
-import { WelcomeScreen } from "./WelcomeScreen";
-import { EditorToolbar, DEFAULT_SETTINGS, type EditorSettings } from "./EditorToolbar";
-import { registerThemes } from "./EditorThemes";
-import { useAuth } from "../contexts/AuthContext";
-import { getApiBaseUrl } from "../lib/runtimeConfig";
+import { Send, Loader2, RefreshCw, FolderTree, Code2, UserCircle, ArrowLeft, LayoutGrid, ExternalLink, ImagePlus, X, ChevronDown, ChevronRight, MessageSquare, PanelLeftClose, LogOut, CreditCard, Cpu, Settings, Shield, Terminal, GitBranch } from "lucide-react";
+import { useFoundry } from "./hooks/useFoundry";
+import { useAutoSave } from "./hooks/useAutoSave";
+import { ModelSelector } from "../../components/workspace/ModelSelector";
+import { FileExplorer } from "../../components/workspace/FileExplorer";
+import { WelcomeScreen } from "../../components/workspace/WelcomeScreen";
+import { EditorToolbar, DEFAULT_SETTINGS, type EditorSettings } from "../../components/workspace/EditorToolbar";
+import { registerThemes } from "../../components/workspace/EditorThemes";
+import { useAuth } from "../../contexts/AuthContext";
+import { getApiBaseUrl } from "../../lib/runtimeConfig";
 
 function LiveCodeBox({ filename, content }: { filename: string; content: string }) {
     const codeRef = useRef<HTMLDivElement>(null);
@@ -27,7 +27,7 @@ function LiveCodeBox({ filename, content }: { filename: string; content: string 
 
     return (
         <div className="rounded-lg border border-indigo-800/50 bg-[#0d1117] overflow-hidden text-xs font-mono shadow-lg shadow-indigo-950/40">
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--kf-surface)] border-b border-[var(--kf-border)]">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--forge-surface)] border-b border-[var(--forge-border)]">
                 <Loader2 className="w-3 h-3 animate-spin text-indigo-400 shrink-0" />
                 <span className="text-indigo-300 truncate flex-1">{filename}</span>
                 <span className="text-zinc-600 text-[10px] shrink-0">{lines.length} lines</span>
@@ -37,7 +37,7 @@ function LiveCodeBox({ filename, content }: { filename: string; content: string 
                 className="p-2.5 h-32 overflow-hidden"
                 style={{ maskImage: "linear-gradient(to bottom, transparent 0%, black 25%)" }}
             >
-                <pre className="whitespace-pre-wrap break-all text-[var(--kf-text-secondary)] leading-relaxed">{visibleLines}</pre>
+                <pre className="whitespace-pre-wrap break-all text-[var(--forge-text-secondary)] leading-relaxed">{visibleLines}</pre>
             </div>
         </div>
     );
@@ -126,7 +126,7 @@ export default function Workspace() {
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const { getAccessToken, signOut } = useAuth();
-    const { wsConnected, status, previewUrl, iframeSrc, setIframeSrc, hasExistingFiles, files, setFiles, fileTree, messages, sendCommand, isStreaming, streamingFile, assistantStreaming, streamingAssistantMessage } = useFoundry(projectId);
+    const { wsConnected, status, previewUrl, iframeSrc, setIframeSrc, hasExistingFiles, files, setFiles, fileTree, messages, sendCommand, isStreaming, streamingFile, assistantStreaming, streamingAssistantMessage, buildStage, patchProposals, sandboxLogs, securityScan, sandboxFailed } = useFoundry(projectId);
     const [input, setInput] = useState("");
     const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -399,29 +399,61 @@ export default function Workspace() {
         setHasGenerated(false);
     }, [projectId]);
 
+    const BUILD_STAGES = ["prd", "design", "capability_gate", "secrets", "sandbox", "code_gen", "validation", "complete"];
+
     return (
         <>
-            <div className="flex h-screen bg-[#0E0E11] text-zinc-100 overflow-hidden font-sans">
+            <div className="flex flex-col h-screen bg-[#0E0E11] text-zinc-100 overflow-hidden font-sans">
+
+                {/* Build Stage Rail */}
+                {buildStage && (
+                    <div className="flex items-center gap-1 px-4 py-2 bg-[var(--forge-surface)] border-b border-[var(--forge-border)] shrink-0 overflow-x-auto scrollbar-none">
+                        {BUILD_STAGES.map((stage, i) => {
+                            const isCurrent = buildStage.stage === stage;
+                            const currentIdx = BUILD_STAGES.indexOf(buildStage.stage);
+                            const isPast = i < currentIdx;
+                            const isError = isCurrent && buildStage.status === "error";
+                            return (
+                                <div key={stage} className="flex items-center gap-1 shrink-0">
+                                    {i > 0 && <div className={`w-6 h-px ${isPast ? "bg-green-500/60" : "bg-zinc-700"}`} />}
+                                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium ${
+                                        isError ? "bg-red-500/10 text-red-400 border border-red-500/30" :
+                                        isCurrent ? "bg-[var(--forge-ember)]/10 text-[var(--forge-ember)] border border-[var(--forge-ember)]/30" :
+                                        isPast ? "bg-green-500/10 text-green-400" :
+                                        "text-zinc-600"
+                                    }`}>
+                                        {isPast && <span className="text-green-400">&#10003;</span>}
+                                        {isCurrent && !isError && <Loader2 className="w-3 h-3 animate-spin" />}
+                                        {isError && <Shield className="w-3 h-3" />}
+                                        <span>{stage.replace(/_/g, " ")}</span>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+
+                <div className="flex flex-1 min-h-0 overflow-hidden">
 
                 {/* PANE 1: Chat UI — collapsible */}
-                <div style={{ width: showChat ? chatWidth : 48 }} className="flex flex-col border-r border-[var(--kf-border)] bg-[var(--kf-surface)] shrink-0 overflow-hidden transition-[width] duration-200">
+                <div style={{ width: showChat ? chatWidth : 48 }} className="flex flex-col border-r border-[var(--forge-border)] bg-[var(--forge-surface)] shrink-0 overflow-hidden transition-[width] duration-200">
                     {showChat ? (
                         <>
-                            <div className="p-4 border-b border-[var(--kf-border)] flex flex-col gap-3">
+                            <div className="p-4 border-b border-[var(--forge-border)] flex flex-col gap-3">
                                 <div className="flex items-center justify-between">
                                     <h1 className="font-bold text-lg bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">Kith Foundry</h1>
                                     <div className="flex items-center gap-1">
                                         <button
-                                    onClick={() => projectId && navigate(`/project/${projectId}`)}
+                                    onClick={() => projectId && navigate(`/app/projects/${projectId}`)}
                                     disabled={!projectId}
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] disabled:opacity-50"
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-hover)] disabled:opacity-50"
                                     title="Back to project"
                                 >
                                     <ArrowLeft className="w-3.5 h-3.5" />
                                 </button>
                                 <button
-                                    onClick={() => navigate("/")}
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
+                                    onClick={() => navigate("/app/projects")}
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-hover)]"
                                     title="All projects"
                                 >
                                     <LayoutGrid className="w-3.5 h-3.5" />
@@ -431,49 +463,49 @@ export default function Workspace() {
                                 <div ref={profileMenuRef} className="relative">
                                     <button
                                         onClick={() => setShowProfileMenu(v => !v)}
-                                        className={`p-1.5 rounded-md transition-colors cursor-pointer ${showProfileMenu ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]'}`}
+                                        className={`p-1.5 rounded-md transition-colors cursor-pointer ${showProfileMenu ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-hover)]'}`}
                                         title="Profile & settings"
                                     >
                                         <UserCircle className="w-3.5 h-3.5" />
                                     </button>
                                     {showProfileMenu && (
-                                        <div className="absolute left-0 top-full mt-1.5 w-52 bg-[#1a1a24] border border-[var(--kf-border)] rounded-lg shadow-2xl shadow-black/60 z-50 py-1 overflow-hidden">
-                                            <div className="px-3 py-2 border-b border-[var(--kf-border)] mb-1">
+                                        <div className="absolute left-0 top-full mt-1.5 w-52 bg-[#1a1a24] border border-[var(--forge-border)] rounded-lg shadow-2xl shadow-black/60 z-50 py-1 overflow-hidden">
+                                            <div className="px-3 py-2 border-b border-[var(--forge-border)] mb-1">
                                                 <p className="text-[11px] font-semibold text-zinc-300">Account</p>
                                             </div>
                                             <Link
-                                                to="/profile"
+                                                to="/app/profile"
                                                 onClick={() => setShowProfileMenu(false)}
-                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--forge-surface-hover)] transition-colors cursor-pointer"
                                             >
                                                 <UserCircle className="w-3.5 h-3.5 shrink-0" />
                                                 Profile & Settings
                                             </Link>
                                             <Link
-                                                to="/models"
+                                                to="/app/profile"
                                                 onClick={() => setShowProfileMenu(false)}
-                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--forge-surface-hover)] transition-colors cursor-pointer"
                                             >
                                                 <Cpu className="w-3.5 h-3.5 shrink-0" />
                                                 Model Settings
                                             </Link>
                                             <Link
-                                                to="/billing"
+                                                to="/app/billing"
                                                 onClick={() => setShowProfileMenu(false)}
-                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--forge-surface-hover)] transition-colors cursor-pointer"
                                             >
                                                 <CreditCard className="w-3.5 h-3.5 shrink-0" />
                                                 Subscription
                                             </Link>
                                             <Link
-                                                to="/settings"
+                                                to="/app/profile"
                                                 onClick={() => setShowProfileMenu(false)}
-                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--kf-hover-bg)] transition-colors cursor-pointer"
+                                                className="flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-[var(--forge-surface-hover)] transition-colors cursor-pointer"
                                             >
                                                 <Settings className="w-3.5 h-3.5 shrink-0" />
                                                 App Settings
                                             </Link>
-                                            <div className="border-t border-[var(--kf-border)] mt-1 pt-1">
+                                            <div className="border-t border-[var(--forge-border)] mt-1 pt-1">
                                                 <button
                                                     onClick={async () => { setShowProfileMenu(false); await signOut(); navigate("/login"); }}
                                                     className="flex items-center gap-2.5 w-full px-3 py-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-950/30 transition-colors cursor-pointer"
@@ -487,7 +519,7 @@ export default function Workspace() {
                                 </div>
                                 <button
                                     onClick={() => setShowChat(false)}
-                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)]"
+                                    className="p-1.5 rounded-md transition-colors cursor-pointer text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-hover)]"
                                     title="Hide chat"
                                 >
                                     <PanelLeftClose className="w-3.5 h-3.5" />
@@ -496,21 +528,21 @@ export default function Workspace() {
                                     <>
                                         <button
                                             onClick={() => setShowExplorer(v => !v)}
-                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showExplorer ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)]'}`}
+                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showExplorer ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--forge-text-secondary)]'}`}
                                             title={showExplorer ? "Hide explorer" : "Show explorer"}
                                         >
                                             <FolderTree className="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             onClick={() => setShowEditor(v => !v)}
-                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showEditor ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)]'}`}
+                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showEditor ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--forge-text-secondary)]'}`}
                                             title={showEditor ? "Hide editor" : "Show editor"}
                                         >
                                             <Code2 className="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             onClick={() => setShowChat(v => !v)}
-                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showChat ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--kf-text-secondary)]'}`}
+                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${showChat ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-[var(--forge-text-secondary)]'}`}
                                             title={showChat ? "Hide chat" : "Show chat"}
                                         >
                                             <MessageSquare className="w-3.5 h-3.5" />
@@ -519,7 +551,7 @@ export default function Workspace() {
                                     </>
                                 )}
                                 <div className={`w-2 h-2 rounded-full ${status === 'idle' ? 'bg-green-500' : 'bg-amber-500 animate-pulse'}`}></div>
-                                <span className="text-xs text-[var(--kf-text-secondary)]">{status === 'idle' ? 'idle' : status.replace(/_/g, ' ')}</span>
+                                <span className="text-xs text-[var(--forge-text-secondary)]">{status === 'idle' ? 'idle' : status.replace(/_/g, ' ')}</span>
                             </div>
                         </div>
                         <ModelSelector
@@ -531,7 +563,7 @@ export default function Workspace() {
                     {/* Messages toggle bar */}
                     <button
                         onClick={() => setShowMessages(v => !v)}
-                        className="flex items-center gap-2 w-full px-4 py-1.5 border-b border-[var(--kf-border)] text-xs text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-badge-bg)] transition-colors cursor-pointer shrink-0"
+                        className="flex items-center gap-2 w-full px-4 py-1.5 border-b border-[var(--forge-border)] text-xs text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-alt)] transition-colors cursor-pointer shrink-0"
                     >
                         {showMessages ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                         <span>Messages {messages.length > 0 ? `(${messages.length})` : ""}</span>
@@ -560,7 +592,7 @@ export default function Workspace() {
                                                         ? 'bg-green-900/30 text-green-300 border border-green-800/40 rounded-bl-none'
                                                         : msg.content.startsWith('Error')
                                                             ? 'bg-red-900/30 text-red-300 border border-red-800/40 rounded-bl-none'
-                                                            : 'bg-[var(--kf-badge-bg)] text-[var(--kf-text-secondary)] rounded-bl-none'
+                                                            : 'bg-[var(--forge-surface-alt)] text-[var(--forge-text-secondary)] rounded-bl-none'
                                         }`}>
                                             {msg.role === 'assistant' ? (
                                                 <div className="whitespace-pre-wrap leading-relaxed" dangerouslySetInnerHTML={{__html: simpleMarkdown(msg.content)}} />
@@ -595,26 +627,28 @@ export default function Workspace() {
                                         ? "Booting sandbox..."
                                         : status === "applying_edits"
                                             ? "Saving files..."
-                                            : status === "analyzing"
-                                                ? "Analyzing request using " + (typeof selectedModel === "string" && selectedModel ? selectedModel : "AI") + "..."
-                                                : status === "reading"
-                                                    ? "Reading current project files..."
-                                                    : status === "generating"
-                                                        ? "Generating code..."
-                                                        : status === "reconnecting"
-                                                            ? "Reconnecting to server..."
-                                                            : "Working..."}
+                                            : status === "verifying_build"
+                                                ? "Verifying build..."
+                                                : status === "analyzing"
+                                                    ? "Analyzing request using " + (typeof selectedModel === "string" && selectedModel ? selectedModel : "AI") + "..."
+                                                    : status === "reading"
+                                                        ? "Reading current project files..."
+                                                        : status === "generating"
+                                                            ? "Generating code..."
+                                                            : status === "reconnecting"
+                                                                ? "Reconnecting to server..."
+                                                                : "Working..."}
                                 </span>
                             </div>
                         )}
                         <div ref={messagesEndRef} />
                     </div>
 
-                    <div className="p-4 border-t border-[var(--kf-border)] space-y-2">
+                    <div className="p-4 border-t border-[var(--forge-border)] space-y-2">
                         {attachedImages.length > 0 && (
                             <div className="flex flex-wrap gap-1.5">
                                 {attachedImages.map((img, i) => (
-                                    <div key={i} className="relative group w-12 h-12 rounded-md overflow-hidden border border-[var(--kf-border-muted)] shrink-0">
+                                    <div key={i} className="relative group w-12 h-12 rounded-md overflow-hidden border border-[var(--forge-border-muted)] shrink-0">
                                         <img src={img.dataUrl} alt={img.name} className="w-full h-full object-cover" />
                                         <button
                                             type="button"
@@ -629,7 +663,7 @@ export default function Workspace() {
                                     <button
                                         type="button"
                                         onClick={() => fileInputRef.current?.click()}
-                                        className="w-12 h-12 rounded-md border border-dashed border-[var(--kf-border-muted)] flex items-center justify-center text-zinc-600 hover:text-[var(--kf-text-secondary)] hover:border-zinc-500 transition-colors shrink-0"
+                                        className="w-12 h-12 rounded-md border border-dashed border-[var(--forge-border-muted)] flex items-center justify-center text-zinc-600 hover:text-[var(--forge-text-secondary)] hover:border-zinc-500 transition-colors shrink-0"
                                     >
                                         <ImagePlus className="w-4 h-4" />
                                     </button>
@@ -643,14 +677,14 @@ export default function Workspace() {
                                 onChange={(e) => setInput(e.target.value)}
                                 onPaste={handlePaste}
                                 placeholder="Describe your feature..."
-                                className="w-full bg-[var(--kf-surface-alt)] border border-[var(--kf-border-muted)] rounded-lg pl-4 pr-20 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-[var(--kf-text-faint)]"
+                                className="w-full bg-[var(--forge-surface-alt)] border border-[var(--forge-border-muted)] rounded-lg pl-4 pr-20 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-[var(--forge-text-faint)]"
                             />
                             <div className="absolute right-2 top-2 flex items-center gap-1">
                                 <button
                                     type="button"
                                     onClick={() => fileInputRef.current?.click()}
                                     disabled={attachedImages.length >= 20}
-                                    className="p-1.5 rounded-md text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] disabled:opacity-50 transition-colors"
+                                    className="p-1.5 rounded-md text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-hover)] disabled:opacity-50 transition-colors"
                                     title={`Attach PNG images (${attachedImages.length}/20)`}
                                 >
                                     <ImagePlus className="w-4 h-4" />
@@ -658,7 +692,7 @@ export default function Workspace() {
                                 <button
                                     type="submit"
                                     disabled={(!input.trim() && attachedImages.length === 0) || !wsConnected}
-                                    className="p-1.5 rounded-md text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] hover:bg-[var(--kf-hover-bg)] disabled:opacity-50 transition-colors"
+                                    className="p-1.5 rounded-md text-[var(--forge-text-secondary)] hover:text-[var(--forge-text)] hover:bg-[var(--forge-surface-hover)] disabled:opacity-50 transition-colors"
                                 >
                                     <Send className="w-4 h-4" />
                                 </button>
@@ -677,7 +711,7 @@ export default function Workspace() {
                     ) : (
                         <button
                             onClick={() => setShowChat(true)}
-                            className="w-full h-full min-h-[200px] flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-badge-bg)] transition-colors cursor-pointer border-0"
+                            className="w-full h-full min-h-[200px] flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-alt)] transition-colors cursor-pointer border-0"
                             title="Show chat"
                         >
                             <MessageSquare className="w-6 h-6" />
@@ -700,14 +734,14 @@ export default function Workspace() {
                 {showEditor && (
                     <div className="flex-1 flex flex-col min-w-0 bg-[#0A0A0F]">
                         {/* Tabs */}
-                        <div className="flex px-1 bg-[var(--kf-surface)] border-b border-[var(--kf-border)] overflow-x-auto scrollbar-none">
+                        <div className="flex px-1 bg-[var(--forge-surface)] border-b border-[var(--forge-border)] overflow-x-auto scrollbar-none">
                             {openTabs.map((filename) => (
                                 <button
                                     key={filename}
                                     onClick={() => setActiveFile(filename)}
                                     className={`flex items-center gap-1.5 px-3 py-2 text-xs font-mono border-t-[2px] whitespace-nowrap shrink-0 group ${activeFile === filename
                                         ? 'border-indigo-500 text-indigo-300 bg-[#0A0A0F]'
-                                        : 'border-transparent text-zinc-500 hover:text-[var(--kf-text-secondary)] hover:bg-[var(--kf-surface-alt)]'
+                                        : 'border-transparent text-zinc-500 hover:text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-alt)]'
                                         }`}
                                 >
                                     {filename.split("/").pop()}
@@ -725,11 +759,11 @@ export default function Workspace() {
                         </div>
 
                         {/* Breadcrumb */}
-                        <div className="flex items-center gap-1 px-3 py-1 bg-[#0F0F17] border-b border-[var(--kf-border)]/40 text-[11px] text-zinc-500 overflow-x-auto scrollbar-none">
+                        <div className="flex items-center gap-1 px-3 py-1 bg-[#0F0F17] border-b border-[var(--forge-border)]/40 text-[11px] text-zinc-500 overflow-x-auto scrollbar-none">
                             {activeFile.split("/").map((seg, i, arr) => (
                                 <span key={i} className="flex items-center gap-1 shrink-0">
                                     {i > 0 && <ChevronRight className="w-2.5 h-2.5 opacity-40" />}
-                                    <span className={i === arr.length - 1 ? "text-[var(--kf-text-secondary)]" : "hover:text-[var(--kf-text-secondary)] cursor-default"}>{seg}</span>
+                                    <span className={i === arr.length - 1 ? "text-[var(--forge-text-secondary)]" : "hover:text-[var(--forge-text-secondary)] cursor-default"}>{seg}</span>
                                 </span>
                             ))}
                         </div>
@@ -829,21 +863,21 @@ export default function Workspace() {
                 )}
 
                 {/* PANE 4: Live Preview */}
-                <div style={{ width: showEditor ? previewWidth : undefined, flex: showEditor ? undefined : 1 }} className="flex flex-col border-l border-[var(--kf-border)] bg-[#0c0c14] shrink-0">
-                    <div className="h-10 bg-[var(--kf-surface)] border-b border-[var(--kf-border)] flex items-center px-3 gap-2 z-10">
+                <div style={{ width: showEditor ? previewWidth : undefined, flex: showEditor ? undefined : 1 }} className="flex flex-col border-l border-[var(--forge-border)] bg-[#0c0c14] shrink-0">
+                    <div className="h-10 bg-[var(--forge-surface)] border-b border-[var(--forge-border)] flex items-center px-3 gap-2 z-10">
                         <div className="flex gap-1.5">
                             <div className="w-2.5 h-2.5 rounded-full bg-red-400/80"></div>
                             <div className="w-2.5 h-2.5 rounded-full bg-amber-400/80"></div>
                             <div className="w-2.5 h-2.5 rounded-full bg-green-400/80"></div>
                         </div>
-                        <div className="flex-1 bg-[var(--kf-surface-alt)] rounded h-6 px-2 flex items-center text-[11px] text-zinc-500 border border-[var(--kf-border)] font-mono overflow-hidden whitespace-nowrap">
+                        <div className="flex-1 bg-[var(--forge-surface-alt)] rounded h-6 px-2 flex items-center text-[11px] text-zinc-500 border border-[var(--forge-border)] font-mono overflow-hidden whitespace-nowrap">
                             {iframeSrc || "preview"}
                         </div>
                         <>
                             <button
                                 onClick={reloadPreview}
                                 disabled={!currentPreviewHref}
-                                className="flex items-center gap-1.5 px-2 py-1 rounded text-[var(--kf-text-secondary)] hover:text-[var(--kf-text)] hover:bg-[var(--kf-hover-bg)] transition-colors text-[11px] font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                className="flex items-center gap-1.5 px-2 py-1 rounded text-[var(--forge-text-secondary)] hover:text-[var(--forge-text)] hover:bg-[var(--forge-surface-hover)] transition-colors text-[11px] font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                                 title={currentPreviewHref ? "Refresh preview" : "Preview not available yet"}
                             >
                                 <RefreshCw className="w-3.5 h-3.5" />
@@ -852,7 +886,7 @@ export default function Workspace() {
                             <button
                                 onClick={() => currentPreviewHref && window.open(currentPreviewHref, "_blank", "noopener,noreferrer")}
                                 disabled={!currentPreviewHref}
-                                className="p-1 rounded text-[var(--kf-text-secondary)] hover:bg-[var(--kf-hover-bg)] hover:text-[var(--kf-text)] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                className="p-1 rounded text-[var(--forge-text-secondary)] hover:bg-[var(--forge-surface-hover)] hover:text-[var(--forge-text)] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                                 title={currentPreviewHref ? "Open in new tab" : "Preview not available yet"}
                             >
                                 <ExternalLink className="w-3.5 h-3.5" />
@@ -861,9 +895,26 @@ export default function Workspace() {
                     </div>
 
                     <div className="flex-1 relative overflow-hidden">
-                        {!iframeSrc ? (
+                        {sandboxFailed && !iframeSrc && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#0c0c14] z-10 p-6 text-center">
+                                <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                                    <span className="text-amber-400 text-xl">⚡</span>
+                                </div>
+                                <div>
+                                    <p className="text-zinc-200 font-medium">Sandbox couldn't start</p>
+                                    <p className="text-zinc-500 text-sm mt-1">You can still edit files. Reload the page to retry the sandbox.</p>
+                                </div>
+                                <button
+                                    onClick={() => window.location.reload()}
+                                    className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+                                >
+                                    Retry sandbox
+                                </button>
+                            </div>
+                        )}
+                        {!iframeSrc && !sandboxFailed ? (
                             <WelcomeScreen />
-                        ) : (
+                        ) : iframeSrc ? (
                             <iframe
                                 key={iframeSrc}
                                 ref={(el) => {
@@ -914,7 +965,7 @@ export default function Workspace() {
                                 title="Live Preview"
                                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                             />
-                        )}
+                        ) : null}
                     </div>
                 </div>
 
@@ -930,7 +981,7 @@ export default function Workspace() {
 
                 {/* PANE 5: File Explorer + Activity Log (right side) */}
                 {showExplorer && (
-                    <div style={{ width: explorerWidth }} className="flex flex-col border-l border-[var(--kf-border)] shrink-0">
+                    <div style={{ width: explorerWidth }} className="flex flex-col border-l border-[var(--forge-border)] shrink-0">
                         <div className="flex-1 min-h-0 overflow-hidden">
                             <FileExplorer
                                 tree={fileTree}
@@ -943,9 +994,9 @@ export default function Workspace() {
                             const activityMsgs = messages.filter(m => m.role !== 'user' && (m.content.startsWith('✓') || m.content.startsWith('Saving')));
                             if (activityMsgs.length === 0) return null;
                             return (
-                                <div className="border-t border-[var(--kf-border)] max-h-[45%] flex flex-col shrink-0">
-                                    <div className="px-3 py-2 flex items-center justify-between border-b border-[var(--kf-border)]">
-                                        <span className="text-[11px] font-semibold text-[var(--kf-text-secondary)] uppercase tracking-wider">Activity</span>
+                                <div className="border-t border-[var(--forge-border)] max-h-[45%] flex flex-col shrink-0">
+                                    <div className="px-3 py-2 flex items-center justify-between border-b border-[var(--forge-border)]">
+                                        <span className="text-[11px] font-semibold text-[var(--forge-text-secondary)] uppercase tracking-wider">Activity</span>
                                         <span className="text-[10px] text-zinc-600">{activityMsgs.length}</span>
                                     </div>
                                     <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -958,10 +1009,78 @@ export default function Workspace() {
                                 </div>
                             );
                         })()}
+
+                        {/* Sandbox Logs Panel */}
+                        {sandboxLogs.length > 0 && (
+                            <div className="border-t border-[var(--forge-border)] max-h-[30%] flex flex-col shrink-0">
+                                <div className="px-3 py-2 flex items-center gap-2 border-b border-[var(--forge-border)]">
+                                    <Terminal className="w-3 h-3 text-zinc-500" />
+                                    <span className="text-[11px] font-semibold text-[var(--forge-text-secondary)] uppercase tracking-wider">Sandbox Logs</span>
+                                    <span className="text-[10px] text-zinc-600 ml-auto">{sandboxLogs.length}</span>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-2 space-y-0.5 font-mono text-[10px]">
+                                    {sandboxLogs.slice(-50).map((log, i) => (
+                                        <div key={i} className={`px-1.5 py-0.5 rounded ${
+                                            log.level === "error" ? "text-red-400 bg-red-900/10" :
+                                            log.level === "warn" ? "text-amber-400 bg-amber-900/10" :
+                                            "text-zinc-500"
+                                        }`}>
+                                            {log.message}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Patch Proposals Panel */}
+                        {patchProposals.length > 0 && (
+                            <div className="border-t border-[var(--forge-border)] max-h-[25%] flex flex-col shrink-0">
+                                <div className="px-3 py-2 flex items-center gap-2 border-b border-[var(--forge-border)]">
+                                    <GitBranch className="w-3 h-3 text-zinc-500" />
+                                    <span className="text-[11px] font-semibold text-[var(--forge-text-secondary)] uppercase tracking-wider">Patches</span>
+                                    <span className="text-[10px] text-zinc-600 ml-auto">{patchProposals.length}</span>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                                    {patchProposals.map((patch, i) => (
+                                        <div key={i} className="px-2 py-1.5 rounded text-[11px] bg-[var(--forge-surface-alt)] border border-[var(--forge-border-muted)]">
+                                            <div className="flex items-center justify-between mb-1">
+                                                <span className="text-zinc-300 font-mono truncate">{patch.file}</span>
+                                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                                    patch.status === "applied" ? "bg-green-900/30 text-green-400" :
+                                                    patch.status === "rejected" ? "bg-red-900/30 text-red-400" :
+                                                    "bg-zinc-800 text-zinc-500"
+                                                }`}>{patch.status}</span>
+                                            </div>
+                                            <pre className="text-[10px] text-zinc-600 whitespace-pre-wrap max-h-16 overflow-hidden">{patch.diff?.slice(0, 200)}</pre>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Security Scan Panel */}
+                        {securityScan && securityScan.violations.length > 0 && (
+                            <div className="border-t border-red-500/30 max-h-[20%] flex flex-col shrink-0">
+                                <div className="px-3 py-2 flex items-center gap-2 border-b border-red-500/20 bg-red-950/20">
+                                    <Shield className="w-3 h-3 text-red-400" />
+                                    <span className="text-[11px] font-semibold text-red-400 uppercase tracking-wider">Security</span>
+                                    <span className="text-[10px] text-red-500/60 ml-auto">{securityScan.violations.length} issue(s)</span>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                                    {securityScan.violations.map((v, i) => (
+                                        <div key={i} className="px-2 py-1 rounded text-[11px] bg-red-900/10 text-red-300 border border-red-900/20">
+                                            <span className="text-red-500 font-medium">[{v.category}]</span> {v.detail}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
 
-            </div>
+                </div>{/* end inner flex-1 row */}
+
+            </div>{/* end outer flex-col */}
 
         </>
     );

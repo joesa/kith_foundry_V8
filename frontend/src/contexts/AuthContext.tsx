@@ -23,51 +23,78 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const authRef = useRef<AuthClient | null>(null);
 
     useEffect(() => {
+        let cancelled = false;
         let unsub: () => void = () => {};
-        let settled = false;               // true after initial auth state is determined
+        let settled = false;
+        let settleTimer: number | null = null;
+
+        const finishInitialLoad = () => {
+            if (cancelled || settled) return;
+            settled = true;
+            setLoading(false);
+        };
+
         getAuth()
             .then((auth) => {
+                if (cancelled) return;
                 if (!auth) {
-                    setLoading(false);
+                    finishInitialLoad();
                     return;
                 }
                 authRef.current = auth;
 
-                // Subscribe to auth state changes FIRST — Nhost fires this once
-                // on startup after it restores session from local storage.
+                // Subscribe for future auth changes, but do not use the first callback
+                // as the signal that bootstrap is done. The Nhost adapter emits the
+                // current stored session immediately, which can be null before the real
+                // async session refresh completes on a hard load.
                 unsub = auth.onAuthStateChange((s) => {
+                    if (cancelled) return;
                     setSession(s);
                     setUser(s?.user ?? null);
-                    if (!settled) {
-                        settled = true;
-                        setLoading(false);
-                    }
                 });
 
-                // Fallback: if onAuthStateChange doesn't fire within 3s
-                // (e.g. no stored session), stop loading anyway.
-                setTimeout(() => {
-                    if (!settled) {
-                        settled = true;
-                        // One last sync check
-                        auth.getSession()
-                            .then((s) => {
-                                setSession(s);
-                                setUser(s?.user ?? null);
-                            })
-                            .catch(() => {})
-                            .finally(() => setLoading(false));
-                    }
-                }, 3000);
+                auth.getSession()
+                    .then((s) => {
+                        if (cancelled) return;
+                        setSession(s);
+                        setUser(s?.user ?? null);
+                    })
+                    .catch(() => {
+                        if (cancelled) return;
+                        setSession(null);
+                        setUser(null);
+                    })
+                    .finally(() => finishInitialLoad());
+
+                // Guard against an auth SDK hang during bootstrap.
+                settleTimer = window.setTimeout(() => {
+                    auth.getSession()
+                        .then((s) => {
+                            if (cancelled) return;
+                            setSession(s);
+                            setUser(s?.user ?? null);
+                        })
+                        .catch(() => {})
+                        .finally(() => finishInitialLoad());
+                }, 8000);
             })
-            .catch(() => setLoading(false));
-        return () => unsub();
+            .catch(() => finishInitialLoad());
+        return () => {
+            cancelled = true;
+            unsub();
+            if (settleTimer !== null) window.clearTimeout(settleTimer);
+        };
     }, []);
 
     const signUp = useCallback(async (email: string, password: string) => {
         const auth = authRef.current;
         if (!auth) return { error: "Auth not ready" };
         const { error } = await auth.signUp(email, password);
+        if (!error) {
+            const nextSession = await auth.getSession().catch(() => null);
+            setSession(nextSession);
+            setUser(nextSession?.user ?? null);
+        }
         return { error };
     }, []);
 
@@ -75,12 +102,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const auth = authRef.current;
         if (!auth) return { error: "Auth not ready" };
         const { error } = await auth.signIn(email, password);
+        if (!error) {
+            const nextSession = await auth.getSession().catch(() => null);
+            setSession(nextSession);
+            setUser(nextSession?.user ?? null);
+        }
         return { error };
     }, []);
 
     const signOut = useCallback(async () => {
         const auth = authRef.current;
         if (auth) await auth.signOut();
+        setSession(null);
+        setUser(null);
     }, []);
 
     const getAccessToken = useCallback(async () => {

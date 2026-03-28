@@ -1,0 +1,12 @@
+name = "kith-api-gateway"
+main = "api-gateway.js"
+compatibility_date = "2024-09-01"
+account_id = "88e6d48400b36d7948eee769db9e7959"
+
+[vars]
+ENVIRONMENT = "production"
+
+# Route bound to the forgeoperator.com zone (already active on this account).
+[[routes]]
+pattern = "sandbox-api.forgeoperator.com/*"
+zone_name = "forgeoperator.com"

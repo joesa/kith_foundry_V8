@@ -1,32 +1,45 @@
-import { useTheme } from "../../contexts/ThemeContext";
-import { Moon, Sun } from "lucide-react";
+import React from 'react';
+import { motion } from 'framer-motion';
+import { useUiStore } from '../../store/uiStore';
 
-export function ThemeToggle() {
-    const { theme, toggleTheme } = useTheme();
-    const isDark = theme === "dark";
+export const ThemeToggle: React.FC = () => {
+  const { theme, toggleTheme } = useUiStore();
+  const isDark = theme === 'dark';
 
-    return (
-        <button
-            onClick={toggleTheme}
-            className={[
-                "flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-200 group",
-                isDark
-                    ? "bg-zinc-800/50 hover:bg-zinc-700/50 border-zinc-700/50"
-                    : "bg-white hover:bg-zinc-100 border-zinc-200 shadow-sm",
-            ].join(" ")}
-            aria-label={`Switch to ${isDark ? "light" : "dark"} mode`}
+  return (
+    <button
+      onClick={toggleTheme}
+      className="relative p-2 rounded-full text-tertiary hover:text-on-surface hover:bg-surface-container transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary"
+      aria-label={`Switch to ${isDark ? 'light' : 'dark'} theme`}
+      title={`Switch to ${isDark ? 'light' : 'dark'} theme`}
+    >
+      <div className="relative w-5 h-5 flex items-center justify-center overflow-hidden">
+        <motion.span
+          className="material-symbols-outlined absolute text-[20px]"
+          initial={false}
+          animate={{
+            y: isDark ? 0 : 24,
+            opacity: isDark ? 1 : 0,
+            scale: isDark ? 1 : 0.5,
+          }}
+          transition={{ duration: 0.3, ease: 'easeOut' }}
         >
-            {isDark ? (
-                <Sun className="w-5 h-5 text-yellow-400" />
-            ) : (
-                <Moon className="w-5 h-5 text-indigo-400" />
-            )}
-            <span className={[
-                "text-sm font-medium transition-colors",
-                isDark ? "text-zinc-300 group-hover:text-white" : "text-zinc-700 group-hover:text-zinc-950",
-            ].join(" ")}>
-                {isDark ? "Light" : "Dark"}
-            </span>
-        </button>
-    );
-}
+          dark_mode
+        </motion.span>
+        
+        <motion.span
+          className="material-symbols-outlined absolute text-[20px]"
+          initial={false}
+          animate={{
+            y: isDark ? -24 : 0,
+            opacity: isDark ? 0 : 1,
+            scale: isDark ? 0.5 : 1,
+          }}
+          transition={{ duration: 0.3, ease: 'easeOut' }}
+        >
+          light_mode
+        </motion.span>
+      </div>
+    </button>
+  );
+};

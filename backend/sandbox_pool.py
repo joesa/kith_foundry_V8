@@ -144,7 +144,7 @@ def _increment_creating(delta: int) -> None:
 def _create_warm_sandbox() -> dict | None:
     """Create a new sandbox, wait for it to come up, return its metadata."""
     try:
-        from fly_service import FlySandboxWorker
+        from nf_service import NfSandboxWorker as FlySandboxWorker
         worker = FlySandboxWorker(project_id="pool")
         worker.create()  # blocks ~30-60s until bridge is healthy
         meta = worker.to_metadata()
