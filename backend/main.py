@@ -30,8 +30,9 @@ from datetime import datetime
 from agent import classify_intent, _resolve_llm_credentials, process_conversation
 from error_resolver import attempt_fix, reset_fix_cycle
 
-from fly_service import get_or_create_worker, release_worker
+from nf_service import get_or_create_worker, release_worker
 from models import Base, engine, SessionLocal, Project, File, Message, get_db
+import sqlalchemy as sa
 from auth import get_current_user_ws, get_current_user, resolve_user_from_token
 import storage_service
 import models_api
@@ -201,8 +202,57 @@ atexit.register(_release_pid_lock)
 
 
 # Create tables and ensure Storage bucket exists
-Base.metadata.create_all(bind=engine)
+# Use a daemon thread with join timeout to prevent DB hangs from blocking worker startup.
+import threading as _threading
+
+def _try_create_all() -> None:
+    Base.metadata.create_all(bind=engine)
+
+def _try_enum_migration() -> None:
+    with engine.connect() as conn:
+        for val in ("db_plan", "auth_plan", "implementation_phases"):
+            conn.execute(
+                sa.text(
+                    "DO $$ BEGIN "
+                    f"ALTER TYPE artifacttype ADD VALUE IF NOT EXISTS '{val}'; "
+                    "EXCEPTION WHEN duplicate_object THEN NULL; END $$;"
+                )
+            )
+        conn.commit()
+
+for _fn, _label in ((_try_create_all, "create_all"), (_try_enum_migration, "enum migration")):
+    _t = _threading.Thread(target=_fn, daemon=True, name=f"startup-{_label}")
+    _t.start()
+    _t.join(timeout=12)  # 12s max — daemon thread stays if DB hangs, but we continue
+    if _t.is_alive():
+        print(f"[startup] Warning: {_label} timed out (DB busy) — will retry 20s after app startup")
+
 storage_service.ensure_bucket_exists()
+
+# ── Startup recovery: reset orphaned CSuite 'running' rows ───────────────────
+def _reset_orphaned_csuite() -> None:
+    from models import CSuiteAnalysis, AgentStatus
+    _startup_db = SessionLocal()
+    try:
+        _stuck = _startup_db.query(CSuiteAnalysis).filter(
+            CSuiteAnalysis.status == AgentStatus.running
+        ).all()
+        if _stuck:
+            print(f"[startup] Resetting {len(_stuck)} orphaned CSuite 'running' row(s) to 'pending'")
+            for _row in _stuck:
+                _row.status = AgentStatus.pending
+            _startup_db.commit()
+    finally:
+        _startup_db.close()
+
+try:
+    _ct = _threading.Thread(target=_reset_orphaned_csuite, daemon=True, name="startup-csuite-reset")
+    _ct.start()
+    _ct.join(timeout=10)
+    if _ct.is_alive():
+        print("[startup] Warning: orphaned CSuite row reset timed out (non-fatal)")
+except Exception as _e:
+    print(f"[startup] Warning: could not reset orphaned CSuite rows: {_e}")
 
 app = FastAPI()
 
@@ -214,9 +264,17 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Allow all origins in development — restricts to explicit list in production.
 # Covers localhost, WSL IPs (172.x.x.x / 192.168.x.x) and any other dev hostname.
-_PROD_ORIGINS = [
-    "https://kith-foundry.fly.dev",  # update with your prod domain
-]
+_CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "")
+_PROD_ORIGINS = (
+    [o.strip() for o in _CORS_ORIGINS_ENV.split(",") if o.strip()]
+    if _CORS_ORIGINS_ENV
+    else [
+        "https://forgeoperator.com",
+        "https://www.forgeoperator.com",
+        "https://forge-operator.pages.dev",
+        "https://kith-foundry.fly.dev",
+    ]
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if os.getenv("ENVIRONMENT", "development") != "production" else _PROD_ORIGINS,
@@ -241,6 +299,14 @@ import routing_api
 app.include_router(routing_api.router)
 import billing_api
 app.include_router(billing_api.router)
+import capabilities_api
+app.include_router(capabilities_api.router)
+import secrets_api
+app.include_router(secrets_api.router)
+import deploy_api
+app.include_router(deploy_api.router)
+import sandbox_api
+app.include_router(sandbox_api.router)
 
 # ── Inngest — durable background jobs ────────────────────────────────────────
 from inngest.fast_api import serve as _inngest_serve
@@ -248,6 +314,29 @@ import inngest_functions as _inngest_fns
 import inngest_client as _inngest_client
 from inngest_client import use_inngest
 _inngest_serve(app, _inngest_client.client, _inngest_fns.all_functions)
+
+
+@app.on_event("startup")
+async def _startup_db_deferred() -> None:
+    """Retry DB init in the background 20 s after startup.
+
+    At cold boot PgBouncer often has no free backend slots, so create_all()
+    and the enum migration time out in the module-level daemon threads.
+    By the time 20 s have passed the workers are up and the pool has warmed,
+    so the retry almost always succeeds.  Both operations are idempotent.
+    """
+    async def _run() -> None:
+        await asyncio.sleep(20)
+        for _fn, _label in ((_try_create_all, "create_all"), (_try_enum_migration, "enum migration")):
+            _rt = _threading.Thread(target=_fn, daemon=True, name=f"retry-{_label}")
+            _rt.start()
+            _rt.join(timeout=30)
+            if _rt.is_alive():
+                print(f"[startup] {_label} retry still timed out — DB may be unavailable")
+            else:
+                print(f"[startup] {_label} completed on deferred retry")
+
+    asyncio.create_task(_run())
 
 
 @app.get("/api/health")
@@ -919,6 +1008,52 @@ def _sanitize_css_write_edits(write_edits: list[dict]) -> list[dict]:
     return patched
 
 
+# ── Golden fallback — always-working React stub ───────────────────────────
+# Written to the sandbox when code-gen produces files that fail Vite compilation
+# AND the auto-fix loop also fails.  Guarantees the user always sees a working
+# (if minimal) preview rather than a blank or erroring iframe.
+_GOLDEN_FALLBACK_EDITS: list[dict] = [
+    {
+        "file_path": "src/main.tsx",
+        "action": "write",
+        "content": (
+            "import React from 'react'\n"
+            "import ReactDOM from 'react-dom/client'\n"
+            "import App from './App'\n"
+            "import './App.css'\n\n"
+            "ReactDOM.createRoot(document.getElementById('root')!).render(\n"
+            "  <React.StrictMode>\n"
+            "    <App />\n"
+            "  </React.StrictMode>,\n"
+            ")\n"
+        ),
+    },
+    {
+        "file_path": "src/App.tsx",
+        "action": "write",
+        "content": (
+            "import './App.css'\n\n"
+            "export default function App() {\n"
+            "  return (\n"
+            "    <div style={{ padding: '2rem', fontFamily: 'sans-serif', maxWidth: 600, margin: '0 auto' }}>\n"
+            "      <h1 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Build error — safe placeholder</h1>\n"
+            "      <p style={{ color: '#555' }}>\n"
+            "        The generated code had a compilation error that could not be auto-repaired.\n"
+            "        Describe what you want in the chat and I'll regenerate it cleanly.\n"
+            "      </p>\n"
+            "    </div>\n"
+            "  )\n"
+            "}\n"
+        ),
+    },
+    {
+        "file_path": "src/App.css",
+        "action": "write",
+        "content": "body { margin: 0; background: #fff; }\n",
+    },
+]
+
+
 async def _send_json(websocket: WebSocket, payload: dict):
     try:
         await websocket.send_text(json.dumps(payload))
@@ -1047,7 +1182,11 @@ async def _restore_project_state(websocket: WebSocket, db, project_id: str):
 
 
 async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tuple:
-    """Boot or reuse a sandbox worker, restore files, start Vite, return (worker, preview_url)."""
+    """Boot or reuse a sandbox worker, restore files, start Vite, return (worker, preview_url).
+
+    Sends sandbox_ready as early as possible (once the scaffold Vite page is confirmed
+    serving) so the iframe appears immediately rather than waiting for full file restore.
+    """
     await _send_json(websocket, {
         "type": "status", "status": "booting_sandbox",
         "message": "Booting secure sandbox..."
@@ -1056,20 +1195,20 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
     # Get or create sandbox worker (runs on dedicated thread)
     worker = await asyncio.to_thread(get_or_create_worker, project_id)
 
-    # Store sandbox_id on project
+    # Persist sandbox_id on the project row
     sandbox_id = worker.sandbox_id
     if sandbox_id and project.fly_sandbox_id != sandbox_id:
         project.fly_sandbox_id = sandbox_id
         project.updated_at = datetime.utcnow()
         db.commit()
 
-    # If this worker already has Vite running, verify it's still alive before reusing
+    # ── Reuse path: warm worker with Vite already running ────────────────────
     if worker.preview_url:
         try:
             health = await asyncio.to_thread(worker.execute, "health_check", None, 10.0)
             if health == "ok":
-                # Reusing worker — but we must restore files so the preview shows current
-                # state (not scaffold) after refresh/re-login. Fly machines can be recycled.
+                # Sync any DB-stored files that may differ from the live sandbox state
+                # (e.g. after a server restart that recycled in-memory file writes).
                 stored_files = _load_project_files(db, project_id)
                 if stored_files:
                     db_fallback = {f.file_path: f.content for f in stored_files if f.content}
@@ -1084,22 +1223,47 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
                     ]
                     if batch:
                         await asyncio.to_thread(worker.execute, "write_files", batch)
-                        await _send_json(websocket, {
-                            "type": "status", "status": "booting_sandbox",
-                            "message": "Syncing project files..."
-                        })
                         try:
                             await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
                         except Exception as e:
                             print(f"[sandbox] wait_vite_ready after reuse restore timed out: {e}")
-                print(f"[sandbox] Reusing existing sandbox {worker.sandbox_id}, Vite healthy at {worker.preview_url}")
+
+                # Fail closed on reuse restore: if persisted files compile with errors,
+                # replace with safe fallback before continuing.
+                _reuse_errors = []
+                try:
+                    _reuse_errors = await asyncio.to_thread(worker.execute, "check_vite_errors") or []
+                except Exception as _reuse_check_err:
+                    print(f"[sandbox] Reuse check_vite_errors failed; applying fallback: {_reuse_check_err}")
+                    _reuse_errors = [{"file": "unknown", "error": f"vite_check_failed: {_reuse_check_err}"}]
+
+                if _reuse_errors:
+                    print(f"[sandbox] Reuse path has {len(_reuse_errors)} Vite error(s); applying fallback")
+                    await _persist_files(db, project_id, _GOLDEN_FALLBACK_EDITS)
+                    await asyncio.to_thread(worker.execute, "write_files", _GOLDEN_FALLBACK_EDITS)
+                    try:
+                        await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 20.0)
+                    except Exception as _rwe:
+                        print(f"[sandbox] Reuse fallback wait_vite_ready timeout: {_rwe}")
+                    await _send_json(websocket, {
+                        "type": "status", "status": "warning",
+                        "message": "⚠️ Existing files had build errors. Showing a safe placeholder.",
+                    })
+
+                # Promote preview only after restore + compile checks are complete.
+                await _send_json(websocket, {
+                    "type": "sandbox_ready",
+                    "previewUrl": worker.preview_url,
+                })
+
+                print(f"[sandbox] Reusing sandbox {worker.sandbox_id}, Vite healthy at {worker.preview_url}")
                 return worker, worker.preview_url
             else:
                 print(f"[sandbox] Sandbox {worker.sandbox_id} unhealthy ({health}), recreating...")
         except Exception as e:
             print(f"[sandbox] Sandbox {worker.sandbox_id} health check failed ({e}), recreating...")
 
-        # Sandbox is dead — release and create a fresh one
+        # Sandbox is dead — release and boot a fresh one
         release_worker(project_id)
         worker = await asyncio.to_thread(get_or_create_worker, project_id)
         sandbox_id = worker.sandbox_id
@@ -1108,14 +1272,49 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
             project.updated_at = datetime.utcnow()
             db.commit()
 
-    # Setup Vite project (npm install etc.)
+    # ── Fresh path: new/recycled sandbox ─────────────────────────────────────
+    # setup_vite and start_vite are both no-ops for NF/Fly containers (Vite starts
+    # via start.sh on boot). start_vite just returns the public preview URL.
     await _send_json(websocket, {
         "type": "status", "status": "booting_sandbox",
         "message": "Setting up project environment..."
     })
     await asyncio.to_thread(worker.execute, "setup_vite")
 
-    # Replay persisted files into sandbox (content from Supabase Storage)
+    await _send_json(websocket, {
+        "type": "status", "status": "booting_sandbox",
+        "message": "Starting preview server..."
+    })
+    preview_url = await asyncio.to_thread(worker.execute, "start_vite")
+
+    # If this project already has persisted files, avoid early preview promotion
+    # until restore and compile checks complete, to prevent transient Vite overlays.
+    _stored_file_count = await asyncio.to_thread(
+        lambda: db.query(File).filter(File.project_id == project_id).count()
+    )
+    _allow_early_scaffold = _stored_file_count == 0
+
+    # Show the scaffold iframe immediately once Vite confirms it is serving.
+    # The scaffold "🚀 Preview Ready" page is pre-compiled at image build time, so
+    # this wait_vite_ready should resolve in seconds. For returning users the scaffold
+    # showing briefly (before their files load via HMR) is better than a blank panel.
+    if _allow_early_scaffold:
+        try:
+            await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 20.0)
+            await _send_json(websocket, {
+                "type": "sandbox_ready",
+                "previewUrl": preview_url,
+            })
+        except Exception as _early_e:
+            print(f"[sandbox] Scaffold not ready in 20s (continuing to user-file restore): {_early_e}")
+    else:
+        await _send_json(websocket, {
+            "type": "status", "status": "booting_sandbox",
+            "message": "Restoring project files before preview..."
+        })
+
+    # Replay persisted files into sandbox. Done AFTER the early sandbox_ready so the
+    # user gets visual feedback immediately. Vite HMR recompiles them in the background.
     stored_files = _load_project_files(db, project_id)
     if stored_files:
         db_fallback = {f.file_path: f.content for f in stored_files if f.content}
@@ -1125,7 +1324,6 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
         )
         # Only write files with non-empty content — an empty file written to the sandbox
         # causes Vite to return 500 when it tries to compile it (e.g. empty App.tsx).
-        # The placeholder files written by setup_vite() serve as safe fallbacks.
         batch = [
             {"file_path": fp, "content": contents.get(fp, "")}
             for fp in file_paths
@@ -1133,19 +1331,12 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
         ]
         skipped = [fp for fp in file_paths if not contents.get(fp, "").strip()]
         if skipped:
-            print(f"[sandbox] Skipping {len(skipped)} empty/missing file(s) from Storage restore: {skipped[:5]}")
+            print(f"[sandbox] Skipping {len(skipped)} empty/missing file(s): {skipped[:5]}")
         if batch:
             await asyncio.to_thread(worker.execute, "write_files", batch)
 
-    # Start Vite dev server and get preview URL
-    await _send_json(websocket, {
-        "type": "status", "status": "booting_sandbox",
-        "message": "Starting preview server..."
-    })
-    preview_url = await asyncio.to_thread(worker.execute, "start_vite")
-
-    # Wait for Vite to finish initial compilation (especially when user files
-    # were restored — Vite needs to compile them before the iframe can show them)
+    # Wait for Vite to finish compiling with user files.
+    # For new projects (no user files) this returns immediately.
     await _send_json(websocket, {
         "type": "status", "status": "booting_sandbox",
         "message": "Compiling preview..."
@@ -1154,6 +1345,27 @@ async def _ensure_sandbox_ready(websocket, db, project, project_id: str) -> tupl
         await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
     except Exception as e:
         print(f"[sandbox] wait_vite_ready timed out (non-fatal): {e}")
+
+    # Fail closed after restore on fresh path as well.
+    _fresh_errors = []
+    try:
+        _fresh_errors = await asyncio.to_thread(worker.execute, "check_vite_errors") or []
+    except Exception as _fresh_check_err:
+        print(f"[sandbox] Fresh check_vite_errors failed; applying fallback: {_fresh_check_err}")
+        _fresh_errors = [{"file": "unknown", "error": f"vite_check_failed: {_fresh_check_err}"}]
+
+    if _fresh_errors:
+        print(f"[sandbox] Fresh path has {len(_fresh_errors)} Vite error(s); applying fallback")
+        await _persist_files(db, project_id, _GOLDEN_FALLBACK_EDITS)
+        await asyncio.to_thread(worker.execute, "write_files", _GOLDEN_FALLBACK_EDITS)
+        try:
+            await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 20.0)
+        except Exception as _fwe:
+            print(f"[sandbox] Fresh fallback wait_vite_ready timeout: {_fwe}")
+        await _send_json(websocket, {
+            "type": "status", "status": "warning",
+            "message": "⚠️ Generated files had build errors. Showing a safe placeholder.",
+        })
 
     # Persist preview URL
     project.preview_url = preview_url
@@ -1196,14 +1408,43 @@ async def save_project_files(
     if edits:
         try:
             worker = await asyncio.to_thread(get_or_create_worker, project_id)
-            batch = [{"file_path": e["file_path"], "content": e.get("content", "")} for e in edits if (e.get("content") or "").strip()]
-            if batch and worker.is_alive:
-                await asyncio.to_thread(worker.execute, "write_files", batch)
+            batch = [{"file_path": e["file_path"], "content": e.get("content", "")} for e in edits]
+            if batch:
+                if not worker.is_alive:
+                    try:
+                        await asyncio.to_thread(worker.execute, "start_vite")
+                    except Exception as ve:
+                        print(f"[save] start_vite before write (non-fatal): {ve}")
+
+                try:
+                    await asyncio.to_thread(worker.execute, "write_files", batch)
+                except Exception as sb_err:
+                    err_str = str(sb_err).lower()
+                    if "3006" in err_str or "timed out" in err_str or "not alive" in err_str:
+                        print(f"[save] Sandbox write failed ({err_str}), attempting sandbox recovery...")
+                        release_worker(project_id)
+                        worker = await asyncio.to_thread(get_or_create_worker, project_id)
+                        await asyncio.to_thread(worker.execute, "start_vite")
+                        await asyncio.to_thread(worker.execute, "write_files", batch)
+                    else:
+                        raise sb_err
+
                 # Wait for Vite to rebuild so frontend reload shows updated UI
                 try:
                     await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 30.0)
                 except Exception as ve:
                     print(f"[save] wait_vite_ready (non-fatal): {ve}")
+
+                # Notify active editor sessions to force-reload preview after save.
+                try:
+                    from redis_state import publish_project_update
+
+                    reload_payload = {"type": "reload_preview"}
+                    if worker.preview_url:
+                        reload_payload["url"] = worker.preview_url
+                    await publish_project_update(project_id, reload_payload)
+                except Exception as pe:
+                    print(f"[save] publish reload_preview failed (non-fatal): {pe}")
         except Exception as e:
             print(f"[save] Sandbox write error (non-fatal): {e}")
 
@@ -1240,7 +1481,7 @@ async def warm_sandbox(
 
     # Inngest disabled — provision synchronously in background thread (dev only)
     async def _provision():
-        from fly_service import get_or_create_worker
+        from nf_service import get_or_create_worker
         try:
             await asyncio.to_thread(get_or_create_worker, project_id)
         except Exception as e:
@@ -1317,23 +1558,28 @@ async def websocket_endpoint(websocket: WebSocket):
         db.close()
         return
 
-    # ── Connection rate limiting: max 3 concurrent WS sessions per user ───────
+    # ── Connection rate limiting: max 10 concurrent WS sessions per user ──────
     from redis_client import get_async_redis as _gar
     _rl = _gar()
     _conn_key = f"kith:ws:conn:{user.id}"
+    _MAX_WS_CONNS = 10
     try:
         _conn_n = await _rl.incr(_conn_key)
         await _rl.expire(_conn_key, 3600)
+        # Safety cap: stale counts from crashed workers can accumulate; clamp to max.
+        if _conn_n > _MAX_WS_CONNS:
+            await _rl.set(_conn_key, _MAX_WS_CONNS, ex=3600)
+            _conn_n = _MAX_WS_CONNS
     except Exception:
         _conn_n = 1  # Redis unavailable — allow through, skip rate-limiting
-    if _conn_n > 3:
+    if _conn_n > _MAX_WS_CONNS:
         try:
             await _rl.decr(_conn_key)
         except Exception:
             pass
         await _send_json(websocket, {
             "type": "error",
-            "message": "Too many concurrent connections (max 3). Close another tab first."
+            "message": f"Too many concurrent connections (max {_MAX_WS_CONNS}). Close another tab first."
         })
         await websocket.close(code=4429)
         db.close()
@@ -1388,6 +1634,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
             except Exception:
                 pass  # non-fatal — preview may still load
+
+            # Promotion gate on reconnect: never surface a broken overlay page.
+            _reconnect_errors = []
+            try:
+                _reconnect_errors = await asyncio.to_thread(worker.execute, "check_vite_errors") or []
+            except Exception as _rce:
+                print(f"[ws] Reconnect Vite check failed; forcing fallback: {_rce}")
+                _reconnect_errors = [{"file": "unknown", "error": f"vite_check_failed: {_rce}"}]
+
+            if _reconnect_errors:
+                print(f"[ws] Reconnect found Vite errors in {len(_reconnect_errors)} file(s); applying golden fallback")
+                _fallback = _GOLDEN_FALLBACK_EDITS
+                await _persist_files(db, project_id, _fallback)
+                await asyncio.to_thread(worker.execute, "write_files", _fallback)
+                try:
+                    await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 20.0)
+                except Exception as _rwe:
+                    print(f"[ws] Reconnect fallback wait_vite_ready timeout: {_rwe}")
+                await _send_json(websocket, {
+                    "type": "status", "status": "warning",
+                    "message": "⚠️ Existing project files had a build error. Showing a safe placeholder while you regenerate.",
+                })
+
             await _send_json(websocket, {
                 "type": "reload_preview",
                 "url": preview_url,
@@ -1397,10 +1666,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except Exception as init_err:
         print(f"[init] Error (non-fatal): {init_err}")
+        # Ensure hasExistingFiles is set so the UI doesn't wait forever on sandbox_ready
         await _send_json(websocket, {
-            "type": "status", "status": "idle",
-            "message": f"Init issue: {str(init_err)}. You can still use the editor."
+            "type": "sandbox_failed",
+            "message": "Sandbox couldn't start. You can still use the editor, or retry below.",
         })
+        await _send_json(websocket, {"type": "status", "status": "idle"})
 
     # ── Redis pub/sub relay: forward cross-worker events to this WS client ──
     async def _redis_relay():
@@ -1477,6 +1748,24 @@ async def websocket_endpoint(websocket: WebSocket):
                                 await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
                             except Exception:
                                 pass
+
+                            # Do not promote a preview that still has compile errors.
+                            _post_fix_errors = []
+                            try:
+                                _post_fix_errors = await asyncio.to_thread(worker.execute, "check_vite_errors") or []
+                            except Exception as _pfe:
+                                print(f"[ws] Post-fix Vite check failed; forcing fallback: {_pfe}")
+                                _post_fix_errors = [{"file": "unknown", "error": f"vite_check_failed: {_pfe}"}]
+                            if _post_fix_errors:
+                                print(f"[ws] Auto-fix path still has {len(_post_fix_errors)} Vite error(s); applying fallback")
+                                _fallback = _GOLDEN_FALLBACK_EDITS
+                                await _persist_files(db, project_id, _fallback)
+                                await asyncio.to_thread(worker.execute, "write_files", _fallback)
+                                try:
+                                    await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 20.0)
+                                except Exception as _pfwe:
+                                    print(f"[ws] Post-fix fallback wait_vite_ready timeout: {_pfwe}")
+
                             await _send_json(websocket, {"type": "reload_preview"})
                             await _send_json(websocket, {
                                 "type": "auto_fix_status", "status": "fixed",
@@ -1530,10 +1819,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     lambda: db.query(Project).filter(Project.id == project_id).first()
                 )
 
-                preview_url = project.preview_url if project else ""
+                preview_url = worker.preview_url if worker and worker.preview_url else (project.preview_url if project else "")
+                _cur_file_count = await asyncio.to_thread(
+                    lambda: db.query(File).filter(File.project_id == project_id).count()
+                )
                 await _send_json(websocket, {
                     "type": "sandbox_ready",
-                    "previewUrl": preview_url
+                    "previewUrl": preview_url,
+                    "fileCount": _cur_file_count,
                 })
 
                 # Send file tree from DB
@@ -1613,17 +1906,18 @@ async def websocket_endpoint(websocket: WebSocket):
                                         await asyncio.to_thread(worker.execute, "write_files", write_edits)
                                         # Poll until @vite/client and @react-refresh both return 200
                                         await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 45.0)
-                                        await _send_json(websocket, {"type": "reload_preview"})
 
-                                        # wait_vite_ready only checks the root URL — React Router's
-                                        # lazy-loaded route components are only compiled when the
-                                        # browser requests them, so they can still be broken.
-                                        # Probe each TSX file now so we catch (and auto-fix) errors
-                                        # before the user sees a blank/broken preview.
+                                        _purl = worker.preview_url if worker.preview_url else (project.preview_url or "")
+
+                                        # Promotion gate: check compilation BEFORE showing the preview.
+                                        # sandbox_ready / reload_preview are sent only after the build
+                                        # is confirmed clean (or replaced with a safe fallback).
+                                        _build_clean = True
                                         try:
-                                            vite_errors = await asyncio.to_thread(worker.execute, "check_vite_errors")
+                                            vite_errors = await asyncio.to_thread(worker.execute, "check_vite_errors") or []
                                             if vite_errors and isinstance(vite_errors, list):
-                                                print(f"[ws] Vite compilation errors in {len(vite_errors)} file(s): {[e['file'] for e in vite_errors]}")
+                                                _build_clean = False
+                                                print(f"[ws] Vite compilation errors in {len(vite_errors)} file(s): {[e.get('file', 'unknown') for e in vite_errors]}")
                                                 await _send_json(websocket, {
                                                     "type": "status", "status": "warning",
                                                     "message": f"⚠️ Fixing compilation error(s) in {len(vite_errors)} file(s)..."
@@ -1651,13 +1945,71 @@ async def websocket_endpoint(websocket: WebSocket):
                                                         })
                                                     await asyncio.to_thread(worker.execute, "write_files", fix_edits)
                                                     await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 30.0)
-                                                    await _send_json(websocket, {"type": "reload_preview"})
+                                                    # Verify again after attempted fix.
+                                                    _post_fix_errors = []
+                                                    try:
+                                                        _post_fix_errors = await asyncio.to_thread(worker.execute, "check_vite_errors") or []
+                                                    except Exception as _pf_check_err:
+                                                        print(f"[ws] Post-fix Vite check failed; forcing fallback: {_pf_check_err}")
+                                                        _post_fix_errors = [{"file": "unknown", "error": f"vite_check_failed: {_pf_check_err}"}]
+                                                    if _post_fix_errors:
+                                                        _build_clean = False
+                                                    else:
+                                                        _build_clean = True
                                                     await _send_json(websocket, {
                                                         "type": "auto_fix_status", "status": "fixed",
                                                         "message": f"🔧 Auto-fixed {len(fix_edits)} file(s)"
                                                     })
+
+                                                if not _build_clean:
+                                                    # Auto-fix produced nothing — guarantee a working preview
+                                                    # by writing the golden fallback so the user never sees
+                                                    # a blank or erroring iframe.
+                                                    print("[ws] Auto-fix failed or unresolved; applying golden fallback")
+                                                    _fallback = _GOLDEN_FALLBACK_EDITS
+                                                    await _persist_files(db, project_id, _fallback)
+                                                    for edit in _fallback:
+                                                        await _send_json(websocket, {
+                                                            "type": "file_written",
+                                                            "file": edit["file_path"],
+                                                            "content": edit["content"],
+                                                        })
+                                                    await asyncio.to_thread(worker.execute, "write_files", _fallback)
+                                                    await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 20.0)
+                                                    _build_clean = True
+                                                    await _send_json(websocket, {
+                                                        "type": "status", "status": "warning",
+                                                        "message": "⚠️ Build error couldn't be auto-repaired. Showing a safe placeholder — describe what you want and I'll regenerate.",
+                                                    })
                                         except Exception as _ce:
-                                            print(f"[ws] Vite error check (non-fatal): {_ce}")
+                                            # If we can't verify the build, fail closed to safe fallback.
+                                            print(f"[ws] Vite error check failed; applying fallback: {_ce}")
+                                            _fallback = _GOLDEN_FALLBACK_EDITS
+                                            await _persist_files(db, project_id, _fallback)
+                                            for edit in _fallback:
+                                                await _send_json(websocket, {
+                                                    "type": "file_written",
+                                                    "file": edit["file_path"],
+                                                    "content": edit["content"],
+                                                })
+                                            await asyncio.to_thread(worker.execute, "write_files", _fallback)
+                                            try:
+                                                await asyncio.to_thread(worker.execute, "wait_vite_ready", None, 20.0)
+                                            except Exception as _ce_wait:
+                                                print(f"[ws] Fallback wait_vite_ready timeout: {_ce_wait}")
+                                            _build_clean = True
+                                            await _send_json(websocket, {
+                                                "type": "status", "status": "warning",
+                                                "message": "⚠️ Build verification failed. Showing a safe placeholder preview.",
+                                            })
+
+                                        # Only now is the preview safe to show.
+                                        if _purl:
+                                            await _send_json(websocket, {
+                                                "type": "sandbox_ready",
+                                                "previewUrl": _purl,
+                                            })
+                                        await _send_json(websocket, {"type": "reload_preview"})
 
                                     except Exception as sb_err:
                                         err_str = str(sb_err).lower()
@@ -1733,7 +2085,7 @@ async def websocket_endpoint(websocket: WebSocket):
         redis_relay_task.cancel()
         try:
             await redis_relay_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception):
             pass
         try:
             await _rl.decr(_conn_key)
@@ -1741,6 +2093,79 @@ async def websocket_endpoint(websocket: WebSocket):
             pass
         # Keep sandbox alive across reconnects — only release on explicit project deletion
         db.close()
+
+
+# ── Cloudflare: Turnstile CAPTCHA verification ────────────────────────────────
+
+@app.post("/api/turnstile/verify")
+async def turnstile_verify(request: Request):
+    """Verify a Cloudflare Turnstile CAPTCHA token server-side.
+
+    Body: {"token": "<turnstile_response_token>"}
+    Returns 200 {"ok": true} on success or 403 on failure.
+    Empty/missing site key → always returns ok (safe dev fallback).
+    """
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    if not token:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Missing turnstile token")
+
+    remote_ip = request.client.host if request.client else None
+    from cloudflare import verify_turnstile
+    ok = await verify_turnstile(token, remote_ip)
+    if not ok:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Turnstile verification failed")
+    return {"ok": True}
+
+
+# ── Cloudflare: Security setup + analytics ────────────────────────────────────
+
+@app.post("/api/cloudflare/setup-security")
+async def cloudflare_setup_security(request: Request):
+    """Configure rate-limit + WAF rules on the Cloudflare zone.
+
+    Protected: requires the X-Admin-Key header matching FLY_BRIDGE_SECRET
+    (or any secret you choose; this is an admin-only endpoint).
+    """
+    expected = os.getenv("FLY_BRIDGE_SECRET", "")
+    if expected:
+        key = request.headers.get("X-Admin-Key", "")
+        if key != expected:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+    from cloudflare import setup_rate_limit_rules, setup_waf_rules
+    rl_results = await setup_rate_limit_rules()
+    waf_results = await setup_waf_rules()
+
+    needs_permissions = any(isinstance(r, dict) and "error" in r for r in rl_results + waf_results)
+    return {
+        "ok": True,
+        "rate_limit_rules": rl_results,
+        "waf_rules": waf_results,
+        "permission_note": (
+            "Update your Cloudflare API token to include 'Zone Rulesets Edit' permission"
+            if needs_permissions else None
+        ),
+    }
+
+
+@app.get("/api/cloudflare/zone-info")
+async def cloudflare_zone_info(request: Request):
+    """Fetch zone info + analytics from Cloudflare. Admin only."""
+    expected = os.getenv("FLY_BRIDGE_SECRET", "")
+    if expected:
+        key = request.headers.get("X-Admin-Key", "")
+        if key != expected:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+    from cloudflare import get_zone_info, get_zone_analytics
+    zone = await get_zone_info()
+    analytics = await get_zone_analytics(since_minutes=1440)
+    return {"zone": zone, "analytics": analytics}
 
 
 if __name__ == "__main__":
